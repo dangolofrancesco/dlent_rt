@@ -8,3 +8,5 @@ data/*.csv
 
 
 dlent_venv/
+
+.README.md
