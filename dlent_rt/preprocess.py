@@ -1,19 +1,5 @@
 """
 Trace preprocessing: hardware-profile discretization and outlier handling.
-
-Two concerns, both applied when the trace enters the model:
-
-  1. Hardware clustering. Real Google-trace (A_cpu, A_ram) requests are
-     continuous and near-unique per job, which explodes the type space
-     J = K x Q x A. We snap each job to one of a small fixed catalogue of
-     canonical VM shapes, fitted on the full trace (VM shapes are a static,
-     provider-side fact, unlike the valuation/duration distributions which are
-     legitimately learned online).
-
-  2. Outlier handling. The paper's guarantee needs a_max / c_i <= O(1/log T)
-     and d_max << T. Raw trace extremes (a collection aggregating thousands of
-     tasks; a job running for weeks) violate these. We DROP the tail by default
-     (keeping every retained job's value exact) rather than clip.
 """
 from __future__ import annotations
 
@@ -26,13 +12,10 @@ import pandas as pd
 from .config import Config
 
 
-# --------------------------------------------------------------------------- #
-# Hardware clustering
-# --------------------------------------------------------------------------- #
 @dataclass
 class HardwareCatalogue:
     """A fixed catalogue of canonical VM shapes and an assignment function."""
-    centroids: np.ndarray          # (n_profiles, |I|) canonical shapes (native units)
+    centroids: np.ndarray          
     log_space: bool
     method: str
 
@@ -51,11 +34,6 @@ class HardwareCatalogue:
         # squared euclidean to each centroid, vectorised
         d2 = ((X[:, None, :] - C[None, :, :]) ** 2).sum(axis=2)   # (n, n_profiles)
         return d2.argmin(axis=1)
-
-    def snapped(self, A: np.ndarray) -> np.ndarray:
-        """Return each job's request replaced by its assigned centroid shape."""
-        idx = self.assign(A)
-        return self.centroids[idx]
 
 
 def _kmeans(X: np.ndarray, k: int, seed: int, iters: int = 100) -> np.ndarray:
@@ -92,8 +70,8 @@ def _kmeans(X: np.ndarray, k: int, seed: int, iters: int = 100) -> np.ndarray:
 
 def _quantile_grid(X: np.ndarray, k: int) -> np.ndarray:
     """
-    Quantile-grid centroids: split each dimension into ~sqrt(k) quantile bins,
-    take the cell centers that contain data. Deterministic alternative to kmeans.
+    Quantile-grid centroids: split each dimension into ~k^(1/d) quantile bins,
+    take the cell centers. Deterministic alternative to kmeans.
     """
     d = X.shape[1]
     per_dim = max(int(round(k ** (1.0 / d))), 1)
@@ -103,16 +81,64 @@ def _quantile_grid(X: np.ndarray, k: int) -> np.ndarray:
     return mesh
 
 
+def _geometric_grid(X: np.ndarray, k: int) -> np.ndarray:
+    """
+    Per-dimension GEOMETRIC bins, cross-product cells. X is assumed already in
+    the working space (log-space if configured), so geometric spacing there is
+    linear spacing here. Deterministic; spreads bins evenly across the observed
+    range rather than across the observed mass.
+    """
+    d = X.shape[1]
+    per_dim = max(int(round(k ** (1.0 / d))), 1)
+    centers_per_dim = []
+    for j in range(d):
+        lo, hi = float(X[:, j].min()), float(X[:, j].max())
+        if hi <= lo:
+            hi = lo + 1e-9
+        e = np.linspace(lo, hi, per_dim + 1)
+        centers_per_dim.append(0.5 * (e[:-1] + e[1:]))
+    return np.array(np.meshgrid(*centers_per_dim)).reshape(d, -1).T
+
+
+def _quantile_1d(X: np.ndarray, k: int) -> np.ndarray:
+    """
+    Quantile bins on a SINGLE scalar summary (the sum across resources), then
+    the centroid of each bin in full dimension.
+
+    Motivation: in most cloud traces CPU and RAM requests are strongly
+    correlated (a job asking for more cores usually asks for more memory), so
+    the joint distribution lies close to a 1-D curve. Binning along that curve
+    uses all k profiles productively, whereas a 2-D cross-product grid wastes
+    most cells on empty off-diagonal regions.
+    """
+    s = X.sum(axis=1)
+    edges = np.quantile(s, np.linspace(0, 1, k + 1))
+    edges = np.maximum.accumulate(edges)
+    centroids = []
+    for i in range(k):
+        lo, hi = edges[i], edges[i + 1]
+        m = (s >= lo) & (s <= hi) if i == k - 1 else (s >= lo) & (s < hi)
+        centroids.append(X[m].mean(axis=0) if m.any() else X[np.argmin(np.abs(s - lo))])
+    return np.array(centroids)
+
+
 def fit_hardware_catalogue(A_fit: np.ndarray, cfg: Config) -> HardwareCatalogue:
     """Fit the canonical VM-shape catalogue on A_fit (native units)."""
     hw = cfg.hardware
     X = np.log(np.clip(A_fit, 1e-9, None)) if hw.log_space else A_fit
     if hw.method == "kmeans":
         C = _kmeans(X, hw.n_profiles, seed=cfg.run.seed)
-    else:
+    elif hw.method == "quantile_grid":
         C = _quantile_grid(X, hw.n_profiles)
+    elif hw.method == "geometric_grid":
+        C = _geometric_grid(X, hw.n_profiles)
+    elif hw.method == "quantile_1d":
+        C = _quantile_1d(X, hw.n_profiles)
+    else:
+        raise ValueError(f"unknown hardware method: {hw.method}")
     centroids = np.exp(C) if hw.log_space else C
-    return HardwareCatalogue(centroids=centroids, log_space=hw.log_space, method=hw.method)
+    return HardwareCatalogue(centroids=centroids, log_space=hw.log_space,
+                             method=hw.method)
 
 
 # --------------------------------------------------------------------------- #

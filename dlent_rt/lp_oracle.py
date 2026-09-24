@@ -1,57 +1,30 @@
 """
 LP-RS solver and scalarization.
-
-Two responsibilities:
-  1. Scalarize a 3-objective type vector into the scalar r~_j fed to LP-RS.
-     Methods: chebyshev (augmented), linear, eps_constraint (enumeration only).
-  2. Solve the fluid LP-RS, returning the optimum, the primal x*, and the dual
-     shadow prices tau* on the capacity constraints.
-
-Uses highspy directly so we get basis access for Test-3 warm-starts later.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import highspy
 
 
-# --------------------------------------------------------------------------- #
-# Scalarization
-# --------------------------------------------------------------------------- #
 def scalarize_linear(f: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """
     Linear scalarization: weighted sum. f is (n_types, 3), weights is (3,).
-    The three objective columns already carry their lambda signs from Phase 0,
-    so weights here are all 1 unless you want an extra tilt. Returns (n_types,).
+    Returns (n_types,).
     """
     return f @ weights
 
 
 def scalarize_chebyshev(
-    f: np.ndarray, weights: np.ndarray, rho: float, ideal: Optional[np.ndarray] = None
+    f: np.ndarray, weights: np.ndarray, rho: float
 ) -> np.ndarray:
     """
     Augmented Chebyshev scalarization, evaluated per type independently.
-
-    For type j with objective vector f_j and ideal point f*:
-        s_j = min over t of  t + rho * sum_i (f*_i - f_ij)
-              s.t.  weights_i * (f*_i - f_ij) <= t  for all i
-
-    The inner min in t is closed-form: t = max_i weights_i (f*_i - f_ij).
-    So per type:
-        s_j = max_i [ w_i (f*_i - f_ij) ] + rho * sum_i (f*_i - f_ij)
-
-    We return the *reward* the LP maximises, i.e. the negative Chebyshev
-    distance (closer to ideal = higher reward):
-        r~_j = - s_j
-
-    f is (n_types, 3); weights is (3,); ideal is (3,) or None (then per-column max).
+    The ideal point is the per-objective max over types.
     """
-    if ideal is None:
-        ideal = f.max(axis=0)                      # (3,)
+    ideal = f.max(axis=0)                           # (3,)
     gap = ideal[None, :] - f                        # (n_types, 3), >= 0 ideally
     weighted = weights[None, :] * gap               # (n_types, 3)
     cheb = weighted.max(axis=1)                     # (n_types,)
@@ -61,25 +34,16 @@ def scalarize_chebyshev(
 
 def scalarize(
     f: np.ndarray, method: str, weights: np.ndarray, rho: float,
-    ideal: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if method == "linear":
         return scalarize_linear(f, weights)
     if method == "chebyshev":
-        return scalarize_chebyshev(f, weights, rho, ideal)
-    if method == "eps_constraint":
-        # eps-constraint is an enumeration procedure over the whole LP, not a
-        # per-type scalar transform; it is handled in the Pareto notebook, not
-        # here. For the online loop we never call this branch.
-        raise NotImplementedError(
-            "eps_constraint is for Pareto enumeration, not per-type scalarization."
-        )
+        return scalarize_chebyshev(f, weights, rho)
     raise ValueError(f"unknown scalarization method: {method}")
 
 
-# --------------------------------------------------------------------------- #
+
 # LP-RS
-# --------------------------------------------------------------------------- #
 @dataclass
 class LPResult:
     optimum: float               # objective value  hat_lambda_*
@@ -117,7 +81,6 @@ def solve_lp_rs(
     vs = v[support]                                  # (n_support, |I|)
     ns = support.size
 
-    # objective coefficients: maximise sum ps*rs*x  ->  highs minimises, so negate
     obj = -(ps * rs)                                 # (ns,)
 
     # constraint matrix rows: sum_j (ps_j v_ij) x_j <= c_i

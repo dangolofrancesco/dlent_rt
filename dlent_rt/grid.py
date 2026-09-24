@@ -1,107 +1,160 @@
 """
-Myerson virtual valuation and the geometric discretization grid.
-
-The static DataGenerator already fits a lognormal to bids and precomputes
-phi_rate per job. For Phase 0 and for phase transitions we re-fit the empirical
-distribution on the batch at hand (lognormal MLE in log-space, matching the
-generator's model) and build the geometric grid over virtual values.
+Myerson virtual valuation and the valuation discretization grid.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
-from scipy.stats import lognorm
+
+# MyersonModel and fit_myerson have moved to bid.py.
+# Re-exported here for backwards compatibility.
+from .bid import MyersonModel, fit_myerson
 
 
+# Four spacing strategies
+def _edges_quantile(values: np.ndarray, k: int) -> np.ndarray:
+    """
+    Equal-MASS bins: edges at evenly spaced quantiles, so each bin holds ~n/k
+    observations. Strongly preferred for heavily skewed data -- geometric or
+    linear spacing on a skewed distribution starves most bins and piles all the
+    mass into one or two.
+    """
+    probs = np.linspace(0.0, 1.0, k + 1)
+    e = np.quantile(values, probs)
+    e = np.maximum.accumulate(e)
+    for i in range(1, len(e)):
+        if e[i] <= e[i - 1]:
+            e[i] = np.nextafter(e[i - 1], np.inf)
+    return e
+
+
+def _edges_geometric(values: np.ndarray, k: int, floor: float) -> np.ndarray:
+    """Multiplicative spacing (paper-faithful). Requires strictly positive values."""
+    lo = max(float(np.min(values)), floor)
+    hi = float(np.max(values))
+    if hi <= lo:
+        hi = lo * (1.0 + 1e-6)
+    ratio = (hi / lo) ** (1.0 / k)
+    return lo * ratio ** np.arange(k + 1)
+
+
+def _edges_log_linear(values: np.ndarray, k: int, floor: float) -> np.ndarray:
+    """Uniform spacing in log-space."""
+    lo = np.log(max(float(np.min(values)), floor))
+    hi = np.log(max(float(np.max(values)), floor * (1 + 1e-6)))
+    if hi <= lo:
+        hi = lo + 1e-6
+    return np.exp(np.linspace(lo, hi, k + 1))
+
+
+def _edges_linear(values: np.ndarray, k: int) -> np.ndarray:
+    """Uniform spacing in the native space."""
+    lo, hi = float(np.min(values)), float(np.max(values))
+    if hi <= lo:
+        hi = lo + 1e-9
+    return np.linspace(lo, hi, k + 1)
+
+
+def build_edges(values: np.ndarray, k: int, spacing: str, floor: float) -> np.ndarray:
+    if spacing == "quantile":
+        return _edges_quantile(values, k)
+    if spacing == "geometric":
+        return _edges_geometric(values, k, floor)
+    if spacing == "log_linear":
+        return _edges_log_linear(values, k, floor)
+    if spacing == "linear":
+        return _edges_linear(values, k)
+    raise ValueError(f"unknown spacing: {spacing}")
+
+
+
+# The valuation grid
 @dataclass
-class MyersonModel:
-    """A fitted lognormal bid model plus its Myerson transform."""
-    mu: float                 # log-space mean
-    sigma: float              # log-space std
-    phi_floor: float
+class ValuationGrid:
+    """
+    A K*-bin discretization of the valuation axis.
 
-    def phi(self, v: np.ndarray | float) -> np.ndarray | float:
-        """Myerson virtual value: phi(v) = v - (1 - F(v)) / f(v)."""
-        v = np.asarray(v, dtype=float)
-        scale = np.exp(self.mu)
-        F = lognorm.cdf(v, s=self.sigma, scale=scale)
-        f = lognorm.pdf(v, s=self.sigma, scale=scale)
-        inv_hazard = np.where(f > 1e-12, (1.0 - F) / f, 0.0)
-        return v - inv_hazard
+    `space` says WHICH quantity the edges live in:
+      "v"           -> edges are bids;            bnd_v = edges
+      "phi"         -> edges are virtual values;  bnd_v = phi^{-1}(edges)
+      "phi_shifted" -> edges are (phi + shift);   bnd_v = phi^{-1}(edges - shift)
 
-    def phi_inv(self, target_phi: np.ndarray | float,
-                v_lo: float = 1e-6, v_hi: float = 1e12) -> np.ndarray | float:
-        """
-        Invert phi numerically (phi is monotone increasing for a regular
-        lognormal). Vectorised bisection.
-        """
-        target = np.atleast_1d(np.asarray(target_phi, dtype=float))
-        lo = np.full_like(target, v_lo)
-        hi = np.full_like(target, v_hi)
-        for _ in range(80):
-            mid = 0.5 * (lo + hi)
-            pm = np.asarray(self.phi(mid))
-            go_up = pm < target
-            lo = np.where(go_up, mid, lo)
-            hi = np.where(go_up, hi, mid)
-        out = 0.5 * (lo + hi)
-        return out if out.size > 1 else float(out[0])
+    In every case `bnd_v` is the bid-space image of the edges, which is what the
+    payment rule and the reward's bin-floor term need.
 
-
-def fit_myerson(v_rate: np.ndarray, phi_floor: float) -> MyersonModel:
-    """Lognormal MLE in log-space on positive bids."""
-    v = v_rate[v_rate > 0]
-    logs = np.log(v)
-    mu = float(logs.mean())
-    sigma = float(logs.std(ddof=1)) if v.size > 1 else 1.0
-    sigma = max(sigma, 1e-6)
-    return MyersonModel(mu=mu, sigma=sigma, phi_floor=phi_floor)
-
-
-@dataclass
-class GeometricGrid:
-    """Geometric grid over virtual values with its bid-space image."""
-    bnd_phi: np.ndarray       # (K*+1,) virtual-value bin edges
-    bnd_v: np.ndarray         # (K*+1,) bid-space bin edges = phi^{-1}(bnd_phi)
+    `assign()` CLIPS rather than rejects when space is "v" or "phi_shifted", so
+    every arrival receives a bin. Only the legacy "phi" space can emit k=0.
+    """
+    edges: np.ndarray
+    bnd_v: np.ndarray
+    bnd_phi: np.ndarray
     k_star: int
-    ratio: float
+    space: str
+    spacing: str
+    shift: float = 0.0
+    rejects_below_floor: bool = False
 
-    def bin_of(self, phi_val: np.ndarray | float) -> np.ndarray | int:
-        """
-        Return the bin index k in {1,...,K*} for a virtual value, or 0 (bottom
-        sentinel, "below lowest bin floor" -> rigid IR reject) if below bnd_phi[0].
+    @property
+    def ratio(self) -> float:
+        lo, hi = float(self.edges[0]), float(self.edges[-1])
+        if lo <= 0 or hi <= 0:
+            return float("nan")
+        return (hi / lo) ** (1.0 / self.k_star)
 
-        Bin k covers [bnd_phi[k-1], bnd_phi[k]).
-        """
-        phi_val = np.atleast_1d(np.asarray(phi_val, dtype=float))
-        # searchsorted on the edges: idx in 0..K*+1
-        idx = np.searchsorted(self.bnd_phi, phi_val, side="right")
-        # idx == 0  -> below the lowest floor -> sentinel 0 (bot / reject)
-        # idx in 1..K* -> valid bin idx
-        # idx == K*+1 -> above the top edge -> clamp into the top bin K*
-        k = np.clip(idx, 0, self.k_star)
-        return k if k.size > 1 else int(k[0])
+    def _to_space(self, v, myerson):
+        if self.space == "v":
+            return v
+        ph = np.asarray(myerson.phi(v))
+        if self.space == "phi":
+            return ph
+        return ph + self.shift
+
+    def assign(self, v, myerson) -> np.ndarray:
+        """Map bids to bin indices k in 1..K* (0 = reject sentinel, legacy only)."""
+        x = np.atleast_1d(self._to_space(np.atleast_1d(np.asarray(v, float)), myerson))
+        idx = np.searchsorted(self.edges, x, side="right")
+        if self.rejects_below_floor:
+            k = np.clip(idx, 0, self.k_star)
+        else:
+            k = np.clip(idx, 1, self.k_star)
+        return k
 
 
-def build_geometric_grid(
-    phi_values: np.ndarray, k_star: int, phi_floor: float, myerson: MyersonModel
-) -> GeometricGrid:
-    """
-    Build the geometric grid over observed virtual values.
+def build_valuation_grid(
+    v_rate: np.ndarray, myerson: MyersonModel, k_star: int,
+    space: str, spacing: str, phi_floor: float,
+) -> ValuationGrid:
+    """Build the valuation grid in the configured space with the configured spacing."""
+    v_pos = v_rate[v_rate > 0]
 
-        Phi_min = max(min phi, phi_floor)   (guardrail against ratio blowup)
-        Phi_max = max phi
-        ratio   = (Phi_max / Phi_min)^(1/K*)
-        bnd_phi = [Phi_min * ratio^k for k in 0..K*]
-        bnd_v   = phi^{-1}(bnd_phi)
-    """
-    phi_min = max(float(np.min(phi_values)), phi_floor)
-    phi_max = float(np.max(phi_values))
-    if phi_max <= phi_min:
-        phi_max = phi_min * (1.0 + 1e-6)          # degenerate guard
-    ratio = (phi_max / phi_min) ** (1.0 / k_star)
-    ks = np.arange(k_star + 1)
-    bnd_phi = phi_min * ratio ** ks
-    bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
-    return GeometricGrid(bnd_phi=bnd_phi, bnd_v=bnd_v, k_star=k_star, ratio=ratio)
+    if space == "v":
+        edges = build_edges(v_pos, k_star, spacing, phi_floor)
+        bnd_v = edges.copy()
+        bnd_phi = np.asarray(myerson.phi(bnd_v))
+        shift, rejects = 0.0, False
+
+    elif space == "phi":
+        vals = np.asarray(myerson.phi(v_pos))
+        edges = build_edges(vals, k_star, spacing, phi_floor)
+        bnd_phi = edges.copy()
+        bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
+        shift, rejects = 0.0, True
+
+    elif space == "phi_shifted":
+        raw = np.asarray(myerson.phi(v_pos))
+        shift = float(-raw.min() + max(phi_floor, 1e-9))
+        vals = raw + shift
+        edges = build_edges(vals, k_star, spacing, phi_floor)
+        bnd_phi = edges - shift
+        bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
+        rejects = False
+
+    else:
+        raise ValueError(f"unknown grid space: {space}")
+
+    return ValuationGrid(
+        edges=edges, bnd_v=bnd_v, bnd_phi=bnd_phi, k_star=k_star,
+        space=space, spacing=spacing, shift=shift, rejects_below_floor=rejects,
+    )

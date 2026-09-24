@@ -1,138 +1,135 @@
-# ============================================================================
 # DLENT-RT default configuration
-# ----------------------------------------------------------------------------
-# Every experimental axis is a flag here so the ablation grid is a config sweep.
-# Values are the paper-faithful / sensible defaults; override per experiment.
-# ============================================================================
-
 run:
   name: "default"
   seed: 42                    # single seed controls every stochastic element
   output_dir: "runs"          # where per-step logs and summaries are written
   log_level: "INFO"
 
-# ----------------------------------------------------------------------------
 # Data ingestion
-# ----------------------------------------------------------------------------
 data:
-  batch_csv: "data/batch_may300k.csv"   # the fused per-job trace
-  n0: 5000                    # first N0 rows -> historical batch H (offline, Phase 0)
-                              # remainder -> online stream (never reuses H)
-  # Column names in the CSV (kept explicit so a schema change is a config edit,
-  # not a code edit).
+  batch_csv: "data/batch_may2019_30k.csv"
+  grid_csv: "data/grid_data_may_2019.csv"
+  n0: 20000
   columns:
     collection_id: "collection_id"
-    datetime: "job_datetime"
-    q: "q_j"
-    a_cpu: "A_cpu"
-    a_ram: "A_ram"
-    duration_hours: "D (hours)"
-    v_rate: "v_rate"
-    phi_rate: "phi_rate"
-    w_kw: "w_j_kw"
-    elec_price: "elec_price_per_kWh"
-    carbon_intensity: "carbon_intensity_gCO2_per_kWh"
-    c_elec: "C_elec"
-    c_carbon: "C_carbon"
+    datetime: "request_time"
+    priority: "priority"
+    scheduling_class: "scheduling_class"
+    requested_cpu: "CPU"
+    requested_ram: "RAM"
+    duration_hours: "duration"
 
-# ----------------------------------------------------------------------------
 # Time model
-# ----------------------------------------------------------------------------
 time:
-  # One step = one arrival (decision A1). Durations given in hours must be
-  # converted to an integer number of *arrival-steps*. The conversion uses the
-  # empirical arrival rate (arrivals per hour) estimated from the trace.
-  step_semantics: "one_arrival"
-  duration_unit: "hours"      # native unit of the D column
-  d_max_quantile: 0.95        # d_max candidate = this quantile of step-durations
+  step_semantics: "real_tick"
+  tick_seconds: 1.0           # wall-clock seconds per step (real_tick only)
+  d_max_quantile: 1.0         # candidate = this quantile of SURVIVOR step-durations.
+                              # Default 1.0 = literal max of survivors (outlier
+                              # removal already decided what's "extreme"; this
+                              # should not silently re-trim on top of that).
+                              # Set <1.0 only if you want additional conservatism
+                              # beyond outlier removal.
   d_max_horizon_fraction: 0.05  # HARD ceiling: d_max <= this * T (theory needs d_max << T)
   d_max_ratio_abort: 0.10     # abort with diagnostic if final d_max/T still exceeds this
+  duration_floor_hours: 0.016667  # 1 minute = 1/60 hour
 
-# ----------------------------------------------------------------------------
+
 # Hardware profile discretization
-# ----------------------------------------------------------------------------
-# Real Google-trace resource requests are continuous floats (near-unique per
-# job), which explodes the type space. We snap each job's (A_cpu, A_ram) to one
-# of a small fixed catalogue of canonical VM shapes, fitted on the FULL trace
-# (VM shapes are a static provider-side fact, not something learned online).
 hardware:
-  n_profiles: 12              # number of canonical shapes
+  n_profiles: 32              
   method: "kmeans"            # "kmeans" | "quantile_grid"
   log_space: true             # cluster in log-space (requests span orders of magnitude)
   fit_on: "full"              # "full" (H+stream) | "H"
+  hw_floor: 1.0e-5            # min hardware profile component; excludes degenerate
+                              # k-means centroids from gamma's v_min term only
 
-# ----------------------------------------------------------------------------
+
 # Outlier handling (resource requests and durations)
-# ----------------------------------------------------------------------------
-# The paper's guarantee needs a_max/c_i <= O(1/log T) and d_max << T. Raw trace
-# extremes (e.g. a collection aggregating thousands of tasks) violate these. We
-# drop the tail rather than clip, to keep every retained job's value exact.
 outliers:
   policy: "drop"              # "drop" | "clip"
-  a_max_quantile: 0.99        # resource-request cutoff (per resource, on the trace)
-  d_max_quantile: 0.95        # duration cutoff (hours); jobs longer are dropped/clipped
+  a_max_quantile: 0.90        # resource-request cutoff (per resource, on the trace)
+  d_max_quantile: 0.90        # duration cutoff (hours); jobs longer are dropped/clipped
   # xi safety check: warn if max_i a_max,i / c_i exceeds this after handling
   xi_warn_threshold: 0.10     # ~ 1/log(T) for T ~ 25k
 
-# ----------------------------------------------------------------------------
 # Cluster capacity
-# ----------------------------------------------------------------------------
 capacity:
   # mode "fraction_of_volume": c_i = fraction * sum_j (A_ij * D_j)  [core-hours]
   #   Matches the static simulator's b_i = rho * sum_j V_ij (load factor rho).
-  #   This is the DEFAULT and makes the fluid LP bind correctly.
-  # mode "fraction_of_peak": c_i = fraction * peak concurrent occupancy of
-  #   resource i over the online stream (physically meaningful "80% of peak").
+  # mode "fraction_of_peak": c_i = fraction * MAX concurrent occupancy over the
+  #   stream. For heavy-tailed workloads peak >> average, so the LP-RS (an
+  #   average-occupancy constraint) rarely binds here except at tiny fractions.
+  # mode "fraction_of_concurrency_quantile": c_i = fraction * (concurrency_quantile)
+  #   -th percentile of the concurrent-occupancy time series (not the max).
+  #   Sits between average and peak; this is the mode most likely to bind at
+  #   intuitive fractions (0.5-0.8) under a heavy-tailed real trace.
   # mode "absolute": c_i taken directly from `absolute` below (real deployments).
-  mode: "fraction_of_volume"
-  fraction: 0.60              # load factor rho (static sim used 0.60)
+  mode: "fraction_of_concurrency_quantile"
+  fraction: 0.40              # load factor rho (static sim used 0.60)
+  concurrency_quantile: 0.80   # used only by fraction_of_concurrency_quantile
   absolute:                   # used only when mode == "absolute"
     cpu: null
     ram: null
 
-# ----------------------------------------------------------------------------
-# Mechanism / objective weights
-# ----------------------------------------------------------------------------
-objective:
-  lambda1: 1.0                # customer satisfaction weight
-  lambda2: 1.0                # provider profit weight
-  lambda3: 1.0                # sustainability (carbon) weight
-  scc: 0.05                   # social cost of carbon ($ per gram CO2)
+energy_model:
+  spec_cpu_core: 64           # cores per 1.0 normalized CPU in Google trace
+  spec_ram_gb: 256            # GB per 1.0 normalized RAM in Google trace
+  p_core: 15.0                # watts per physical core (Fan et al. 2007)
+  p_gb: 0.35                  # watts per GB RAM
   pue: 1.10                   # power usage effectiveness
-  cpu_watts: 4.0              # per-unit CPU power draw (for w_j if recomputed)
-  ram_watts: 0.5              # per-unit RAM power draw
-  normalize: true             # normalize each objective to [0,1] via utopian z*
-                              # (matches static sim; makes Chebyshev rewards
-                              #  comparable and the r>=0 admissibility test valid)
 
-# ----------------------------------------------------------------------------
+bid:
+  strategy: "uniform"         # "uniform" | "lognormal"
+  gamma1: 0.02                # $/core-hour (Google Cloud ~$0.02-0.03/core-hour)
+  gamma2: 0.004               # $/GB-hour (Google Cloud ~$0.003-0.005/GB-hour)
+  sigma: 0.3                  # lognormal dispersion (only for lognormal strategy)
+  base_multiplier: 1.0
+  # Base utility rate ($/hour): minimum hourly value a user derives from job
+  # completion, independent of resource footprint. Multiplied by duration.
+  # Ref: reinterpretation suggested by advisor — demand-side utility rather
+  # than supply-side fee.
+  base_utility: 100.0
+
+normalization:
+  strategy: "common_currency"         # "per_job" | "common_currency"
+  # $/kgCO2 ($190/ton, US EPA 2023 Social Cost of Carbon, EPA-HQ-OAR-2021-0317,
+  # based on Rennert et al. Nature 2022)
+  carbon_tax_per_kg: 0.19
+
+
+
+# Mechanism / objective weights
+objective:
+  lambda1: 0.3
+  lambda2: 0.3
+  lambda3: 0.3
+
 # Discretization grid
-# ----------------------------------------------------------------------------
 grid:
-  k_star: 256                  # fixed number of geometric bins (constant across phases)
+  k_star: 128                  # fixed number of geometric bins (constant across phases)
   phi_floor: 1.0e-6           # clip Phi_min to avoid geometric-ratio blowup
   priority_classes: [1, 2, 3, 4, 5]
 
-# ----------------------------------------------------------------------------
 # Confidence / error parameters
-# ----------------------------------------------------------------------------
 confidence:
   delta: null                 # if null, set to 1/T^3 at runtime (T = online horizon)
   delta_power: 3              # delta = 1 / T^delta_power when delta is null
 
-# ----------------------------------------------------------------------------
 # Experimental axes (the ablation grid)
-# ----------------------------------------------------------------------------
 model:
   # "theory"    -> paper-faithful: true D at admission, single counter, vanilla Bernoulli
   # "practical" -> realistic: delayed D, dual counters, four-case gate, strategy-D
   kind: "theory"
 
 scalarization:
-  # "chebyshev"     -> canonical, single LP, reaches non-convex Pareto (default)
-  # "linear"        -> naive baseline
-  # "eps_constraint"-> for Pareto enumeration only (not inside the online loop)
-  method: "chebyshev"
+  # "linear"    -> weighted sum (default). Reward keeps an absolute sign, which is
+  #               what the online LP-RS admission oracle expects.
+  # "chebyshev" -> augmented Chebyshev distance-to-ideal. Reaches non-convex Pareto
+  #               regions, but produces reward <= 0 by construction: used directly
+  #               as the LP-RS reward it makes the oracle admit nothing. Intended
+  #               for offline Pareto-front enumeration in the analysis notebooks,
+  #               NOT for the online loop.
+  method: "linear"
   rho: 1.0e-3                 # augmentation term for augmented Chebyshev
 
 oracle:
@@ -155,33 +152,23 @@ phantom:
   # whether Case-B phantoms are re-revised in the in-flight loop (Step 3)
   revise_in_flight: false     # default: keep "what DLENT would have earned" semantics
 
-# ----------------------------------------------------------------------------
-# LP solver
-# ----------------------------------------------------------------------------
+# LP solver (HiGHS via highspy)
 lp:
-  solver: "highs"             # highspy
-  warm_start: true            # reuse basis across Test-3 windows
   presolve: true
 
-# ----------------------------------------------------------------------------
 # Test 3 cost control
-# ----------------------------------------------------------------------------
 test3:
   s_grid: "geometric"         # "geometric" | "full"
   geometric_base: 2           # s-checkpoints at tau_{m-1} + {0,1,2,4,8,...}
 
-# ----------------------------------------------------------------------------
 # Phase-transition fallback (thin types)
-# ----------------------------------------------------------------------------
 phase_transition:
   n_type_min: 5               # min observations for a type's stats to be trusted
   n_min: 80                   # min phase-arrival count to refit the grid (else reuse)
                               # (recommended: max(30, 5 * k_star))
   short_phase_tracking: true  # log short / consecutive-short phases
 
-# ----------------------------------------------------------------------------
 # Logging granularity
-# ----------------------------------------------------------------------------
 logging:
   per_step: true              # full per-step parquet log
   per_phase: true             # per-phase summary

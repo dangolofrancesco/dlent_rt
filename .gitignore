@@ -8,3 +8,9 @@ data/*.csv
 
 
 dlent_venv/
+
+.env
+
+cloud-pricing-sim-5f9d89ae03de.json
+
+data/
