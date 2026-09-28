@@ -158,7 +158,21 @@ def _build_job_arrays(
     )
 
 
-def _occupancy_events(stream: JobArrays) -> tuple[np.ndarray, np.ndarray]:
+@dataclass
+class _OccupancyBasis:
+    """
+    Minimal job-array view needed for occupancy/capacity sizing: arrival_step,
+    duration_steps, A. Lets _size_capacity operate on an arbitrary UNION of
+    job slices (e.g. H + stream, on a shared absolute timeline) without
+    building a full JobArrays (priority, scheduling_class, etc. are unused
+    here and would just be dead weight).
+    """
+    arrival_step: np.ndarray
+    duration_steps: np.ndarray
+    A: np.ndarray
+
+
+def _occupancy_events(jobs) -> tuple[np.ndarray, np.ndarray]:
     """
     Event-driven concurrent-occupancy computation.
 
@@ -168,13 +182,18 @@ def _occupancy_events(stream: JobArrays) -> tuple[np.ndarray, np.ndarray]:
     iterate over ticks (which under real_tick semantics could be millions);
     we only sort ~2n event points.
 
+    `jobs` needs only .arrival_step, .duration_steps, .A (JobArrays or
+    _OccupancyBasis) on a SHARED absolute timeline -- arrival_step values
+    from different slices that don't share an origin will silently produce
+    a meaningless occupancy series.
+
     Returns (times, occupancy) where occupancy[k] is the resource vector held
     during the half-open interval [times[k], times[k+1]).
     """
-    start = stream.arrival_step
-    end = start + stream.duration_steps
+    start = jobs.arrival_step
+    end = start + jobs.duration_steps
     times = np.concatenate([start, end])
-    deltas = np.concatenate([stream.A, -stream.A], axis=0)
+    deltas = np.concatenate([jobs.A, -jobs.A], axis=0)
 
     order = np.argsort(times, kind="stable")
     times = times[order]
@@ -182,14 +201,14 @@ def _occupancy_events(stream: JobArrays) -> tuple[np.ndarray, np.ndarray]:
 
     # collapse simultaneous events onto a single time point
     uniq_times, inv = np.unique(times, return_inverse=True)
-    agg = np.zeros((len(uniq_times), stream.A.shape[1]))
+    agg = np.zeros((len(uniq_times), jobs.A.shape[1]))
     np.add.at(agg, inv, deltas)
 
     occ = np.cumsum(agg, axis=0)
     return uniq_times, occ
 
 
-def _occupancy_stats(stream: JobArrays) -> dict:
+def _occupancy_stats(jobs) -> dict:
     """
     Peak and time-weighted quantiles of concurrent occupancy.
 
@@ -197,12 +216,15 @@ def _occupancy_stats(stream: JobArrays) -> dict:
     should count 10,000x more than one that lasts a single tick. A naive
     quantile over event points would be badly biased toward short-lived spikes.
 
+    `jobs` needs only .arrival_step, .duration_steps, .A on a shared absolute
+    timeline (JobArrays or _OccupancyBasis) -- see _occupancy_events.
+
     Returns: peak, levels, weights (used by _size_capacity) plus times, occ
     (the raw step function, used by the diagnostics notebook).
     """
-    times, occ = _occupancy_events(stream)
+    times, occ = _occupancy_events(jobs)
     if len(times) < 2:
-        peak = occ.max(axis=0) if len(occ) else np.zeros(stream.A.shape[1])
+        peak = occ.max(axis=0) if len(occ) else np.zeros(jobs.A.shape[1])
         return dict(peak=peak, times=times, occ=occ, weights=None)
 
     # each occupancy level occ[k] holds for (times[k+1] - times[k]) ticks
@@ -234,15 +256,27 @@ def _time_weighted_quantile(
     return out
 
 
-def _size_capacity(stream: JobArrays, cfg: Config) -> np.ndarray:
+def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
+    """
+    Size cluster capacity from `basis`'s resource-request/occupancy profile.
+
+    Capacity is sized on the FULL historical dataset (H + stream), not on
+    stream alone. Sizing on stream alone can misrepresent typical
+    concurrency if the stream window happens to capture a
+    non-representative slice of load (verified empirically: stream-only
+    concurrency was ~3x the full-dataset concurrency in one configuration).
+    `basis` must therefore be H and stream COMBINED on one shared absolute
+    timeline (see load_dataset), not `stream` by itself -- passing `stream`
+    alone silently reproduces the old, biased sizing.
+    """
     if cfg.capacity.mode == "fraction_of_volume":
-        volume = (stream.A * stream.duration_steps[:, None]).sum(axis=0)
+        volume = (basis.A * basis.duration_steps[:, None]).sum(axis=0)
         return cfg.capacity.fraction * volume
     elif cfg.capacity.mode == "fraction_of_peak":
-        stats = _occupancy_stats(stream)
+        stats = _occupancy_stats(basis)
         return cfg.capacity.fraction * stats["peak"]
     elif cfg.capacity.mode == "fraction_of_concurrency_quantile":
-        stats = _occupancy_stats(stream)
+        stats = _occupancy_stats(basis)
         if stats.get("weights") is None:
             return cfg.capacity.fraction * stats["peak"]
         qv = _time_weighted_quantile(
@@ -368,9 +402,14 @@ def load_dataset(cfg: Config) -> Dataset:
     df_stream = df[df[col.datetime] > last_h_time].reset_index(drop=True)
 
     steps_H = df_H["_step"].to_numpy()
-    steps_stream = df_stream["_step"].to_numpy()
-    stream_origin = steps_stream[0]
-    steps_stream = steps_stream - stream_origin
+    # steps_stream_abs keeps the ORIGINAL absolute step index (shared origin
+    # with steps_H, i.e. t0 = dts[0] of the full dataset) -- needed below to
+    # build a capacity-sizing basis that spans H and stream on one timeline.
+    # steps_stream is then re-based to 0 at the stream's own start, which is
+    # what the rest of the online loop (T, stream.arrival_step) expects.
+    steps_stream_abs = df_stream["_step"].to_numpy()
+    stream_origin = steps_stream_abs[0]
+    steps_stream = steps_stream_abs - stream_origin
     T = int(steps_stream[-1]) + 1
     H_span_steps = int(steps_H[-1] - steps_H[0]) + 1
 
@@ -393,8 +432,16 @@ def load_dataset(cfg: Config) -> Dataset:
     stream = _build_job_arrays(df_stream, cfg, resources,
                                d_max_steps, catalogue, steps_stream)
 
-    
-    capacity = _size_capacity(stream, cfg)
+    # Capacity is sized on H + stream COMBINED, on the shared absolute
+    # timeline (steps_H, steps_stream_abs) -- NOT on stream.arrival_step,
+    # which is re-based to 0 and would misalign with steps_H. See
+    # _size_capacity's docstring for why stream alone is not used.
+    capacity_basis = _OccupancyBasis(
+        arrival_step=np.concatenate([steps_H, steps_stream_abs]),
+        duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
+        A=np.concatenate([H.A, stream.A], axis=0),
+    )
+    capacity = _size_capacity(capacity_basis, cfg)
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
 

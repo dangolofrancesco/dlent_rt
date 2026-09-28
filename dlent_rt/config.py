@@ -62,10 +62,27 @@ class BidCfg:
     # job completion, independent of resource footprint. Multiplied by
     # duration. Ref: reinterpretation suggested by advisor — demand-side
     # utility rather than supply-side fee.
-    base_utility: float = 50.0
+    # U_0: the single free parameter of base_utility_mode. Calibrated via
+    # calibrate_base_utility_u0 (bisection on Phase 0's pos_reward_types,
+    # target_pos_frac=0.90) against bid.strategy="lognormal", sigma=0.3 --
+    # NOT against this dataclass's own strategy default ("uniform"), so if
+    # bid.strategy is changed away from "lognormal"/sigma=0.3 this value no
+    # longer hits that 90% target and should be recalibrated.
+    base_utility_u0: float = 23.926
+    # How U_base(q) scales with priority q in {1,...,5}:
+    #   "linear" -> U_base(q) = u0 * q
+    #   "log"    -> U_base(q) = u0 * (1 + ln(q))
+    base_utility_mode: str = "log"
     # uniform params
-    gamma1: float = 0.02            # $/core-hour reserve price
-    gamma2: float = 0.004           # $/GB-hour reserve price
+    # Anchored to GCP Preemptible VM pricing (n1-standard class, public
+    # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
+    # pricing for comparable instance classes falls in the same order of
+    # magnitude. These values were independently confirmed (not derived) by
+    # an empirical grid search targeting pos_reward_types, which converged
+    # to the same order of magnitude -- used here as a consistency check,
+    # not as the primary justification.
+    gamma1: float = 0.01            # $/core-hour reserve price
+    gamma2: float = 0.002           # $/GB-hour reserve price
     # lognormal params
     sigma: float = 1.5              # bid dispersion
     base_multiplier: float = 1.0
@@ -287,6 +304,7 @@ class Config:
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0
         assert self.bid.strategy in ("uniform", "lognormal")
+        assert self.bid.base_utility_mode in ("linear", "log")
         assert self.normalization.strategy in (
             "per_job", "moving_avg", "common_currency", "utopian")
         assert self.energy_model.spec_cpu_core > 0

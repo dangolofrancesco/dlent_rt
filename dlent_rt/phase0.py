@@ -23,7 +23,7 @@ The output `PhaseState` is the object both the theory and practical models read.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import numpy as np
@@ -56,7 +56,8 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
     if cfg.bid.strategy == "uniform":
         params = UniformBidParams(
             gamma1=cfg.bid.gamma1, gamma2=cfg.bid.gamma2,
-            base_utility=cfg.bid.base_utility,
+            base_utility_u0=cfg.bid.base_utility_u0,
+            base_utility_mode=cfg.bid.base_utility_mode,
             spec_cpu_core=cfg.energy_model.spec_cpu_core,
             spec_ram_gb=cfg.energy_model.spec_ram_gb,
         )
@@ -68,7 +69,8 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
         params = LognormalBidParams(
             sigma=cfg.bid.sigma,
             base_multiplier=cfg.bid.base_multiplier,
-            base_utility=cfg.bid.base_utility,
+            base_utility_u0=cfg.bid.base_utility_u0,
+            base_utility_mode=cfg.bid.base_utility_mode,
             gamma1=cfg.bid.gamma1,
             gamma2=cfg.bid.gamma2,
             spec_cpu_core=cfg.energy_model.spec_cpu_core,
@@ -76,7 +78,7 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
         )
         return synthesize_lognormal(
             jobs.A[:, 0], jobs.A[:, 1],
-            jobs.duration_hours, params, rng,
+            jobs.duration_hours, jobs.priority, params, rng,
         )
 
 
@@ -500,3 +502,48 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         norm_degenerate=norm_deg,
         n_types_hw_degenerate=n_types_hw_degenerate,
     )
+
+
+
+def calibrate_base_utility_u0(
+    ds: Dataset, cfg: Config,
+    mode: str, strategy: str,
+    sigma: Optional[float] = None,   # only used when strategy == "lognormal"
+    target_pos_frac: float = 0.90,
+    seed: int = 42,
+    lo: float = 0.0, hi: float = 500.0, tol: float = 0.5, max_iter: int = 25,
+) -> float:
+    """
+    Bisection search for the smallest U_0 such that the fraction of
+    POPULATED TYPES with r_tilde > 0 (pos_reward_types) reaches
+    target_pos_frac, for the given base_utility_mode and bid strategy.
+
+    Calibrating on the raw per-job phi(v) > 0 fraction instead would be a
+    no-op: for both the uniform and lognormal bid models, cost_base enters
+    v (and hence phi(v)) as a pure per-job scale factor, so phi(v)'s SIGN
+    depends only on the job's priority (via M, uniform) or on sigma
+    (lognormal) -- never on cost_base's magnitude, and therefore never on
+    U_0. U_0 only starts to matter once bids are aggregated into r_tilde
+    per type together with W and C, where it shifts V_prof's magnitude
+    relative to the other two (already-normalized) objectives.
+    """
+    def pos_frac(u0: float) -> float:
+        cfg_i = replace(cfg, bid=replace(
+            cfg.bid, strategy=strategy, base_utility_u0=u0, base_utility_mode=mode,
+            sigma=sigma if sigma is not None else cfg.bid.sigma,
+        ), run=replace(cfg.run, seed=seed))
+        st_i = run_phase0(ds, cfg_i)
+        m_i = st_i.p > 0
+        return float((st_i.r_tilde[m_i] > 0).mean()) if np.any(m_i) else 0.0
+
+    if pos_frac(lo) >= target_pos_frac:
+        return lo
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        if pos_frac(mid) < target_pos_frac:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < tol:
+            break
+    return hi

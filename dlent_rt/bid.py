@@ -49,12 +49,35 @@ def fit_myerson(v_rate: np.ndarray) -> MyersonModel:
     return MyersonModel(mu=mu, sigma=sigma)
 
 
+def compute_base_utility(
+    priority: np.ndarray, u0: float, mode: str,
+) -> np.ndarray:
+    """
+    Priority-dependent base utility rate ($/hour).
+
+    "linear": U_base(q) = u0 * q
+    "log":    U_base(q) = u0 * (1 + ln(q))
+
+    Ref: Zheng et al. (2015) "Star: SLA-aware autonomic management of
+    cloud resources" — base utility scales with SLA/priority tier;
+    Zhang et al. (2017) "An Online Mechanism for Cloud Resource
+    Allocation" — job-type coefficient modulating valuation floor.
+    """
+    if mode == "linear":
+        return u0 * priority
+    elif mode == "log":
+        return u0 * (1.0 + np.log(priority))
+    else:
+        raise ValueError(f"unknown base_utility_mode: {mode}")
+
+
 @dataclass
 class UniformBidParams:
     """Parameters for the cost-based uniform bid synthesis."""
     gamma1: float = 0.02       # $/core-hour (infrastructure reserve price)
     gamma2: float = 0.004      # $/GB-hour (infrastructure reserve price)
-    base_utility: float = 50.0
+    base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
+    base_utility_mode: str = "log"  # "linear" | "log"
     spec_cpu_core: float = 64  # cores per 1.0 normalized CPU
     spec_ram_gb: float = 256   # GB per 1.0 normalized RAM
 
@@ -62,9 +85,10 @@ class UniformBidParams:
 @dataclass
 class LognormalBidParams:
     """Parameters for the legacy lognormal bid synthesis."""
-    sigma: float = 1.5         
+    sigma: float = 1.5
     base_multiplier: float = 1.0
-    base_utility: float = 50.0
+    base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
+    base_utility_mode: str = "log"  # "linear" | "log"
     gamma1: float = 0.01
     gamma2: float = 0.002
     spec_cpu_core: float = 64  # cores per 1.0 normalized CPU
@@ -90,8 +114,11 @@ def synthesize_uniform(
     """
     cpu_cores = cpu_norm * params.spec_cpu_core
     ram_gb = ram_norm * params.spec_ram_gb
+    base_utility = compute_base_utility(
+        priority, params.base_utility_u0, params.base_utility_mode,
+    )
     cost_base = (
-        params.base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
+        base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
     ) * duration_hours
     cost_base = np.maximum(cost_base, 1e-9)  # avoid zero
 
@@ -108,13 +135,16 @@ def synthesize_uniform(
 
 def synthesize_lognormal(
     cpu_norm: np.ndarray, ram_norm: np.ndarray,
-    duration_hours: np.ndarray,
+    duration_hours: np.ndarray, priority: np.ndarray,
     params: LognormalBidParams, rng: np.random.Generator,
 ) -> BidResult:
     cpu_cores = cpu_norm * params.spec_cpu_core
     ram_gb = ram_norm * params.spec_ram_gb
+    base_utility = compute_base_utility(
+        priority, params.base_utility_u0, params.base_utility_mode,
+    )
     cost_base = (
-        params.base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
+        base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
     ) * duration_hours
     cost_base = np.maximum(cost_base, 1e-9)
     mu = np.log(cost_base) - (params.sigma ** 2) / 2.0

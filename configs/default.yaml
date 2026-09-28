@@ -54,10 +54,16 @@ outliers:
 
 # Cluster capacity
 capacity:
+  # All modes below size capacity on the FULL historical dataset (H + stream
+  # combined, on one shared timeline) -- NOT on stream alone. Sizing on
+  # stream alone can misrepresent typical concurrency if the stream window
+  # happens to capture a non-representative slice of load (verified
+  # empirically: stream-only concurrency was ~3x the full-dataset
+  # concurrency in one configuration). See _size_capacity in data.py.
   # mode "fraction_of_volume": c_i = fraction * sum_j (A_ij * D_j)  [core-hours]
   #   Matches the static simulator's b_i = rho * sum_j V_ij (load factor rho).
-  # mode "fraction_of_peak": c_i = fraction * MAX concurrent occupancy over the
-  #   stream. For heavy-tailed workloads peak >> average, so the LP-RS (an
+  # mode "fraction_of_peak": c_i = fraction * MAX concurrent occupancy. For
+  #   heavy-tailed workloads peak >> average, so the LP-RS (an
   #   average-occupancy constraint) rarely binds here except at tiny fractions.
   # mode "fraction_of_concurrency_quantile": c_i = fraction * (concurrency_quantile)
   #   -th percentile of the concurrent-occupancy time series (not the max).
@@ -79,24 +85,36 @@ energy_model:
   pue: 1.10                   # power usage effectiveness
 
 bid:
-  strategy: "uniform"         # "uniform" | "lognormal"
-  gamma1: 0.02                # $/core-hour (Google Cloud ~$0.02-0.03/core-hour)
-  gamma2: 0.004               # $/GB-hour (Google Cloud ~$0.003-0.005/GB-hour)
+  strategy: "lognormal"         # "uniform" | "lognormal"
+  # Anchored to GCP Preemptible VM pricing (n1-standard class, public
+  # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
+  # pricing for comparable instance classes falls in the same order of
+  # magnitude. These values were independently confirmed (not derived) by
+  # an empirical grid search targeting pos_reward_types, which converged
+  # to the same order of magnitude -- used here as a consistency check,
+  # not as the primary justification.
+  gamma1: 0.0332                # $/core-hour reserve price
+  gamma2: 0.00445               # $/GB-hour reserve price
   sigma: 0.3                  # lognormal dispersion (only for lognormal strategy)
   base_multiplier: 1.0
   # Base utility rate ($/hour): minimum hourly value a user derives from job
   # completion, independent of resource footprint. Multiplied by duration.
   # Ref: reinterpretation suggested by advisor — demand-side utility rather
   # than supply-side fee.
-  base_utility: 100.0
+  # U_0: the single free parameter of base_utility_mode. Calibrated via
+  # calibrate_base_utility_u0 (bisection on Phase 0's pos_reward_types,
+  # target_pos_frac=0.90) against strategy="lognormal", sigma=0.3 -- NOT
+  # against this file's own strategy default ("uniform"), so if strategy
+  # is changed away from "lognormal"/sigma=0.3 this value no longer hits
+  # that 90% target and should be recalibrated.
+  base_utility_u0: 23.926
+  base_utility_mode: "log"    # "linear" | "log"
 
 normalization:
   strategy: "common_currency"         # "per_job" | "common_currency"
   # $/kgCO2 ($190/ton, US EPA 2023 Social Cost of Carbon, EPA-HQ-OAR-2021-0317,
   # based on Rennert et al. Nature 2022)
   carbon_tax_per_kg: 0.19
-
-
 
 # Mechanism / objective weights
 objective:
