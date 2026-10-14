@@ -73,6 +73,7 @@ def test_negative_share_matches_theory(sigma):                         # (b)
         assert p == pytest.approx(0.167, abs=1e-3)
 
 
+@pytest.mark.slow   # real trace (default_config), full online run
 def test_same_phi_everywhere(known_run):                               # (c)
     cfg, ds, m, res = known_run
     st0, S = m.state0, m.stream
@@ -99,6 +100,7 @@ def test_same_phi_everywhere(known_run):                               # (c)
     np.testing.assert_allclose(phi_mech, np.asarray(f0(S.v, S.cost_base)), rtol=1e-12)
 
 
+@pytest.mark.slow   # real trace (default_config), full online run
 def test_sigma_constant_across_phases(known_run):                      # (d)
     cfg, ds, m, res = known_run
     sig = cfg.bid.sigma
@@ -108,6 +110,7 @@ def test_sigma_constant_across_phases(known_run):                      # (d)
     assert all(np.isnan(st.phi_tilde).all() for st in m.states)        # no pooled phi(L) per type
 
 
+@pytest.mark.slow   # real trace (default_config), full online run
 def test_threshold_price_logged(known_run):
     cfg, ds, m, res = known_run
     for a in res.arrivals:
@@ -119,6 +122,7 @@ def test_threshold_price_logged(known_run):
             assert a["threshold_markup"] == pytest.approx(a["threshold_price"] / a["cost_base"])
 
 
+@pytest.mark.slow   # real trace (default_config), full online run
 def test_known_false_reproduces_previous_numbers():                    # (e)
     g = np.load(GOLDEN)
     cfg, ds, m, res = _run(False)

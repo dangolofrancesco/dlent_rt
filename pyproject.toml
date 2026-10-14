@@ -22,3 +22,8 @@ notebooks = ["matplotlib>=3.7", "jupyter", "pyarrow>=12.0"]
 
 [tool.setuptools.packages.find]
 include = ["dlent_rt*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: runs the online loop on the real trace (minutes); fast suite: pytest -m \"not slow\"",
+]
