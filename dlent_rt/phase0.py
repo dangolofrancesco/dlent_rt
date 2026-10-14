@@ -7,7 +7,7 @@ Computes everything the online loop needs to start its first phase:
   - Energy model (power draw from CPU/RAM/scheduling_class)
   - Grid-data lookup (electricity price + carbon intensity at request_time)
   - Per-type statistics (p, d_bar, v_bar, phi_bar, energy, costs)
-  - Normalization (per_job / moving_avg / common_currency / utopian / quantile_linear)
+  - Carbon price s_C (quantile_linear), additive dollar reward
   - Scalarized reward r_tilde
   - LP-RS -> shadow prices tau* and benchmark lambda*
 
@@ -16,10 +16,10 @@ RAW OBJECTIVES USE PER-TYPE SAMPLE MEANS:
   L. Using phi(L) causes systematically negative raw_prof because bin floors
   are small (geometric grid -> many tiny L values -> phi(L) << 0). Using
   phi_bar = mean(phi(v)) over the jobs in each type reflects the actual job
-  values and produces meaningful single-objective ("utopian") optima.
+  values.
   The bin floor L is retained only for the payment rule (phi_tilde).
 
-The output `PhaseState` is the object both the theory and practical models read.
+The output `PhaseState` is the object the online model reads.
 """
 from __future__ import annotations
 
@@ -144,32 +144,25 @@ def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndar
 def scalarized_reward(
     priority_of_type: np.ndarray, v_bar: np.ndarray, phi_bar: np.ndarray,
     C_elec_bar: np.ndarray, C_carbon_bar: np.ndarray, p: np.ndarray,
-    v: np.ndarray, ds, cfg: Config, common_scale: Optional[float] = None,
-    carbon_price: Optional[float] = None,
+    v: np.ndarray, ds, cfg: Config, carbon_price: Optional[float] = None,
 ):
     """
     Steps 9-11 of run_phase0 factored out so EndPhaseAndReinitialize reuses the
-    exact same reward construction. `common_scale` freezes the common_currency
-    scale s (the online loop passes Phase 0's s so r_tilde stays on one scale
-    across phases). `carbon_price` freezes the quantile_linear carbon price s_C
-    in the same way (ReInit passes Phase 0's s_C; it is never recomputed on the
-    stream). Returns (r_tilde, r_nocarbon, norm_ref, norm_info).
+    exact same reward construction. `carbon_price` freezes the quantile_linear
+    carbon price s_C (ReInit passes Phase 0's s_C; it is never recomputed on the
+    stream). Returns (r_tilde, r_nocarbon, norm_info).
     """
     lam = cfg.objective
     raw_sat  = priority_of_type * v_bar
     raw_prof = phi_bar - C_elec_bar
     raw_carb = C_carbon_bar
-    V_sat, V_prof, V_carb, norm_ref, norm_info = _normalize_objectives(
-        raw_sat, raw_prof, raw_carb, p, v, ds, cfg, common_scale=common_scale,
-        carbon_price=carbon_price,
+    V_sat, V_prof, V_carb, norm_info = _normalize_objectives(
+        raw_sat, raw_prof, raw_carb, p, cfg, carbon_price=carbon_price,
     )
-    if cfg.normalization.strategy == "utopian":
-        f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, lam.lambda3 * V_carb])
-    else:
-        f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
+    f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
     r_nocarbon = lam.lambda1 * V_sat + lam.lambda2 * V_prof
     r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
-    return r_tilde, r_nocarbon, norm_ref, norm_info
+    return r_tilde, r_nocarbon, norm_info
 
 
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
@@ -217,13 +210,11 @@ class PhaseState:
     eps_D: float
 
     n_types: int
-    norm_ref: Optional[tuple] = None
-    norm_strategy: str = "common_currency"  # always overwritten in run_phase0
+    norm_strategy: str = "quantile_linear"
     n_ir_rejected: int = 0
     n_assigned: int = 0
     n_types_hw_degenerate: int = 0
-    # $/kgCO2 actually applied to C_carbon_bar: s_C for quantile_linear (frozen
-    # at Phase 0), cfg.normalization.carbon_tax_per_kg for the other strategies.
+    # $/kgCO2 applied to C_carbon_bar: s_C (quantile_linear), frozen at Phase 0
     carbon_price: float = 0.0             # always overwritten in run_phase0
     norm_info: Optional[dict] = None      # quantile_linear: q, Q_sw, Q_abs_pi, D_q, K_q, s_C
 
@@ -346,80 +337,26 @@ def carbon_scale_from_quantile(
 
 def _normalize_objectives(
     raw_sat: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
-    p: np.ndarray, v: np.ndarray, ds: Dataset, cfg: Config,
-    common_scale: Optional[float] = None,
-    carbon_price: Optional[float] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[tuple], Optional[dict]]:
+    p: np.ndarray, cfg: Config, carbon_price: Optional[float] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
-    Dispatch normalization by cfg.normalization.strategy.
-    Returns (V_sat, V_prof, V_carb, norm_ref, norm_info).
-
-    Strategy reference (this function is the single source of truth; there is
-    no separate normalization module):
-
-      "per_job"        each objective is rescaled to roughly [-1, 1] by its own
-                       largest absolute value across populated types. Simple,
-                       scale-free, and the recommended default.
-      "common_currency"  carbon (kgCO2) is first monetised via a carbon tax so
-                       that all three objectives are in dollars, then all three
-                       are divided by ONE shared scale so their real dollar
-                       magnitudes stay comparable (see the branch comment).
-      "quantile_linear"  carbon is mapped to dollars linearly through the
-                       origin, C$ = s_C * K, with s_C = D_q / K_q chosen so the
-                       q-quantile of K lands on the mean of the q-quantiles of
-                       SW and |Pi| (carbon_scale_from_quantile). No divisor:
-                       the reward stays in dollars and norm_ref = (1, 1, 1).
-                       `carbon_price` freezes s_C (ReInit passes Phase 0's).
+    quantile_linear (the only normalization): carbon is mapped to dollars
+    linearly through the origin, C$ = s_C * K, with s_C = D_q / K_q chosen so
+    the q-quantile of K lands on the mean of the q-quantiles of SW and |Pi|
+    (carbon_scale_from_quantile). No divisor: the reward stays in dollars.
+    s_C is computed once on Phase 0's H; `carbon_price` freezes it (ReInit
+    passes Phase 0's, it is never recomputed on the stream).
+    Returns (V_sat, V_prof, V_carb, norm_info).
     """
-    strategy = cfg.normalization.strategy
-    norm_info = None
-
-    def _span(arr: np.ndarray) -> float:
-        return max(float(np.max(np.abs(arr[p > 0]))) if np.any(p > 0) else 1.0, 1e-12)
-
-    if strategy == "per_job":
-        # Each objective scaled to ~[-1, 1] by its own max abs value over
-        # populated types. Carbon gets no extra scalar here: its relative
-        # weight is objective.lambda3, applied uniformly across strategies.
-        V_sat  = raw_sat  / _span(raw_sat)
-        V_prof = raw_prof / _span(raw_prof)
-        V_carb = raw_carb / _span(raw_carb)
-        norm_ref = (_span(raw_sat), _span(raw_prof), _span(raw_carb))
-
-    elif strategy == "common_currency":
-        # Convert carbon from kgCO2 to $ via carbon tax. All three are now in dollars.
-        carbon_tax = cfg.normalization.carbon_tax_per_kg
-        raw_carb_dollar = raw_carb * carbon_tax  # kgCO2 -> $
-
-        # Divide ALL THREE by ONE shared scale (the largest dollar magnitude
-        # across the three objectives, over populated types). 
-        common = (max(_span(raw_sat), _span(raw_prof), _span(raw_carb_dollar))
-                  if common_scale is None else float(common_scale))
-        V_sat  = raw_sat         / common
-        V_prof = raw_prof        / common
-        V_carb = raw_carb_dollar / common
-
-        norm_ref = (common, common, common)
-
-    elif strategy == "quantile_linear":
-        # s_C [$/kgCO2] computed once on Phase 0's H, then frozen (ReInit).
-        if carbon_price is None:
-            norm_info = carbon_scale_from_quantile(
-                raw_sat, raw_prof, raw_carb, p, cfg.normalization.quantile)
-            s_C = norm_info["s_C"]
-        else:
-            s_C = float(carbon_price)
-            norm_info = dict(q=cfg.normalization.quantile, s_C=s_C, frozen=True)
-        norm_info = dict(strategy=strategy, **norm_info)
-        V_sat  = raw_sat
-        V_prof = raw_prof
-        V_carb = raw_carb * s_C
-        norm_ref = (1.0, 1.0, 1.0)
-
+    if carbon_price is None:
+        norm_info = carbon_scale_from_quantile(
+            raw_sat, raw_prof, raw_carb, p, cfg.normalization.quantile)
+        s_C = norm_info["s_C"]
     else:
-        raise ValueError(f"Unknown normalization strategy: {strategy}")
-
-    return V_sat, V_prof, V_carb, norm_ref, norm_info
+        s_C = float(carbon_price)
+        norm_info = dict(q=cfg.normalization.quantile, s_C=s_C, frozen=True)
+    norm_info = dict(strategy="quantile_linear", **norm_info)
+    return raw_sat, raw_prof, raw_carb * s_C, norm_info
 
 
 # Phase 0 entry point
@@ -488,12 +425,11 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
             "enumeration notebooks.",
             RuntimeWarning,
         )
-    r_tilde, r_nocarbon, norm_ref, norm_info = scalarized_reward(
+    r_tilde, r_nocarbon, norm_info = scalarized_reward(
         priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar,
         p, v, ds, cfg,
     )
-    carbon_price = (norm_info["s_C"] if cfg.normalization.strategy == "quantile_linear"
-                    else cfg.normalization.carbon_tax_per_kg)
+    carbon_price = norm_info["s_C"]
 
     # 12. System constants
     # r_max for gamma: p-weighted quantile of |r_tilde| over populated types
@@ -545,8 +481,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         v=v, L=L, phi_tilde=phi_tilde,
         tau=tau, lam_star=lp.optimum,
         gamma=gamma, xi=xi, eps_D=eps_D,
-        n_types=n_types, norm_ref=norm_ref,
-        norm_strategy=cfg.normalization.strategy,
+        n_types=n_types,
         n_ir_rejected=stats["n_ir_rejected"],
         n_assigned=stats["n_assigned"],
         n_types_hw_degenerate=n_types_hw_degenerate,

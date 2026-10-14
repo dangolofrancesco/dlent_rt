@@ -56,5 +56,5 @@ def synthetic_config(tmpdir: Path, n0: int = 1000, **kw):
         grid=replace(cfg.grid, k_star=16),
         hardware=replace(cfg.hardware, n_profiles=6),
         time=replace(cfg.time, d_max_horizon_fraction=0.10, d_max_ratio_abort=0.2),
-        normalization=replace(cfg.normalization, strategy="quantile_linear", quantile=0.90),
+        normalization=replace(cfg.normalization, quantile=0.90),
     )

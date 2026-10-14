@@ -71,7 +71,7 @@ def test_type_job_identity(which):
     T = int(ds.T)
     idx = np.arange(S.n)
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
-    st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, common_scale=st0.norm_ref[0], fallback=False)
+    st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, fallback=False)
     tid = assign_type_ids(st_ref.type_space, st_ref.grid.assign(S.v, st_ref.myerson), S.priority, S.hw_idx)
     assert (tid >= 0).all()
     N = np.bincount(tid, minlength=st_ref.n_types).astype(float)

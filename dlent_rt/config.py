@@ -49,14 +49,10 @@ class EnergyModelCfg:
 
 @dataclass(frozen=True)
 class NormalizationCfg:
-    # "quantile_linear" | "per_job" | "common_currency"
-    strategy: str = "quantile_linear"
-    # quantile_linear only: q of the weighted quantiles Q_q(SW), Q_q(|Pi|), Q_q(K)
-    # that set the carbon price s_C = D_q / K_q (frozen at Phase 0).
+    # quantile_linear (the only normalization): q of the weighted quantiles
+    # Q_q(SW), Q_q(|Pi|), Q_q(K) that set the carbon price s_C = D_q / K_q
+    # (frozen at Phase 0). The reward stays in dollars (no divisor).
     quantile: float = 0.90
-    # $/kgCO2 ($190/ton, US EPA 2023 Social Cost of Carbon, EPA-HQ-OAR-2021-0317, based on Rennert et al. Nature 2022)
-    # Used only by common_currency.
-    carbon_tax_per_kg: float = 0.19
 
 @dataclass(frozen=True)
 class BidCfg:
@@ -353,12 +349,9 @@ class Config:
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
             assert self.bid.sigma > 0
         assert self.bid.base_utility_mode in ("linear", "log")
-        assert self.normalization.strategy in (
-            "per_job", "moving_avg", "common_currency", "utopian", "quantile_linear")
         assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.spec_cpu_core > 0
         assert self.energy_model.spec_ram_gb > 0
-        assert self.normalization.carbon_tax_per_kg >= 0
         assert self.test3.s_grid in ("geometric", "full")
         assert self.test3.geometric_base >= 2
         if self.constants.xi_override is not None:

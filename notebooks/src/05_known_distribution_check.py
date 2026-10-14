@@ -68,7 +68,7 @@ SIGMA = NEW.bid.sigma
 L1, L2, L3 = NEW.objective.lambda1, NEW.objective.lambda2, NEW.objective.lambda3
 print(f"seed: run.seed={NEW.run.seed} (H bids), stream bids={NEW.run.seed + NEW.online.bid_seed_offset}, "
       f"thinning={NEW.run.seed + NEW.online.thinning_seed_offset}")
-print(f"bid: {NEW.bid.strategy} sigma={SIGMA}  normalization: {NEW.normalization.strategy} "
+print(f"bid: {NEW.bid.strategy} sigma={SIGMA}  normalization: quantile_linear "
       f"q={NEW.normalization.quantile}  capacity: {NEW.capacity.mode} fraction={NEW.capacity.fraction}  "
       f"model: {NEW.model.kind}")
 

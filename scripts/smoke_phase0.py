@@ -38,13 +38,11 @@ def main():
     ap.add_argument("--semantics", default="real_tick",
                     choices=["real_tick"])
     ap.add_argument("--tick-seconds", type=float, default=1.0)
-    # --scalarization / --normalization default to None (not a config value) so
+    # --scalarization defaults to None (not a config value) so
     # that an explicit --config is respected when the user does not also pass
     # these flags. Only override the loaded config when the flag IS given.
     ap.add_argument("--scalarization", default=None,
                     choices=["linear", "chebyshev"])
-    ap.add_argument("--normalization", default=None,
-                    choices=["per_job", "moving_avg", "common_currency", "utopian", "quantile_linear"])
     args = ap.parse_args()
 
     cfg = load_config(args.config) if args.config else default_config()
@@ -64,12 +62,6 @@ def main():
                 cfg.scalarization, method=args.scalarization,
             ),
         )
-    if args.normalization is not None:
-        cfg = dataclasses.replace(
-            cfg, normalization=dataclasses.replace(
-                cfg.normalization, strategy=args.normalization,
-            ),
-        )
     cfg = cfg.validate()
 
     print("=" * 70)
@@ -78,7 +70,7 @@ def main():
     print(f"csv={args.csv}  n0={args.n0}  semantics={args.semantics}")
     print(f"capacity={cfg.capacity.mode}  "
           f"scalarization={cfg.scalarization.method}")
-    print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization={cfg.normalization.strategy}")
+    print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization=quantile_linear q={cfg.normalization.quantile}")
     print()
 
     ds = load_dataset(cfg)
@@ -148,7 +140,7 @@ def main():
 
     print("[phase 0]")
     print(f"  bid strategy: {cfg.bid.strategy}")
-    print(f"  normalization: {cfg.normalization.strategy}")
+    print(f"  normalization: quantile_linear q={cfg.normalization.quantile}  s_C={st.carbon_price:.4g} $/kgCO2")
     print(f"  n_types={st.n_types}  (K*={st.type_space.k_star} x "
           f"|Q|={len(st.type_space.priorities)} x |A|={st.type_space.n_hw})")
     print(f"  types with p>0: {mask.sum()}  (sum of p = {st.p.sum():.6f})")
@@ -175,8 +167,6 @@ def main():
 
     # reward
     print(f"  gamma={st.gamma:.4g}  xi={st.xi:.4g}  eps_D={st.eps_D:.4g}")
-    if st.norm_ref is not None:
-        print(f"  norm_ref={tuple(round(x, 4) for x in st.norm_ref)}")
     pos_r = (st.r_tilde[mask] > 0).sum()
     print(f"  r_tilde: [{st.r_tilde[mask].min():.4f}, {st.r_tilde[mask].max():.4f}]  "
           f"pos_reward_types={pos_r}/{mask.sum()}")

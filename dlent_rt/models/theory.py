@@ -59,7 +59,6 @@ class TheoryModel:
         self.c = np.asarray(ds.capacity, float)
         forced_xi = cfg.constants.xi_override is not None
         self.a_max_eff = self.ep.xi * self.c if forced_xi else np.asarray(ds.a_max, float)
-        self.s_norm = float(state0.norm_ref[0])
         self.d_max = int(ds.d_max_steps)
         rng = np.random.default_rng(cfg.run.seed + cfg.online.thinning_seed_offset)
         self.u_rand = rng.random(self.stream.n)       # common random numbers across ablations
@@ -93,7 +92,7 @@ class TheoryModel:
         arr = np.asarray(self.ph_arr, np.int64)
         adm = np.asarray(self.ph_adm, np.int64)
         if arr.size:
-            lam_h, _ = hindsight_lambda(S, arr, W, st, self.ds, self.cfg, self.s_norm)
+            lam_h, _ = hindsight_lambda(S, arr, W, st, self.ds, self.cfg)
         else:
             lam_h = 0.0
         bench = lam_h * W
@@ -111,7 +110,7 @@ class TheoryModel:
             short=bool(arr.size < self.cfg.phase_transition.n_min),
         )
         if reinit:
-            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg, self.s_norm)
+            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg)
             rec.update(reinit_grid_refit=dg.grid_refit, reinit_types_seen=dg.n_types_seen,
                        reinit_value_fallback=dg.n_value_fallback,
                        reinit_dur_fallback=dg.n_dur_fallback,
@@ -158,7 +157,7 @@ class TheoryModel:
             sat = float(S.priority[i] * S.v[i])
             prof = phi - float(S.C_elec[i])
             carb = float(S.C_carbon[i])
-            R = (l1 * sat + l2 * prof - l3 * carb * self.tax) / self.s_norm
+            R = l1 * sat + l2 * prof - l3 * carb * self.tax
             # payment: phi at the type's bin floor L_k (known distribution: given c_j)
             pay = (float(st.myerson.phi_job(st.L[j], c_i)) if st.myerson.known
                    else float(st.phi_tilde[j]))
@@ -204,7 +203,7 @@ class TheoryModel:
     def _summary(self) -> dict:
         S, ph = self.stream, self.res.phases
         lam_all, _ = hindsight_lambda(S, np.arange(S.n), int(self.ds.T), self.state0,
-                                      self.ds, self.cfg, self.s_norm)
+                                      self.ds, self.cfg)
         R_tot = float(sum(p["R"] for p in ph))
         bench_ph = float(sum(p["bench_hindsight"] for p in ph))
         short = [p["short"] for p in ph]
@@ -229,5 +228,5 @@ class TheoryModel:
             eps_D=self.ep.eps_D, one_minus_epsD_xi=1 - self.ep.eps_D - self.ep.xi,
             error_params=self.ep.as_dict(),
             a_max_eff=self.a_max_eff.tolist(), a_max_data=np.asarray(self.ds.a_max).tolist(),
-            capacity=self.c.tolist(), d_max=self.d_max, s_norm=self.s_norm,
+            capacity=self.c.tolist(), d_max=self.d_max,
         )

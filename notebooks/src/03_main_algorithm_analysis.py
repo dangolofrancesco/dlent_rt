@@ -3,7 +3,7 @@
 #
 # One configuration only: `BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3})` on top of
 # `configs/default.yaml`, with the default normalization (`quantile_linear`, q = 0.90, no common divisor,
-# norm_ref = (1, 1, 1), s_C frozen in Phase 0). Reward in dollars, unbounded.
+# s_C frozen in Phase 0). Reward in dollars, unbounded.
 # Theoretical setting: the true duration of an admitted job is known at arrival (`model.kind = "theory"`).
 #
 # Notebook-only knob: `capacity_scale` multiplies the initial cluster capacity c_i (CPU and RAM) **before Phase 0**.
@@ -95,7 +95,7 @@ L1, L2, L3 = BASE.objective.lambda1, BASE.objective.lambda2, BASE.objective.lamb
 print(f"model={BASE.model.kind}  oracle={BASE.oracle.kind}  scalarization={BASE.scalarization.method}")
 print(f"bid: strategy={BASE.bid.strategy} sigma={BASE.bid.sigma} u0={BASE.bid.base_utility_u0} "
       f"mode={BASE.bid.base_utility_mode}")
-print(f"normalization: {BASE.normalization.strategy}  q={BASE.normalization.quantile}")
+print(f"normalization: quantile_linear  q={BASE.normalization.quantile}")
 print(f"lambda = ({L1}, {L2}, {L3})   k_star={BASE.grid.k_star}  hw profiles={BASE.hardware.n_profiles}")
 print(f"constants: gamma_override={BASE.constants.gamma_override}  xi_override={BASE.constants.xi_override}  "
       f"delta={BASE.confidence.delta} (1/T^{BASE.confidence.delta_power} if None)")
@@ -206,8 +206,7 @@ def reference_state(model):
     S, ds = model.stream, model.ds
     cfg_h = dataclasses.replace(BASE, phase_transition=dataclasses.replace(BASE.phase_transition, n_min=2))
     idx = np.arange(S.n)
-    st, _ = build_window_state(S, idx, idx, int(ds.T), model.state0, ds, cfg_h,
-                               common_scale=model.s_norm, fallback=False)
+    st, _ = build_window_state(S, idx, idx, int(ds.T), model.state0, ds, cfg_h, fallback=False)
     return st
 
 def job_terms(model):
@@ -329,8 +328,7 @@ for s in CAPACITY_SCALES:
 R0 = RUNS[BASELINE_SCALE]
 A0, PH0, M0 = R0["A"], R0["ph"], R0["model"]
 S0, SC0 = M0.stream, M0.state0.carbon_price
-print(f"\nbaseline scale {BASELINE_SCALE}: s_C = {SC0:.4f} $/kgCO2 (frozen)   norm_ref = {M0.state0.norm_ref}   "
-      f"s_norm = {M0.s_norm}")
+print(f"\nbaseline scale {BASELINE_SCALE}: s_C = {SC0:.4f} $/kgCO2 (frozen), reward in $ (no divisor)")
 print(f"tau per phase (cpu, ram): " + ", ".join(f"m{k + 1}={np.round(st.tau, 6)}" for k, st in enumerate(M0.states)))
 print(f"tau* (full-stream hindsight LP) = {R0['st_ref'].tau}")
 
@@ -639,7 +637,7 @@ def accuracy_table(run):
         phi_k = np.asarray(st.myerson.phi_job(S.v, S.cost_base))
         _, prio, A_t = type_arrays(st.type_space, st.grid)
         r_ref, *_ = scalarized_reward(prio, mean_by(S.v), mean_by(phi_ref), mean_by(S.C_elec), mean_by(S.C_carbon),
-                                      p_ref, A_t * d_ref[:, None], ds, BASE, common_scale=model.s_norm,
+                                      p_ref, A_t * d_ref[:, None], ds, BASE,
                                       carbon_price=model.state0.carbon_price)
         w = p_ref[mk]
         r_err = np.average(np.abs(st.r_tilde[mk] - r_ref[mk]), weights=w)
@@ -993,8 +991,8 @@ setup = pd.Series({
     "gamma_used": ep0.gamma, "gamma_data": ep0.gamma_data, "delta": ep0.delta, "eps_D": ep0.eps_D,
     "thinning cap (1-xi)/(1+eps_D)": R0["p_cap"], "p_U min": A0["p_U"].min(), "p_U max": A0["p_U"].max(),
     "lambda1": L1, "lambda2": L2, "lambda3": L3, "lambda sum": L1 + L2 + L3,
-    "s_C ($/kgCO2, frozen)": SC0, "normalization": BASE.normalization.strategy,
-    "quantile q": BASE.normalization.quantile, "norm_ref": str(M0.state0.norm_ref),
+    "s_C ($/kgCO2, frozen)": SC0, "normalization": "quantile_linear",
+    "quantile q": BASE.normalization.quantile,
     "bid strategy": BASE.bid.strategy, "bid sigma": BASE.bid.sigma, "u0": BASE.bid.base_utility_u0,
     "k_star": BASE.grid.k_star, "hw profiles": BASE.hardware.n_profiles, "model": BASE.model.kind,
     "n_type_min": BASE.phase_transition.n_type_min, "n_min": BASE.phase_transition.n_min,

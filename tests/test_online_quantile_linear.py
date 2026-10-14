@@ -44,8 +44,7 @@ def default_run():
 
 def test_reward_in_dollars_with_frozen_carbon_price(default_run):
     cfg, m, res = default_run
-    assert cfg.normalization.strategy == "quantile_linear"
-    assert m.s_norm == 1.0 and m.state0.norm_ref == (1.0, 1.0, 1.0)
+    assert m.state0.norm_info["strategy"] == "quantile_linear"
     assert len(m.states) == len(res.phases) >= 2
     assert all(s.carbon_price == m.state0.carbon_price for s in m.states)
     S, (l1, l2, l3), sC = m.stream, m.lam, m.state0.carbon_price

@@ -54,11 +54,11 @@ SITES = [
     ("dlent_rt/phase0.py", r"r_tilde = np.asarray\(scalarize", "r_tilde (type reward, $/job)"),
     ("dlent_rt/phase0.py", r"p = N / max\(n_total_for_p", "Phase 0: p_j = N_j / H_span_steps (per tick)"),
     ("dlent_rt/models/core/reinit.py", r"phi_arr = \(np.asarray\(myerson.phi_job", "ReInit / hindsight: per-job phi"),
-    ("dlent_rt/models/core/reinit.py", r"r_tilde, r_nocarbon, norm_ref, _ = scalarized_reward", "ReInit / hindsight: r_tilde via scalarized_reward"),
+    ("dlent_rt/models/core/reinit.py", r"r_tilde, r_nocarbon, _ = scalarized_reward", "ReInit / hindsight: r_tilde via scalarized_reward"),
     ("dlent_rt/models/core/reinit.py", r"p = N / max\(W, 1\)", "ReInit / hindsight: p_j = N_j / W"),
     ("dlent_rt/models/core/reinit.py", r"def hindsight_lambda", "hindsight benchmark (lam_hat per tick)"),
     ("dlent_rt/models/theory.py", r"phi = float\(st.myerson.phi_job", "online: per-job phi of the arrival"),
-    ("dlent_rt/models/theory.py", r"R = \(l1 \* sat \+ l2 \* prof - l3 \* carb \* self.tax\) / self.s_norm", "online: LOGGED job reward R"),
+    ("dlent_rt/models/theory.py", r"R = l1 \* sat \+ l2 \* prof - l3 \* carb \* self.tax", "online: LOGGED job reward R"),
     ("dlent_rt/models/theory.py", r"lam_all, _ = hindsight_lambda", "summary: bench_global = lam_hat_ref * T (fluid OPT)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"def job_reward", "nb03: job_reward(model, phi) (yardstick formula)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"phi_ref = np.asarray\(st_ref.myerson.phi\(S.v\)\)", "PRE-FIX nb03: phi_ref = myerson.phi(v), no c_j (NOT FOUND = fixed)"),
@@ -87,7 +87,7 @@ ds = load_dataset(cfg)
 st0 = run_phase0(ds, cfg)
 print(f"\nconfig: n0={cfg.data.n0:,} |H|={ds.H.n:,} capacity.mode={cfg.capacity.mode} c={ds.capacity} "
       f"known_distribution={cfg.bid.known_distribution} sigma={cfg.bid.sigma} normalization="
-      f"{cfg.normalization.strategy} q={cfg.normalization.quantile} lambda=({L1},{L2},{L3})")
+      f"quantile_linear q={cfg.normalization.quantile} lambda=({L1},{L2},{L3})")
 model = TheoryModel(ds, st0, cfg)
 res = model.run()
 S, T, sC = model.stream, int(ds.T), st0.carbon_price
@@ -97,7 +97,7 @@ print(f"online run: |stream|={S.n:,} T={T:,} phases={res.summary['n_phases']} ad
 # reference (full stream, true D, no fallback) = notebook 03 reference_state = code's hindsight benchmark
 cfg_h = dataclasses.replace(cfg, phase_transition=dataclasses.replace(cfg.phase_transition, n_min=2))
 idx = np.arange(S.n)
-st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, common_scale=model.s_norm, fallback=False)
+st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, fallback=False)
 
 
 # ONE job-level reward function (the online loop's formula, theory.py), vectorised
@@ -171,7 +171,7 @@ checks = [
     ("phi in pre-fix notebook 03", "myerson.phi(v): MARKUP phi on raw $ bids",
      f"max |phi_nb - phi_job| = {np.abs(phi_nb - phi_true).max():,.2f} $"),
     ("s_C", "frozen at Phase 0", f"state0 {st0.carbon_price:.6f}, ref {st_ref.carbon_price:.6f}, loop {model.tax:.6f}"),
-    ("reward scale", "s_norm = norm_ref[0] = 1 (quantile_linear: no divisor)", f"s_norm = {model.s_norm}"),
+    ("reward scale", "quantile_linear: reward in $, no divisor", "-"),
     ("type space", "reference grid = refit on the full stream; phase k grid refit on phase k-1 arrivals",
      f"ref grid edges [{st_ref.grid.edges[0]:.4g}, {st_ref.grid.edges[-1]:.4g}] vs Phase 0 "
      f"[{st0.grid.edges[0]:.4g}, {st0.grid.edges[-1]:.4g}]"),
@@ -257,7 +257,7 @@ d0 = mb0(S.D)
 out = {}
 for label, phi in (("notebook phi_ref = phi(v)", phi_nb), ("phi_ref = phi_job(v, c_j)", phi_true)):
     r_ref0, *_ = scalarized_reward(prio0, mb0(S.v), mb0(phi), mb0(S.C_elec), mb0(S.C_carbon), p0, A0 * d0[:, None],
-                                   ds, cfg, common_scale=model.s_norm, carbon_price=sC)
+                                   ds, cfg, carbon_price=sC)
     mm = p0 > 0
     err = np.average(np.abs(st0.r_tilde[mm] - r_ref0[mm]), weights=p0[mm])
     out[label] = dict(mean_abs_err=err, rel_err=err / np.average(np.abs(r_ref0[mm]), weights=p0[mm]),

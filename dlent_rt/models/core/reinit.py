@@ -16,10 +16,9 @@ decisions:
      the empirical N_j / W (p_j = 0 if the type did not arrive), so the LP
      support is unchanged; only the oracle's per-type score uses the carried
      stats.
-  3. The common_currency scale s is frozen at Phase 0's value so r~ lives on
-     one scale across phases (lambda_hat comparable across phases). Likewise
-     the quantile_linear carbon price s_C (prev.carbon_price) is never
-     recomputed on the stream.
+  3. The quantile_linear carbon price s_C (prev.carbon_price) is frozen at
+     Phase 0's value and never recomputed on the stream, so r~ (in $) lives on
+     one scale across phases (lambda_hat comparable across phases).
 
 Theory model: durations are observed at admission only (Version P), so
 d_bar / energy / cost statistics use ADMITTED jobs of the phase ("obs"),
@@ -64,7 +63,7 @@ def _means(tid: np.ndarray, n_types: int, cols: dict) -> tuple[np.ndarray, dict]
 
 def build_window_state(
     stream: StreamData, idx_arr: np.ndarray, idx_obs: np.ndarray, W: int,
-    prev: PhaseState, ds, cfg, common_scale: float, fallback: bool = True,
+    prev: PhaseState, ds, cfg, fallback: bool = True,
 ) -> tuple[PhaseState, ReinitDiag]:
     ts = prev.type_space
     n_types = ts.n_types
@@ -129,9 +128,9 @@ def build_window_state(
     L, prio, A_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
     v = A_type * md["d_bar"][:, None]
-    r_tilde, r_nocarbon, norm_ref, _ = scalarized_reward(
+    r_tilde, r_nocarbon, _ = scalarized_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
-        p, v, ds, cfg, common_scale=common_scale, carbon_price=prev.carbon_price,
+        p, v, ds, cfg, carbon_price=prev.carbon_price,
     )
     lp = solve_lp_rs(p=p, r=r_tilde, v=v, c=ds.capacity, presolve=cfg.lp.presolve)
     tau = lp.tau if lp.tau.size == ds.n_resources else np.zeros(ds.n_resources)
@@ -144,7 +143,7 @@ def build_window_state(
         v_bar=mv["v_bar"], phi_bar=mv["phi_bar"], energy_bar=md["energy_bar"],
         power_bar=md["power_bar"], r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=md["C_elec_bar"], C_carbon_bar=md["C_carbon_bar"], v=v, L=L,
-        phi_tilde=phi_tilde, tau=tau, lam_star=lp.optimum, norm_ref=norm_ref,
+        phi_tilde=phi_tilde, tau=tau, lam_star=lp.optimum,
         n_assigned=int(ok.sum()), n_ir_rejected=int((~ok).sum()),
     )
     diag = ReinitDiag(
@@ -156,12 +155,11 @@ def build_window_state(
     return st, diag
 
 
-def hindsight_lambda(stream, idx, W, prev, ds, cfg, common_scale) -> tuple[float, ReinitDiag]:
+def hindsight_lambda(stream, idx, W, prev, ds, cfg) -> tuple[float, ReinitDiag]:
     """
     Hindsight benchmark on a window: full information (every arrival's true D
     observed, no fallback, F_hat refit on the window). Returns lam_hat per tick.
     """
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
-    st, dg = build_window_state(stream, idx, idx, W, prev, ds, cfg_h,
-                                common_scale=common_scale, fallback=False)
+    st, dg = build_window_state(stream, idx, idx, W, prev, ds, cfg_h, fallback=False)
     return float(st.lam_star), dg
