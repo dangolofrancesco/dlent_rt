@@ -33,7 +33,7 @@ class ColumnsCfg:
 class DataCfg:
     batch_csv: str = "data/batch_may2019_30k.csv"
     grid_csv: str = "data/grid_data_may_2019.csv"
-    n0: int = 5000
+    n0: int = 10000
     columns: ColumnsCfg = field(default_factory=ColumnsCfg)
 
 
@@ -63,9 +63,8 @@ class BidCfg:
     # utility rather than supply-side fee.
     # U_0: the single free parameter of base_utility_mode. Calibrated via
     # scripts/calibrate_u0.py (bisection on Phase 0's pos_reward_types,
-    # target_pos_frac=0.90) against sigma=0.3 -- NOT against this dataclass's
-    # own sigma default (1.5), so if sigma is changed away from 0.3 this value
-    # no longer hits that 90% target and should be recalibrated.
+    # target_pos_frac=0.90) at sigma=0.3: if sigma (or gamma1/gamma2) is
+    # changed, this value no longer hits that 90% target; recalibrate.
     base_utility_u0: float = 23.926
     # How U_base(q) scales with priority q in {1,...,5}:
     #   "linear" -> U_base(q) = u0 * q
@@ -78,10 +77,10 @@ class BidCfg:
     # an empirical grid search targeting pos_reward_types, which converged
     # to the same order of magnitude -- used here as a consistency check,
     # not as the primary justification.
-    gamma1: float = 0.01            # $/core-hour reserve price
-    gamma2: float = 0.002           # $/GB-hour reserve price
+    gamma1: float = 0.0332          # $/core-hour reserve price
+    gamma2: float = 0.00445         # $/GB-hour reserve price
     # lognormal params
-    sigma: float = 1.5              # bid dispersion
+    sigma: float = 0.3              # bid dispersion (log-space std of the markup)
     # true  -> the bid distribution is KNOWN a priori: markup v / cost_base ~
     #          LogNormal(-sigma^2/2, sigma) with sigma above; phi_v(v | c) = c * phi_m(v / c).
     #          Never refit (Phase 0, ReInit, online). lognormal strategy, grid.space="v" only.
@@ -100,12 +99,12 @@ class TimeCfg:
     # are treated as lasting this long, matching cloud billing minimums
     # (GCP/AWS bill 1 min minimum) and preventing near-zero resource
     # volumes from inflating gamma.
-    duration_floor_hours: float = 1.0 / 60.0  # 1 minute
+    duration_floor_hours: float = 0.016667    # ~1 minute (the YAML value in use, not exactly 1/60)
 
 
 @dataclass(frozen=True)
 class HardwareCfg:
-    n_profiles: int = 12
+    n_profiles: int = 32
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
     fit_on: str = "full"            # "full" | "H"
@@ -117,13 +116,13 @@ class HardwareCfg:
     # when used in the system-constant calculation. This is NOT a filter
     # on which types are served -- only on which types contribute to
     # gamma's v_min term.
-    hw_floor: float = 1.0e-6
+    hw_floor: float = 1.0e-5
 
 
 @dataclass(frozen=True)
 class OutliersCfg:
     policy: str = "drop"            # "drop" | "clip"
-    a_max_quantile: float = 0.95
+    a_max_quantile: float = 0.90
     d_max_quantile: float = 0.95
     xi_warn_threshold: float = 0.10
 
@@ -136,9 +135,9 @@ class AbsoluteCapCfg:
 
 @dataclass(frozen=True)
 class CapacityCfg:
-    mode: str = "fraction_of_concurrency_quantile" # "fraction_of_volume" | "fraction_of_peak" | "fraction_of_concurrency_quantile" | "from_amax" | "absolute"
-    fraction: float = 0.60
-    concurrency_quantile: float = 0.90   # used only by fraction_of_concurrency_quantile
+    mode: str = "from_amax"   # "fraction_of_volume" | "fraction_of_peak" | "fraction_of_concurrency_quantile" | "from_amax" | "absolute"
+    fraction: float = 0.40               # fraction_of_* modes only
+    concurrency_quantile: float = 0.80   # used only by fraction_of_concurrency_quantile
     absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)
     # from_amax only: c_i = a_max,i / xi_target (sizing only; constants.xi_override is separate)
     xi_target: float = 0.5
@@ -146,14 +145,14 @@ class CapacityCfg:
 
 @dataclass(frozen=True)
 class ObjectiveCfg:
-    lambda1: float = 1/3
-    lambda2: float = 1/3
-    lambda3: float = 1/3
+    lambda1: float = 1.0
+    lambda2: float = 1.0
+    lambda3: float = 1.0
 
 
 @dataclass(frozen=True)
 class GridCfg:
-    k_star: int = 16
+    k_star: int = 128
     phi_floor: float = 1.0e-6
     priority_classes: tuple = (1, 2, 3, 4, 5)
     # WHICH SPACE the valuation grid is built in:
@@ -223,11 +222,11 @@ class ConstantsCfg:
     # threshold vacuous and p_U ~ 0 (see week-28 notes). When xi is forced,
     # Test 1 uses the implied a_max,i = xi * c_i so that xi = max_i a_max,i/c_i
     # still holds; the physical gate always uses the true A of each job.
-    xi_override: Optional[float] = None
-    gamma_override: Optional[float] = None
+    xi_override: Optional[float] = 0.001
+    gamma_override: Optional[float] = 1.0
     # r_max entering the data-derived gamma: p-weighted quantile of |r~| over
     # populated types. 1.0 = max (original definition).
-    r_max_quantile: float = 1.0
+    r_max_quantile: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -386,17 +385,23 @@ def load_config(path: str | Path) -> Config:
     return cfg.validate()
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "default.yaml"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
+
+
+def resolve_path(path: str | Path) -> Path:
+    """Data paths in the config are relative to the repository root (absolute paths are kept)."""
+    p = Path(path)
+    return p if p.is_absolute() else REPO_ROOT / p
 
 
 def default_config() -> Config:
     """
     The project default configuration.
 
-    Loads ``configs/default.yaml`` when it is present (the repo layout), so that
-    file is the single effective source of truth. Falls back to the dataclass
-    defaults only when the YAML is missing (e.g. an installed wheel without the
-    configs/ tree).
+    Loads ``configs/default.yaml`` when it is present (the repo layout). The
+    dataclass defaults are kept EQUAL to that file (tests/test_config_defaults.py),
+    so the fallback used when the YAML is missing gives the same configuration.
     """
     if DEFAULT_CONFIG_PATH.is_file():
         return load_config(DEFAULT_CONFIG_PATH)

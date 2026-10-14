@@ -8,7 +8,6 @@ again.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +16,7 @@ import pandas as pd
 
 from .energy import load_grid_data
 
-from .config import Config
+from .config import Config, resolve_path
 from .preprocess import (
     HardwareCatalogue, OutlierReport, fit_hardware_catalogue, handle_outliers,
 )
@@ -67,7 +66,7 @@ class Dataset:
 
 def _read_csv(cfg: Config) -> pd.DataFrame:
     col = cfg.data.columns
-    df = pd.read_csv(cfg.data.batch_csv)
+    df = pd.read_csv(resolve_path(cfg.data.batch_csv))
     df[col.datetime] = pd.to_datetime(df[col.datetime])
     df = df.sort_values(col.datetime).reset_index(drop=True)
     return df
@@ -430,8 +429,8 @@ def load_dataset(cfg: Config) -> Dataset:
         )
 
     grid_data = None  
-    if cfg.data.grid_csv and os.path.exists(cfg.data.grid_csv):
-        grid_data = load_grid_data(cfg.data.grid_csv)
+    if cfg.data.grid_csv and resolve_path(cfg.data.grid_csv).is_file():
+        grid_data = load_grid_data(str(resolve_path(cfg.data.grid_csv)))
 
     return Dataset(
         H=H,

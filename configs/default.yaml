@@ -6,8 +6,8 @@ run:
 
 # Data ingestion
 data:
-  batch_csv: "/Users/francescodangolo/Projects/dlent_rt/data/batch_may2019_30k.csv"
-  grid_csv: "/Users/francescodangolo/Projects/dlent_rt/data/grid_data_may_2019.csv"
+  batch_csv: "data/batch_may2019_30k.csv"     # relative paths: to the repository root
+  grid_csv: "data/grid_data_may_2019.csv"
   n0: 10000
   columns:
     collection_id: "collection_id"

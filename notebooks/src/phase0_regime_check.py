@@ -19,7 +19,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from dlent_rt.config import default_config
+from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids, _weighted_quantile
 from dlent_rt.lp_oracle import solve_lp_rs
@@ -44,7 +44,7 @@ def apply_overrides(cfg, overrides):
 
 cfg = default_config()
 cfg = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3, "data.n0": 10000})
-if os.environ.get("DLENT_SYNTHETIC") == "1" or not Path(cfg.data.batch_csv).is_file():
+if os.environ.get("DLENT_SYNTHETIC") == "1" or not resolve_path(cfg.data.batch_csv).is_file():
     from tests.synthetic import write_synthetic
     b, g = write_synthetic(Path(tempfile.mkdtemp()), n_jobs=3000, drift=True)
     cfg = apply_overrides(cfg, {"data.batch_csv": str(b), "data.grid_csv": str(g), "data.n0": 1000,

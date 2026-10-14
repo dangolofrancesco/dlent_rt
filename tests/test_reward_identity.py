@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dlent_rt.config import default_config
+from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids
 from dlent_rt.models.theory import TheoryModel
@@ -45,7 +45,7 @@ def _synthetic():
 
 def _real_slice():
     cfg = default_config()
-    if not Path(cfg.data.batch_csv).is_file():
+    if not resolve_path(cfg.data.batch_csv).is_file():
         pytest.skip("real trace not available")
     return replace(cfg, data=replace(cfg.data, n0=REAL_SLICE_N0))
 

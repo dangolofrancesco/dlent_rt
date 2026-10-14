@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 warnings.simplefilter("ignore")
 
-from dlent_rt.config import default_config
+from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays, scalarized_reward
 from dlent_rt.models.theory import TheoryModel
@@ -80,7 +80,7 @@ print(pd.DataFrame(rows).to_string(index=False))
 # --------------------------------------------------------------------------- setup
 cfg = default_config()
 cfg = dataclasses.replace(cfg, bid=dataclasses.replace(cfg.bid, strategy="lognormal", sigma=0.3)).validate()
-assert Path(cfg.data.batch_csv).is_file(), "real trace required"
+assert resolve_path(cfg.data.batch_csv).is_file(), "real trace required"
 L1, L2, L3 = cfg.objective.lambda1, cfg.objective.lambda2, cfg.objective.lambda3
 t0 = time.time()
 ds = load_dataset(cfg)
