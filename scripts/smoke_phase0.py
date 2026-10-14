@@ -177,7 +177,6 @@ def main():
     print(f"  gamma={st.gamma:.4g}  xi={st.xi:.4g}  eps_D={st.eps_D:.4g}")
     if st.norm_ref is not None:
         print(f"  norm_ref={tuple(round(x, 4) for x in st.norm_ref)}")
-        print(f"  norm_degenerate={st.norm_degenerate}")
     pos_r = (st.r_tilde[mask] > 0).sum()
     print(f"  r_tilde: [{st.r_tilde[mask].min():.4f}, {st.r_tilde[mask].max():.4f}]  "
           f"pos_reward_types={pos_r}/{mask.sum()}")

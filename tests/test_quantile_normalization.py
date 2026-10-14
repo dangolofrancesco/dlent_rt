@@ -60,7 +60,7 @@ def test_q_changes_only_carbon_price(setup):
     out = {}
     for q in (0.5, 0.75, 0.9, 0.99):
         cfg_q = _with(cfg, quantile=q)
-        r, r_nocarbon, ref, _, info = scalarized_reward(
+        r, r_nocarbon, ref, info = scalarized_reward(
             prio, st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, st.v, ds, cfg_q)
         out[q] = (r, r_nocarbon, info)
         lam = cfg.objective
@@ -153,7 +153,7 @@ def test_zero_carbon_has_no_carbon_term(setup):
     C0 = st.C_carbon_bar.copy()
     j = int(np.flatnonzero(st.p > 0)[0])
     C0[j] = 0.0
-    r, r_nocarbon, _, _, _ = scalarized_reward(
+    r, r_nocarbon, _, _ = scalarized_reward(
         prio, st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, st.v, ds, cfg,
         carbon_price=st.carbon_price)
     assert r[j] == r_nocarbon[j]

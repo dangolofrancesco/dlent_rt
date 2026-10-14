@@ -152,13 +152,13 @@ def scalarized_reward(
     scale s (the online loop passes Phase 0's s so r_tilde stays on one scale
     across phases). `carbon_price` freezes the quantile_linear carbon price s_C
     in the same way (ReInit passes Phase 0's s_C; it is never recomputed on the
-    stream). Returns (r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info).
+    stream). Returns (r_tilde, r_nocarbon, norm_ref, norm_info).
     """
     lam = cfg.objective
     raw_sat  = priority_of_type * v_bar
     raw_prof = phi_bar - C_elec_bar
     raw_carb = C_carbon_bar
-    V_sat, V_prof, V_carb, norm_ref, norm_deg, norm_info = _normalize_objectives(
+    V_sat, V_prof, V_carb, norm_ref, norm_info = _normalize_objectives(
         raw_sat, raw_prof, raw_carb, p, v, ds, cfg, common_scale=common_scale,
         carbon_price=carbon_price,
     )
@@ -168,7 +168,7 @@ def scalarized_reward(
         f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
     r_nocarbon = lam.lambda1 * V_sat + lam.lambda2 * V_prof
     r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
-    return r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info
+    return r_tilde, r_nocarbon, norm_ref, norm_info
 
 
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
@@ -220,7 +220,6 @@ class PhaseState:
     norm_strategy: str = "common_currency"  # always overwritten in run_phase0
     n_ir_rejected: int = 0
     n_assigned: int = 0
-    norm_degenerate: tuple = (False, False, False)
     n_types_hw_degenerate: int = 0
     # $/kgCO2 actually applied to C_carbon_bar: s_C for quantile_linear (frozen
     # at Phase 0), cfg.normalization.carbon_tax_per_kg for the other strategies.
@@ -348,10 +347,10 @@ def _normalize_objectives(
     p: np.ndarray, v: np.ndarray, ds: Dataset, cfg: Config,
     common_scale: Optional[float] = None,
     carbon_price: Optional[float] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[tuple], tuple, Optional[dict]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[tuple], Optional[dict]]:
     """
     Dispatch normalization by cfg.normalization.strategy.
-    Returns (V_sat, V_prof, V_carb, norm_ref, norm_degenerate, norm_info).
+    Returns (V_sat, V_prof, V_carb, norm_ref, norm_info).
 
     Strategy reference (this function is the single source of truth; there is
     no separate normalization module):
@@ -384,7 +383,6 @@ def _normalize_objectives(
         V_prof = raw_prof / _span(raw_prof)
         V_carb = raw_carb / _span(raw_carb)
         norm_ref = (_span(raw_sat), _span(raw_prof), _span(raw_carb))
-        norm_deg = (False, False, False)
 
     elif strategy == "common_currency":
         # Convert carbon from kgCO2 to $ via carbon tax. All three are now in dollars.
@@ -400,7 +398,6 @@ def _normalize_objectives(
         V_carb = raw_carb_dollar / common
 
         norm_ref = (common, common, common)
-        norm_deg = (False, False, False)
 
     elif strategy == "quantile_linear":
         # s_C [$/kgCO2] computed once on Phase 0's H, then frozen (ReInit).
@@ -416,12 +413,11 @@ def _normalize_objectives(
         V_prof = raw_prof
         V_carb = raw_carb * s_C
         norm_ref = (1.0, 1.0, 1.0)
-        norm_deg = (False, False, False)
 
     else:
         raise ValueError(f"Unknown normalization strategy: {strategy}")
 
-    return V_sat, V_prof, V_carb, norm_ref, norm_deg, norm_info
+    return V_sat, V_prof, V_carb, norm_ref, norm_info
 
 
 # Phase 0 entry point
@@ -490,7 +486,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
             "enumeration notebooks.",
             RuntimeWarning,
         )
-    r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info = scalarized_reward(
+    r_tilde, r_nocarbon, norm_ref, norm_info = scalarized_reward(
         priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar,
         p, v, ds, cfg,
     )
@@ -551,7 +547,6 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         norm_strategy=cfg.normalization.strategy,
         n_ir_rejected=stats["n_ir_rejected"],
         n_assigned=stats["n_assigned"],
-        norm_degenerate=norm_deg,
         n_types_hw_degenerate=n_types_hw_degenerate,
         carbon_price=float(carbon_price), norm_info=norm_info,
     )
