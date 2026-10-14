@@ -35,7 +35,7 @@ from .lp_oracle import scalarize, solve_lp_rs, LPResult
 from .models.core.error_params import ErrorParams
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
 from .bid import (
-    MyersonModel, fit_myerson, bid_model, compute_phi_tilde,
+    MyersonModel, bid_model, compute_phi_tilde,
     LognormalBidParams, BidResult, synthesize_lognormal,
 )
 

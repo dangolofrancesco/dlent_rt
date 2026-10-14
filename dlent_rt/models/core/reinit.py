@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...bid import BidResult, fit_myerson, compute_phi_tilde
+from ...bid import BidResult, compute_phi_tilde
 from ...grid import build_valuation_grid
 from ...lp_oracle import solve_lp_rs
 from ...phase0 import PhaseState, assign_type_ids, type_arrays, scalarized_reward
@@ -74,7 +74,11 @@ def build_window_state(
     # grid / F_hat refit (write-up Alg. 3 lines 2-6; reuse if too few arrivals)
     refit = idx_arr.size >= cfg.phase_transition.n_min and idx_arr.size >= 2
     if refit:
-        myerson = prev.myerson if prev.myerson.known else fit_myerson(v_arr)
+        if prev.myerson.known:
+            myerson = prev.myerson
+        else:                                    # legacy pooled-MLE refit (audit L2)
+            from ...legacy.pooled_mle import fit_myerson
+            myerson = fit_myerson(v_arr)
         grid = build_valuation_grid(v_arr, myerson, cfg.grid.k_star, cfg.grid.space,
                                     cfg.grid.spacing, cfg.grid.phi_floor)
     else:

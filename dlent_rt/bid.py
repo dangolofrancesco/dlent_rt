@@ -20,7 +20,8 @@ class MyersonModel:
         parametrise the MARKUP m = v / c ~ LogNormal(-sigma^2/2, sigma), c = the
         job's reference cost (cost_base), and phi_job(v, c) = c * phi_markup(v / c).
       known=False (ablation, legacy): F = LogNormal(mu, sigma) fitted on the pooled
-        dollar bids v (fit_myerson); phi_job(v, c) = phi of that fit at v, c is ignored.
+        dollar bids v (dlent_rt.legacy.pooled_mle.fit_myerson); phi_job(v, c) = phi of
+        that fit at v, c is ignored.
 
     phi_job(v, c_j) is the ONLY entry point for the virtual value of a dollar bid; it
     is used by Phase 0, ReInit, the hindsight benchmark and the online reward.
@@ -78,21 +79,12 @@ class MyersonModel:
         return out if out.size > 1 else float(out[0])
 
 
-def fit_myerson(v_rate: np.ndarray) -> MyersonModel:
-    """Lognormal MLE in log-space on positive bids."""
-    v = v_rate[v_rate > 0]
-    logs = np.log(v)
-    mu = float(logs.mean())
-    sigma = float(logs.std(ddof=1)) if v.size > 1 else 1.0
-    sigma = max(sigma, 1e-6)
-    return MyersonModel(mu=mu, sigma=sigma)
-
-
 def bid_model(cfg, v_rate: np.ndarray) -> MyersonModel:
     """The mechanism's bid model: known markup distribution (bid.known_distribution,
     sigma = bid.sigma, no fit) or the legacy pooled lognormal MLE on v_rate."""
     if cfg.bid.known_distribution:
         return MyersonModel.known_markup(cfg.bid.sigma)
+    from .legacy.pooled_mle import fit_myerson      # legacy ablation (audit L2)
     return fit_myerson(v_rate)
 
 

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import lognorm
 
-from dlent_rt.bid import fit_myerson
+from dlent_rt.legacy.pooled_mle import fit_myerson
 
 
 # --------------------------------------------------------------------------- #

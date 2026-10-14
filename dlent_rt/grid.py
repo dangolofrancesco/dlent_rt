@@ -8,9 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-# MyersonModel and fit_myerson have moved to bid.py.
-# Re-exported here for backwards compatibility.
-from .bid import MyersonModel, fit_myerson
+from .bid import MyersonModel
 
 
 # Four spacing strategies
@@ -140,21 +138,10 @@ def build_valuation_grid(
                    else np.asarray(myerson.phi_job(bnd_v)))
         shift, rejects = 0.0, False
 
-    elif space == "phi":
-        vals = np.asarray(myerson.phi_job(v_pos))
-        edges = build_edges(vals, k_star, spacing, phi_floor)
-        bnd_phi = edges.copy()
-        bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
-        shift, rejects = 0.0, True
-
-    elif space == "phi_shifted":
-        raw = np.asarray(myerson.phi_job(v_pos))
-        shift = float(-raw.min() + max(phi_floor, 1e-9))
-        vals = raw + shift
-        edges = build_edges(vals, k_star, spacing, phi_floor)
-        bnd_phi = edges - shift
-        bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
-        rejects = False
+    elif space in ("phi", "phi_shifted"):
+        from .legacy.pooled_mle import phi_space_grid      # legacy ablation (audit L4)
+        edges, bnd_v, bnd_phi, shift, rejects = phi_space_grid(
+            v_pos, myerson, k_star, space, spacing, phi_floor)
 
     else:
         raise ValueError(f"unknown grid space: {space}")
