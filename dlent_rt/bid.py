@@ -122,7 +122,6 @@ def compute_base_utility(
 class LognormalBidParams:
     """Parameters for the lognormal bid synthesis."""
     sigma: float = 1.5
-    base_multiplier: float = 1.0
     base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
     base_utility_mode: str = "log"  # "linear" | "log"
     gamma1: float = 0.01

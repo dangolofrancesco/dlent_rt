@@ -54,7 +54,6 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
     rng = np.random.default_rng(seed)
     params = LognormalBidParams(
         sigma=cfg.bid.sigma,
-        base_multiplier=cfg.bid.base_multiplier,
         base_utility_u0=cfg.bid.base_utility_u0,
         base_utility_mode=cfg.bid.base_utility_mode,
         gamma1=cfg.bid.gamma1,

@@ -103,7 +103,6 @@ bid:
   # LogNormal(-sigma^2/2, sigma), phi_v(v | c) = c * phi_m(v / c), the same phi in
   # Phase 0, ReInit and the online reward. false = legacy pooled-MLE ablation.
   known_distribution: true
-  base_multiplier: 1.0
   # Base utility rate ($/hour): minimum hourly value a user derives from job
   # completion, independent of resource footprint. Multiplied by duration.
   # Ref: reinterpretation suggested by advisor — demand-side utility rather

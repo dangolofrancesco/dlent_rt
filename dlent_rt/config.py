@@ -87,7 +87,6 @@ class BidCfg:
     gamma2: float = 0.002           # $/GB-hour reserve price
     # lognormal params
     sigma: float = 1.5              # bid dispersion
-    base_multiplier: float = 1.0
     # true  -> the bid distribution is KNOWN a priori: markup v / cost_base ~
     #          LogNormal(-sigma^2/2, sigma) with sigma above; phi_v(v | c) = c * phi_m(v / c).
     #          Never refit (Phase 0, ReInit, online). lognormal strategy, grid.space="v" only.
