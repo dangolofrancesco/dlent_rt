@@ -2,15 +2,20 @@
 Smoke test for DLENT-RT Phase 0 (new pipeline: on-the-fly bids, energy model,
 configurable normalization).
 
-Run:  python -m tests.smoke_phase0  --csv data/batch_may2019_30k.csv  --n0 5000
+Run:  dlent_venv/bin/python scripts/smoke_phase0.py --csv data/batch_may2019_30k.csv --n0 5000
+(moved from tests/, audit D13: a CLI script, not collected by pytest)
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dlent_rt.config import load_config, default_config
 from dlent_rt.data import load_dataset
@@ -24,11 +29,12 @@ def main():
     ap.add_argument("--csv", default="data/batch_may2019_30k.csv")
     ap.add_argument("--grid-csv", default="data/grid_data_may_2019.csv")
     ap.add_argument("--n0", type=int, default=5000)
-    ap.add_argument("--capacity-mode", default="fraction_of_concurrency_quantile",
+    # capacity flags default to None: the loaded config's capacity is kept unless a flag is given
+    ap.add_argument("--capacity-mode", default=None,
                     choices=["fraction_of_volume", "fraction_of_peak",
-                             "fraction_of_concurrency_quantile", "absolute"])
-    ap.add_argument("--fraction", type=float, default=0.6)
-    ap.add_argument("--concurrency-quantile", type=float, default=0.90)
+                             "fraction_of_concurrency_quantile", "from_amax", "absolute"])
+    ap.add_argument("--fraction", type=float, default=None)
+    ap.add_argument("--concurrency-quantile", type=float, default=None)
     ap.add_argument("--semantics", default="real_tick",
                     choices=["real_tick"])
     ap.add_argument("--tick-seconds", type=float, default=1.0)
@@ -48,9 +54,9 @@ def main():
                                  grid_csv=args.grid_csv, n0=args.n0),
         time=dataclasses.replace(cfg.time, step_semantics=args.semantics,
                                  tick_seconds=args.tick_seconds),
-        capacity=dataclasses.replace(cfg.capacity, mode=args.capacity_mode,
-                                     fraction=args.fraction,
-                                     concurrency_quantile=args.concurrency_quantile),
+        capacity=dataclasses.replace(cfg.capacity, **{k: v for k, v in dict(
+            mode=args.capacity_mode, fraction=args.fraction,
+            concurrency_quantile=args.concurrency_quantile).items() if v is not None}),
     )
     if args.scalarization is not None:
         cfg = dataclasses.replace(
@@ -70,7 +76,7 @@ def main():
     print("DLENT-RT smoke test — Phase 0 (new pipeline)")
     print("=" * 70)
     print(f"csv={args.csv}  n0={args.n0}  semantics={args.semantics}")
-    print(f"capacity={args.capacity_mode}@{args.fraction}  "
+    print(f"capacity={cfg.capacity.mode}  "
           f"scalarization={cfg.scalarization.method}")
     print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization={cfg.normalization.strategy}")
     print()
