@@ -135,7 +135,6 @@ class BidResult:
     """Output of bid synthesis for a batch of jobs."""
     v_rate: np.ndarray        
     phi_rate: np.ndarray      # generator phi (diagnostic; legacy Phase 0 reward)
-    bid_low: np.ndarray       
     bid_high: np.ndarray      
     cost_base: Optional[np.ndarray] = None   # reference cost c_j (public, from features)
 
@@ -164,12 +163,11 @@ def synthesize_lognormal(
     inv_hazard = np.where(f > 1e-12, (1.0 - F) / f, 0.0)
     phi_rate = v_rate - inv_hazard
 
-    # For lognormal, bid_low/high are theoretical (not compact support)
-    bid_low = np.full_like(v_rate, 0.0)
+    # no compact support for lognormal bids: bid_high is only a rough scale (diagnostic)
     bid_high = v_rate * 3.0  # rough upper bound for normalization
 
     return BidResult(v_rate=v_rate, phi_rate=phi_rate,
-                     bid_low=bid_low, bid_high=bid_high, cost_base=cost_base)
+                     bid_high=bid_high, cost_base=cost_base)
 
 
 def compute_phi_tilde(L: np.ndarray, myerson: "MyersonModel") -> np.ndarray:

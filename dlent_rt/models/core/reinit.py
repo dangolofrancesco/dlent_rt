@@ -137,7 +137,7 @@ def build_window_state(
     tau = lp.tau if lp.tau.size == ds.n_resources else np.zeros(ds.n_resources)
 
     bids = BidResult(v_rate=v_arr, phi_rate=phi_arr,
-                     bid_low=np.zeros_like(v_arr), bid_high=stream.bid_high[idx_arr],
+                     bid_high=stream.bid_high[idx_arr],
                      cost_base=stream.cost_base[idx_arr])
     st = replace(
         prev, myerson=myerson, grid=grid, bids=bids, p=p, d_bar=md["d_bar"],
