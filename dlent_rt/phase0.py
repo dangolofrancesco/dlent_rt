@@ -23,7 +23,7 @@ The output `PhaseState` is the object both the theory and practical models read.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import numpy as np
@@ -102,7 +102,6 @@ class TypeSpace:
     priorities: np.ndarray
     hw_profiles: np.ndarray
     resources: list[str]
-    _hw_lookup: dict = field(default_factory=dict)
 
     @property
     def n_hw(self) -> int:
@@ -111,20 +110,6 @@ class TypeSpace:
     @property
     def n_types(self) -> int:
         return self.k_star * len(self.priorities) * self.n_hw
-
-    def hw_index(self, a_row: np.ndarray) -> int:
-        return self._hw_lookup[tuple(np.round(a_row, 8))]
-
-    def type_id_from_hw_idx(self, k: int, priority: float, hw_idx: int) -> int:
-        ki = k - 1
-        qi = int(np.searchsorted(self.priorities, priority))
-        return (ki * len(self.priorities) + qi) * self.n_hw + hw_idx
-
-    def type_id(self, k: int, priority: float, a_row: np.ndarray) -> int:
-        ki = k - 1
-        qi = int(np.searchsorted(self.priorities, priority))
-        ai = self.hw_index(a_row)
-        return (ki * len(self.priorities) + qi) * self.n_hw + ai
 
     def decode(self, type_id: int) -> tuple[int, float, np.ndarray]:
         ai = type_id % self.n_hw
@@ -137,7 +122,7 @@ class TypeSpace:
 def assign_type_ids(
     ts: TypeSpace, k_arr: np.ndarray, priority: np.ndarray, hw_idx: np.ndarray,
 ) -> np.ndarray:
-    """Vectorised type_id_from_hw_idx; -1 where k < 1 (legacy phi-space reject)."""
+    """type_id = ((k - 1) * |Q| + q_idx) * |A| + hw_idx, vectorised; -1 where k < 1 (legacy phi-space reject)."""
     k_arr = np.asarray(k_arr, dtype=np.int64)
     qi = np.searchsorted(ts.priorities, np.asarray(priority, float)).astype(np.int64)
     tid = ((k_arr - 1) * len(ts.priorities) + qi) * ts.n_hw + np.asarray(hw_idx, np.int64)
@@ -190,10 +175,9 @@ def scalarized_reward(
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
     priorities = np.array(sorted(cfg.grid.priority_classes), dtype=float)
     profiles = ds.hw_catalogue.centroids
-    lookup = {tuple(np.round(row, 8)): i for i, row in enumerate(profiles)}
     return TypeSpace(
         k_star=cfg.grid.k_star, priorities=priorities,
-        hw_profiles=profiles, resources=H.resources, _hw_lookup=lookup,
+        hw_profiles=profiles, resources=H.resources,
     )
 
 
