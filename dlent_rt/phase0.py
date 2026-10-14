@@ -32,6 +32,7 @@ from .config import Config
 from .data import Dataset, JobArrays
 from .grid import ValuationGrid, build_valuation_grid
 from .lp_oracle import scalarize, solve_lp_rs, LPResult
+from .models.core.error_params import ErrorParams
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
 from .bid import (
     MyersonModel, fit_myerson, bid_model, compute_phi_tilde,
@@ -240,15 +241,16 @@ def _system_constants(
     gamma = max(r_max_val, v_rate_max, d_max, c_max, r_max_val / v_min_val)
     xi = float(np.max(ds.a_max / ds.capacity))
 
+    # eps_D of the DATA xi, from the one implementation of (A.7) in error_params.py
+    # (the online loop builds its own ErrorParams with the forced constants)
     T = ds.T
     delta = cfg.confidence.delta
     if delta is None:
         delta = 1.0 / (T ** cfg.confidence.delta_power)
-    n_res = ds.n_resources
-    eps_D = (2.0 * np.sqrt(xi * np.log(n_res / delta))
-             + 2.0 * xi * np.log(n_res / delta))
-
-    return float(gamma), float(xi), float(eps_D)
+    ep = ErrorParams(gamma=float(gamma), xi=xi, c_min=float(np.min(ds.capacity)),
+                     n_res=int(ds.n_resources), T=int(T), delta=float(delta),
+                     drop_EF=cfg.tests.drop_dual_learning_terms)
+    return float(gamma), float(xi), float(ep.eps_D)
 
 
 
