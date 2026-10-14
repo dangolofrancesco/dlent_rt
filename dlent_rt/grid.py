@@ -128,11 +128,16 @@ def build_valuation_grid(
 ) -> ValuationGrid:
     """Build the valuation grid in the configured space with the configured spacing."""
     v_pos = v_rate[v_rate > 0]
+    if getattr(myerson, "known", False) and space != "v":
+        raise ValueError("known bid distribution: phi depends on the job's c_j, "
+                         "so the grid must be built in bid space (grid.space='v')")
 
     if space == "v":
         edges = build_edges(v_pos, k_star, spacing, phi_floor)
         bnd_v = edges.copy()
-        bnd_phi = np.asarray(myerson.phi(bnd_v))
+        # known distribution: phi of a bin edge is undefined without c_j
+        bnd_phi = (np.full(bnd_v.shape, np.nan) if getattr(myerson, "known", False)
+                   else np.asarray(myerson.phi(bnd_v)))
         shift, rejects = 0.0, False
 
     elif space == "phi":

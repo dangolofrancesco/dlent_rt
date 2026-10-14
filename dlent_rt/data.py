@@ -283,6 +283,10 @@ def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
             stats["levels"], stats["weights"], cfg.capacity.concurrency_quantile
         )
         return cfg.capacity.fraction * qv
+    elif cfg.capacity.mode == "from_amax":
+        # c_i = a_max,i / xi_target, a_max over the KEPT jobs of the basis (H + stream):
+        # the same xi = a_max,i / c_i for every resource by construction.
+        return basis.A.max(axis=0) / cfg.capacity.xi_target
     else:  # absolute
         return np.array(
             [cfg.capacity.absolute.cpu, cfg.capacity.absolute.ram], dtype=float
@@ -323,53 +327,11 @@ def _compute_d_max_steps(
     return d_max, diag
 
 
-def _stratified_sample_by_hour(df, n0, datetime_col, seed=42,
-                                pool_multiplier=3, min_stream_fraction=0.05):
-    """
-    Sample n0 jobs stratified by hour-of-day, drawing ONLY from the first
-    pool_multiplier*n0 rows of df (chronological order preserved).
-    This ensures:
-      1. H jobs all precede stream jobs temporally (causal bootstrap).
-      2. H covers all 24 hours uniformly (representative statistics).
-    pool_multiplier: how many times n0 to look ahead for candidates.
-                     Default 3 gives a pool of 15000 for n0=5000.
-                     Raise if some hours are sparse in the first K rows.
-    min_stream_fraction: fraction of df's tail that is NEVER included in the
-                     pool, regardless of n0/pool_multiplier. Without this,
-                     pool_size = min(pool_multiplier*n0, len(df)) can equal
-                     len(df) when n0 is large relative to the dataset, so the
-                     pool covers every row (including the chronologically
-                     last ones). H's stratified sample could then include
-                     rows at or near the dataset's max datetime, making
-                     df_stream (rows strictly after H's max datetime) empty.
-    """
-    max_pool_size = max(len(df) - max(int(min_stream_fraction * len(df)), 1), 1)
-    if n0 > max_pool_size:
-        raise ValueError(
-            f"n0={n0} leaves fewer than {min_stream_fraction:.0%} of rows "
-            f"({len(df)} total) for the online stream. Lower n0 (<= "
-            f"{max_pool_size}) or raise min_stream_fraction's budget."
-        )
-    pool_size = min(pool_multiplier * n0, max_pool_size)
-    pool = df.iloc[:pool_size].copy()
-    pool['_hour'] = pd.to_datetime(pool[datetime_col]).dt.hour
-    per_hour = max(n0 // 24, 1)
-    sampled = []
-    for h in range(24):
-        candidates = pool[pool['_hour'] == h]
-        n_take = min(per_hour, len(candidates))
-        if n_take > 0:
-            sampled.append(candidates.sample(n=n_take, random_state=seed + h))
-    result = pd.concat(sampled).sort_values(datetime_col).reset_index(drop=True)
-    result = result.drop(columns=['_hour'])
-    return result
-
-
 # Public entry point
 def load_dataset(cfg: Config) -> Dataset:
     df = _read_csv(cfg)
     col = cfg.data.columns
-    resources = ["cpu", "ram"]            
+    resources = ["cpu", "ram"]
     a_cols = [col.requested_cpu, col.requested_ram]
 
     df, outlier_report = handle_outliers(df, cfg, a_cols, col.duration_hours)
@@ -392,30 +354,35 @@ def load_dataset(cfg: Config) -> Dataset:
             "Only 'real_tick' is currently supported."
         )
 
-    # Carry the step assignment as a column so it survives the stratified
-    # split below (H is no longer a contiguous positional prefix of df, so
-    # a positional slice of all_steps would misalign with df_H/df_stream).
-    df = df.assign(_step=all_steps)
-
-    df_H = _stratified_sample_by_hour(df, n0, col.datetime, seed=cfg.run.seed)
-    last_h_time = df_H[col.datetime].max()
-    df_stream = df[df[col.datetime] > last_h_time].reset_index(drop=True)
-
-    steps_H = df_H["_step"].to_numpy()
+    # H = first n0 rows chronologically, stream = the rest. df is sorted by
+    # datetime (_read_csv) and all_steps is row-aligned to df, so this is a
+    # plain POSITIONAL split -- not a timestamp filter, which would lose or
+    # duplicate jobs that share request_time with the H/stream boundary row.
+    df_H = df.iloc[:n0].reset_index(drop=True)
+    df_stream = df.iloc[n0:].reset_index(drop=True)
+    steps_H = all_steps[:n0]
     # steps_stream_abs keeps the ORIGINAL absolute step index (shared origin
     # with steps_H, i.e. t0 = dts[0] of the full dataset) -- needed below to
     # build a capacity-sizing basis that spans H and stream on one timeline.
     # steps_stream is then re-based to 0 at the stream's own start, which is
     # what the rest of the online loop (T, stream.arrival_step) expects.
-    steps_stream_abs = df_stream["_step"].to_numpy()
+    steps_stream_abs = all_steps[n0:]
+
+    assert len(df_H) + len(df_stream) == outlier_report.n_after, (
+        f"job accounting mismatch: len(df_H)+len(df_stream)="
+        f"{len(df_H) + len(df_stream)} != outlier_report.n_after="
+        f"{outlier_report.n_after} -- the H/stream split must partition the "
+        f"filtered dataset with no gaps or overlap."
+    )
+    assert steps_H.max() < steps_stream_abs.min(), (
+        f"causality violated: H's last absolute arrival_step ({steps_H.max()}) "
+        f"is not strictly before stream's first ({steps_stream_abs.min()})."
+    )
+
     stream_origin = steps_stream_abs[0]
     steps_stream = steps_stream_abs - stream_origin
     T = int(steps_stream[-1]) + 1
     H_span_steps = int(steps_H[-1] - steps_H[0]) + 1
-
-    df_H = df_H.drop(columns=["_step"])
-    df_stream = df_stream.drop(columns=["_step"])
-    df = df.drop(columns=["_step"])
 
     if cfg.hardware.fit_on == "full":
         A_fit = df[a_cols].to_numpy(dtype=float)
@@ -442,6 +409,25 @@ def load_dataset(cfg: Config) -> Dataset:
         A=np.concatenate([H.A, stream.A], axis=0),
     )
     capacity = _size_capacity(capacity_basis, cfg)
+
+    # Regression check: H+stream now partition the filtered dataset with no
+    # gaps (positional split, no stratified pool), so capacity computed from
+    # the H+stream basis must equal capacity computed directly on the WHOLE
+    # filtered dataset's timeline in one shot.
+    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
+    full_basis = _OccupancyBasis(
+        arrival_step=full_jobs.arrival_step,
+        duration_steps=full_jobs.duration_steps,
+        A=full_jobs.A,
+    )
+    capacity_full = _size_capacity(full_basis, cfg)
+    assert np.allclose(capacity, capacity_full), (
+        f"capacity from H+stream basis ({capacity}) does not match capacity "
+        f"computed directly on the full filtered dataset's timeline "
+        f"({capacity_full}) -- the H/stream split should partition df with "
+        f"no gaps or reordering."
+    )
+
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
 

@@ -49,9 +49,13 @@ class EnergyModelCfg:
 
 @dataclass(frozen=True)
 class NormalizationCfg:
-    # "per_job" | "common_currency"
-    strategy: str = "common_currency"
+    # "quantile_linear" | "per_job" | "common_currency"
+    strategy: str = "quantile_linear"
+    # quantile_linear only: q of the weighted quantiles Q_q(SW), Q_q(|Pi|), Q_q(K)
+    # that set the carbon price s_C = D_q / K_q (frozen at Phase 0).
+    quantile: float = 0.90
     # $/kgCO2 ($190/ton, US EPA 2023 Social Cost of Carbon, EPA-HQ-OAR-2021-0317, based on Rennert et al. Nature 2022)
+    # Used only by common_currency.
     carbon_tax_per_kg: float = 0.19
 
 @dataclass(frozen=True)
@@ -86,6 +90,11 @@ class BidCfg:
     # lognormal params
     sigma: float = 1.5              # bid dispersion
     base_multiplier: float = 1.0
+    # true  -> the bid distribution is KNOWN a priori: markup v / cost_base ~
+    #          LogNormal(-sigma^2/2, sigma) with sigma above; phi_v(v | c) = c * phi_m(v / c).
+    #          Never refit (Phase 0, ReInit, online). lognormal strategy, grid.space="v" only.
+    # false -> legacy ablation: pooled lognormal MLE on the bids (refit at every ReInit).
+    known_distribution: bool = True
     
 
 
@@ -142,17 +151,19 @@ class AbsoluteCapCfg:
 
 @dataclass(frozen=True)
 class CapacityCfg:
-    mode: str = "fraction_of_concurrency_quantile" # "fraction_of_volume" | "fraction_of_peak" | "fraction_of_concurrency_quantile" | "absolute"
+    mode: str = "fraction_of_concurrency_quantile" # "fraction_of_volume" | "fraction_of_peak" | "fraction_of_concurrency_quantile" | "from_amax" | "absolute"
     fraction: float = 0.60
     concurrency_quantile: float = 0.90   # used only by fraction_of_concurrency_quantile
     absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)
+    # from_amax only: c_i = a_max,i / xi_target (sizing only; constants.xi_override is separate)
+    xi_target: float = 0.5
 
 
 @dataclass(frozen=True)
 class ObjectiveCfg:
-    lambda1: float = 0.3
-    lambda2: float = 0.3
-    lambda3: float = 0.3
+    lambda1: float = 1/3
+    lambda2: float = 1/3
+    lambda3: float = 1/3
 
 
 @dataclass(frozen=True)
@@ -242,6 +253,38 @@ class PhaseTransitionCfg:
 
 
 @dataclass(frozen=True)
+class ConstantsCfg:
+    # Forced values for the paper's system constants (Zhang & Cheung 2025,
+    # Appendix A). null -> use the data-derived value from Phase 0.
+    # Forcing is a deliberate deviation: the data-derived gamma/xi make every
+    # threshold vacuous and p_U ~ 0 (see week-28 notes). When xi is forced,
+    # Test 1 uses the implied a_max,i = xi * c_i so that xi = max_i a_max,i/c_i
+    # still holds; the physical gate always uses the true A of each job.
+    xi_override: Optional[float] = None
+    gamma_override: Optional[float] = None
+    # r_max entering the data-derived gamma: p-weighted quantile of |r~| over
+    # populated types. 1.0 = max (original definition).
+    r_max_quantile: float = 1.0
+
+
+@dataclass(frozen=True)
+class TestsCfg:
+    # Exact-LP variant (week 17): shadow prices come from the exact LP-RS, not
+    # from the stochastic dual-learning Algorithm 2, so the dual-learning error
+    # terms eps_E^(m) (A.8) and eps_F^(m) (A.9) are set to 0 in p_U and Test 2.
+    # All other Appendix-A terms are kept (paper-faithful).
+    drop_dual_learning_terms: bool = True
+    # relative tolerance of the Eisner-Severance parametric-LP reconstruction
+    piecewise_tol: float = 1e-7
+
+
+@dataclass(frozen=True)
+class OnlineCfg:
+    bid_seed_offset: int = 1        # stream bids: rng(run.seed + offset)
+    thinning_seed_offset: int = 2   # Bernoulli U(t): rng(run.seed + offset)
+
+
+@dataclass(frozen=True)
 class LoggingCfg:
     per_step: bool = True
     per_phase: bool = True
@@ -274,6 +317,9 @@ class Config:
     test3: Test3Cfg = field(default_factory=Test3Cfg)
     phase_transition: PhaseTransitionCfg = field(default_factory=PhaseTransitionCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
+    constants: ConstantsCfg = field(default_factory=ConstantsCfg)
+    tests: TestsCfg = field(default_factory=TestsCfg)
+    online: OnlineCfg = field(default_factory=OnlineCfg)
 
     #  validation 
     def validate(self) -> "Config":
@@ -286,8 +332,9 @@ class Config:
         assert self.revision.mode in ("continuous", "at_completion")
         assert self.capacity.mode in (
             "fraction_of_volume", "fraction_of_peak",
-            "fraction_of_concurrency_quantile", "absolute",
+            "fraction_of_concurrency_quantile", "from_amax", "absolute",
         )
+        assert self.capacity.xi_target > 0.0
         assert 0.0 < self.capacity.concurrency_quantile <= 1.0
         assert 0.0 < self.capacity.fraction <= 1.0
         assert self.grid.k_star >= 2
@@ -304,12 +351,26 @@ class Config:
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0
         assert self.bid.strategy in ("uniform", "lognormal")
+        if self.bid.known_distribution:
+            assert self.bid.strategy == "lognormal", \
+                "bid.known_distribution=true requires bid.strategy='lognormal'"
+            assert self.grid.space == "v", \
+                "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
+            assert self.bid.sigma > 0
         assert self.bid.base_utility_mode in ("linear", "log")
         assert self.normalization.strategy in (
-            "per_job", "moving_avg", "common_currency", "utopian")
+            "per_job", "moving_avg", "common_currency", "utopian", "quantile_linear")
+        assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.spec_cpu_core > 0
         assert self.energy_model.spec_ram_gb > 0
         assert self.normalization.carbon_tax_per_kg >= 0
+        assert self.test3.s_grid in ("geometric", "full")
+        assert self.test3.geometric_base >= 2
+        if self.constants.xi_override is not None:
+            assert 0.0 < self.constants.xi_override < 1.0
+        if self.constants.gamma_override is not None:
+            assert self.constants.gamma_override > 0.0
+        assert 0.0 < self.constants.r_max_quantile <= 1.0
         if self.capacity.mode == "absolute":
             assert self.capacity.absolute.cpu is not None
             assert self.capacity.absolute.ram is not None
@@ -369,6 +430,7 @@ _DATACLASS_REGISTRY = {
     "LpCfg": LpCfg, "Test3Cfg": Test3Cfg, "PhaseTransitionCfg": PhaseTransitionCfg,
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
+    "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
 }
 
 

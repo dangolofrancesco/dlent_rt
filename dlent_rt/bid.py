@@ -4,6 +4,7 @@ Bid synthesis and Myerson virtual value computation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from scipy.stats import lognorm
@@ -12,8 +13,32 @@ from scipy.stats import lognorm
 # Moved from grid.py — single source of truth for virtual value logic
 @dataclass
 class MyersonModel:
-    mu: float                 # log-space mean
-    sigma: float              # log-space std
+    """
+    Lognormal Myerson model. Two modes:
+      known=False (ablation, legacy): F = LogNormal(mu, sigma) fitted on the pooled
+        bids v (fit_myerson); phi_job(v, c) = phi(v), c is ignored.
+      known=True (default, bid.known_distribution): the distribution is KNOWN a
+        priori from the config and never refit. (mu, sigma) = (-sigma^2/2, sigma)
+        parametrise the MARKUP m = v / c ~ LogNormal(-sigma^2/2, sigma), c = the
+        job's reference cost (cost_base), and phi_job(v, c) = c * phi(v / c).
+    phi_job is the single virtual value used by Phase 0, ReInit and the online reward.
+    """
+    mu: float                 # log-space mean (known=True: of the markup m)
+    sigma: float              # log-space std  (known=True: bid.sigma from the config)
+    known: bool = False
+
+    @classmethod
+    def known_markup(cls, sigma: float) -> "MyersonModel":
+        return cls(mu=-0.5 * float(sigma) ** 2, sigma=float(sigma), known=True)
+
+    def phi_job(self, v, c=None):
+        """Virtual value of bid v of a job with reference cost c (see class doc)."""
+        if not self.known:
+            return self.phi(v)
+        if c is None:
+            raise ValueError("known-distribution phi needs the job's reference cost c")
+        c = np.asarray(c, dtype=float)
+        return c * np.asarray(self.phi(np.asarray(v, dtype=float) / c))
 
     def phi(self, v):
         """Myerson virtual value: phi(v) = v - (1 - F(v)) / f(v)."""
@@ -47,6 +72,17 @@ def fit_myerson(v_rate: np.ndarray) -> MyersonModel:
     sigma = float(logs.std(ddof=1)) if v.size > 1 else 1.0
     sigma = max(sigma, 1e-6)
     return MyersonModel(mu=mu, sigma=sigma)
+
+
+def bid_model(cfg, v_rate: np.ndarray) -> MyersonModel:
+    """The mechanism's bid model: known markup distribution (bid.known_distribution,
+    sigma = bid.sigma, no fit) or the legacy pooled lognormal MLE on v_rate."""
+    if cfg.bid.known_distribution:
+        if cfg.bid.strategy != "lognormal":
+            raise ValueError("bid.known_distribution=true is implemented for "
+                             "bid.strategy='lognormal' only; set it to false")
+        return MyersonModel.known_markup(cfg.bid.sigma)
+    return fit_myerson(v_rate)
 
 
 def compute_base_utility(
@@ -99,9 +135,10 @@ class LognormalBidParams:
 class BidResult:
     """Output of bid synthesis for a batch of jobs."""
     v_rate: np.ndarray        
-    phi_rate: np.ndarray      
+    phi_rate: np.ndarray      # generator phi (diagnostic; legacy Phase 0 reward)
     bid_low: np.ndarray       
     bid_high: np.ndarray      
+    cost_base: Optional[np.ndarray] = None   # reference cost c_j (public, from features)
 
 
 def synthesize_uniform(
@@ -130,7 +167,7 @@ def synthesize_uniform(
     phi_rate = 2.0 * v_rate - bid_high  # closed-form Myerson for U[a,b]
 
     return BidResult(v_rate=v_rate, phi_rate=phi_rate,
-                     bid_low=bid_low, bid_high=bid_high)
+                     bid_low=bid_low, bid_high=bid_high, cost_base=cost_base)
 
 
 def synthesize_lognormal(
@@ -162,7 +199,7 @@ def synthesize_lognormal(
     bid_high = v_rate * 3.0  # rough upper bound for normalization
 
     return BidResult(v_rate=v_rate, phi_rate=phi_rate,
-                     bid_low=bid_low, bid_high=bid_high)
+                     bid_low=bid_low, bid_high=bid_high, cost_base=cost_base)
 
 
 def compute_phi_tilde(
@@ -171,6 +208,10 @@ def compute_phi_tilde(
     strategy: str,
     myerson: "MyersonModel",
 ) -> np.ndarray:
+    if myerson.known:
+        # per-type phi(L) is undefined: phi depends on the job's c_j, which is not
+        # part of the type. The payment is computed per job, phi_job(L_k, c_j).
+        return np.full(np.shape(L), np.nan)
     if strategy == "uniform":
         return 2.0 * L - bid_high_bar
     else:

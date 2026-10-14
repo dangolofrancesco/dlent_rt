@@ -7,9 +7,9 @@ run:
 
 # Data ingestion
 data:
-  batch_csv: "data/batch_may2019_30k.csv"
-  grid_csv: "data/grid_data_may_2019.csv"
-  n0: 20000
+  batch_csv: "/Users/francescodangolo/Projects/dlent_rt/data/batch_may2019_30k.csv"
+  grid_csv: "/Users/francescodangolo/Projects/dlent_rt/data/grid_data_may_2019.csv"
+  n0: 10000
   columns:
     collection_id: "collection_id"
     datetime: "request_time"
@@ -48,7 +48,7 @@ hardware:
 outliers:
   policy: "drop"              # "drop" | "clip"
   a_max_quantile: 0.90        # resource-request cutoff (per resource, on the trace)
-  d_max_quantile: 0.90        # duration cutoff (hours); jobs longer are dropped/clipped
+  d_max_quantile: 0.95        # duration cutoff (hours); jobs longer are dropped/clipped
   # xi safety check: warn if max_i a_max,i / c_i exceeds this after handling
   xi_warn_threshold: 0.10     # ~ 1/log(T) for T ~ 25k
 
@@ -69,8 +69,11 @@ capacity:
   #   -th percentile of the concurrent-occupancy time series (not the max).
   #   Sits between average and peak; this is the mode most likely to bind at
   #   intuitive fractions (0.5-0.8) under a heavy-tailed real trace.
+  # mode "from_amax": c_i = a_max,i / xi_target, a_max,i = max request of resource i
+  #   over the kept jobs (H + stream). Same xi = a_max,i / c_i for CPU and RAM.
   # mode "absolute": c_i taken directly from `absolute` below (real deployments).
-  mode: "fraction_of_concurrency_quantile"
+  mode: "from_amax"
+  xi_target: 0.5              # used only by from_amax (sizing only, not constants.xi_override)
   fraction: 0.40              # load factor rho (static sim used 0.60)
   concurrency_quantile: 0.80   # used only by fraction_of_concurrency_quantile
   absolute:                   # used only when mode == "absolute"
@@ -96,6 +99,10 @@ bid:
   gamma1: 0.0332                # $/core-hour reserve price
   gamma2: 0.00445               # $/GB-hour reserve price
   sigma: 0.3                  # lognormal dispersion (only for lognormal strategy)
+  # Bid distribution KNOWN a priori (never refit): markup v / cost_base ~
+  # LogNormal(-sigma^2/2, sigma), phi_v(v | c) = c * phi_m(v / c), the same phi in
+  # Phase 0, ReInit and the online reward. false = legacy pooled-MLE ablation.
+  known_distribution: true
   base_multiplier: 1.0
   # Base utility rate ($/hour): minimum hourly value a user derives from job
   # completion, independent of resource footprint. Multiplied by duration.
@@ -111,16 +118,21 @@ bid:
   base_utility_mode: "log"    # "linear" | "log"
 
 normalization:
-  strategy: "common_currency"         # "per_job" | "common_currency"
+  strategy: "quantile_linear"         # "quantile_linear" | "per_job" | "common_currency"
+  # quantile_linear: carbon K [kgCO2] -> s_C * K [$] (linear, through the origin),
+  # s_C = D_q / K_q with D_q = (Q_q(SW) + Q_q(|Pi|)) / 2, K_q = Q_q(K), weighted
+  # quantiles over populated types. Computed once in Phase 0 and frozen. The
+  # reward stays in dollars (no common divisor, norm_ref = (1, 1, 1)).
+  quantile: 0.90
   # $/kgCO2 ($190/ton, US EPA 2023 Social Cost of Carbon, EPA-HQ-OAR-2021-0317,
-  # based on Rennert et al. Nature 2022)
+  # based on Rennert et al. Nature 2022). Used only by common_currency.
   carbon_tax_per_kg: 0.19
 
 # Mechanism / objective weights
 objective:
-  lambda1: 0.3
-  lambda2: 0.3
-  lambda3: 0.3
+  lambda1: 1.0
+  lambda2: 1.0
+  lambda3: 1.0
 
 # Discretization grid
 grid:
@@ -191,3 +203,25 @@ logging:
   per_step: true              # full per-step parquet log
   per_phase: true             # per-phase summary
   short_phase_log: true       # dedicated short-phase / consecutive-short log
+
+# --------------------------------------------------------------------------- #
+# Online loop (week 28)
+# --------------------------------------------------------------------------- #
+constants:
+  # Forced system constants (Zhang & Cheung 2025, App. A). null = data-derived.
+  # xi = 0.001: order of magnitude of a_max/c_min in a production cluster
+  #   (week 17); gives eps_D ~ 0.45 and 1 - eps_D - xi > 0 for T ~ 1e5, delta = T^-3.
+  # gamma = 1.0: >= r_max of the common_currency-normalised reward (max |r~| <= 0.9).
+  xi_override: 0.001
+  gamma_override: 1.0
+  # r_max in the data-derived gamma = p-weighted quantile of |r~| over populated
+  # types (1.0 = max). 0.8 keeps the extreme phi(v) tail from dominating gamma.
+  r_max_quantile: 0.8
+
+tests:
+  drop_dual_learning_terms: true   # Exact-LP: eps_E = eps_F = 0 (week 17)
+  piecewise_tol: 1.0e-7   # ~ HiGHS default feasibility tolerance
+
+online:
+  bid_seed_offset: 1
+  thinning_seed_offset: 2

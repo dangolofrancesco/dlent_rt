@@ -7,7 +7,7 @@ Computes everything the online loop needs to start its first phase:
   - Energy model (power draw from CPU/RAM/scheduling_class)
   - Grid-data lookup (electricity price + carbon intensity at request_time)
   - Per-type statistics (p, d_bar, v_bar, phi_bar, energy, costs)
-  - Normalization (per_job / moving_avg / common_currency / utopian)
+  - Normalization (per_job / moving_avg / common_currency / utopian / quantile_linear)
   - Scalarized reward r_tilde
   - LP-RS -> shadow prices tau* and benchmark lambda*
 
@@ -34,7 +34,7 @@ from .grid import ValuationGrid, build_valuation_grid
 from .lp_oracle import scalarize, solve_lp_rs, LPResult
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
 from .bid import (
-    MyersonModel, fit_myerson, compute_phi_tilde,
+    MyersonModel, fit_myerson, bid_model, compute_phi_tilde,
     UniformBidParams, LognormalBidParams, BidResult,
     synthesize_uniform, synthesize_lognormal,
 )
@@ -148,6 +148,59 @@ class TypeSpace:
         return ki + 1, float(self.priorities[qi]), self.hw_profiles[ai]
 
 
+def assign_type_ids(
+    ts: TypeSpace, k_arr: np.ndarray, priority: np.ndarray, hw_idx: np.ndarray,
+) -> np.ndarray:
+    """Vectorised type_id_from_hw_idx; -1 where k < 1 (legacy phi-space reject)."""
+    k_arr = np.asarray(k_arr, dtype=np.int64)
+    qi = np.searchsorted(ts.priorities, np.asarray(priority, float)).astype(np.int64)
+    tid = ((k_arr - 1) * len(ts.priorities) + qi) * ts.n_hw + np.asarray(hw_idx, np.int64)
+    return np.where(k_arr >= 1, tid, -1)
+
+
+def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-type (L = bid-space bin floor, priority, hardware profile A)."""
+    n = ts.n_types
+    ids = np.arange(n)
+    ai = ids % ts.n_hw
+    rest = ids // ts.n_hw
+    qi = rest % len(ts.priorities)
+    ki = rest // len(ts.priorities)
+    L = np.asarray(grid.bnd_v)[ki]
+    return L, ts.priorities[qi].astype(float), ts.hw_profiles[ai]
+
+
+def scalarized_reward(
+    priority_of_type: np.ndarray, v_bar: np.ndarray, phi_bar: np.ndarray,
+    C_elec_bar: np.ndarray, C_carbon_bar: np.ndarray, p: np.ndarray,
+    v: np.ndarray, ds, cfg: Config, common_scale: Optional[float] = None,
+    carbon_price: Optional[float] = None,
+):
+    """
+    Steps 9-11 of run_phase0 factored out so EndPhaseAndReinitialize reuses the
+    exact same reward construction. `common_scale` freezes the common_currency
+    scale s (the online loop passes Phase 0's s so r_tilde stays on one scale
+    across phases). `carbon_price` freezes the quantile_linear carbon price s_C
+    in the same way (ReInit passes Phase 0's s_C; it is never recomputed on the
+    stream). Returns (r_tilde, r_rev, norm_ref, norm_deg, norm_info).
+    """
+    lam = cfg.objective
+    raw_sat  = priority_of_type * v_bar
+    raw_prof = phi_bar - C_elec_bar
+    raw_carb = C_carbon_bar
+    V_sat, V_prof, V_carb, norm_ref, norm_deg, norm_info = _normalize_objectives(
+        raw_sat, raw_prof, raw_carb, p, v, ds, cfg, common_scale=common_scale,
+        carbon_price=carbon_price,
+    )
+    if cfg.normalization.strategy == "utopian":
+        f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, lam.lambda3 * V_carb])
+    else:
+        f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
+    r_rev = lam.lambda1 * V_sat + lam.lambda2 * V_prof
+    r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
+    return r_tilde, r_rev, norm_ref, norm_deg, norm_info
+
+
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
     priorities = np.array(sorted(cfg.grid.priority_classes), dtype=float)
     profiles = ds.hw_catalogue.centroids
@@ -181,7 +234,8 @@ class PhaseState:
     C_carbon_bar: np.ndarray              # mean carbon emissions per type (kgCO2)
     v: np.ndarray                         # (n_types, |I|) expected resource volume
     L: np.ndarray                         # bid-space bin floor (for payment rule)
-    phi_tilde: np.ndarray                 # phi(L): virtual value at floor (payment rule)
+    phi_tilde: np.ndarray                 # phi(L): virtual value at floor (payment rule);
+                                          # NaN under known_distribution (per job: phi_job(L, c_j))
 
     # LP-RS output
     tau: np.ndarray
@@ -199,6 +253,10 @@ class PhaseState:
     n_assigned: int = 0
     norm_degenerate: tuple = (False, False, False)
     n_types_hw_degenerate: int = 0
+    # $/kgCO2 actually applied to C_carbon_bar: s_C for quantile_linear (frozen
+    # at Phase 0), cfg.normalization.carbon_tax_per_kg for the other strategies.
+    carbon_price: float = 0.0             # always overwritten in run_phase0
+    norm_info: Optional[dict] = None      # quantile_linear: q, Q_sw, Q_abs_pi, D_q, K_q, s_C
 
 
 
@@ -231,49 +289,42 @@ def _per_type_stats(
     jobs: JobArrays, bids: BidResult, energy_kwh: np.ndarray,
     power_kw: np.ndarray, elec_price: np.ndarray, carbon_intensity: np.ndarray,
     grid: ValuationGrid, ts: TypeSpace, ds: Dataset, cfg: Config,
-    n_total_for_p: int, myerson: MyersonModel,
+    n_total_for_p: int, myerson: MyersonModel, phi_job: np.ndarray,
 ) -> dict:
     """
     Compute per-type empirical statistics.
 
     v_bar and phi_bar are SAMPLE MEANS over the jobs assigned to each type
-    (actual job values), not the discretization bin floor.
+    (actual job values), not the discretization bin floor. `phi_job` is the
+    per-job virtual value the type reward averages (see run_phase0, step 2).
     """
     n_types = ts.n_types
 
     k_arr = np.asarray(grid.assign(bids.v_rate, myerson))
-    type_ids = np.full(jobs.n, -1, dtype=np.int64)
     valid = k_arr >= 1
     n_ir_rejected = int((~valid).sum())
-    for idx in np.where(valid)[0]:
-        type_ids[idx] = ts.type_id_from_hw_idx(
-            int(k_arr[idx]), float(jobs.priority[idx]), int(jobs.hw_idx[idx])
-        )
+    type_ids = assign_type_ids(ts, k_arr, jobs.priority, jobs.hw_idx)
 
-    N = np.zeros(n_types, dtype=np.int64)
-    d_bar        = np.zeros(n_types)
-    v_bar        = np.zeros(n_types)   # mean bid per type
-    phi_bar      = np.zeros(n_types)   # mean phi(v) per type
-    bid_high_bar = np.zeros(n_types)   # mean upper bid-support bound per type
-    energy_bar   = np.zeros(n_types)
-    power_bar    = np.zeros(n_types)
-    C_elec_bar   = np.zeros(n_types)
-    C_carbon_bar = np.zeros(n_types)
+    # Vectorised per-type sample means (bincount). Numerically equivalent to
+    # the previous per-type mask loop (O(n * n_types)); see tests/test_phase0_refactor.py.
+    tid = type_ids[valid]
+    N = np.bincount(tid, minlength=n_types).astype(np.int64)
 
-    for tid in range(n_types):
-        mask = type_ids == tid
-        cnt = int(mask.sum())
-        N[tid] = cnt
-        if cnt == 0:
-            continue
-        d_bar[tid]        = jobs.duration_steps[mask].mean()
-        v_bar[tid]        = bids.v_rate[mask].mean()
-        phi_bar[tid]      = bids.phi_rate[mask].mean()
-        bid_high_bar[tid] = bids.bid_high[mask].mean()
-        energy_bar[tid]   = energy_kwh[mask].mean()
-        power_bar[tid]    = power_kw[mask].mean()
-        C_elec_bar[tid]   = (energy_kwh[mask] * elec_price[mask]).mean()
-        C_carbon_bar[tid] = (carbon_intensity[mask]).mean()         # energy_kwh[mask] * carbon_intensity[mask]
+    def _mean(x: np.ndarray) -> np.ndarray:
+        s = np.bincount(tid, weights=np.asarray(x, float)[valid], minlength=n_types)
+        return np.divide(s, N, out=np.zeros(n_types), where=N > 0)
+
+    d_bar        = _mean(jobs.duration_steps)
+    v_bar        = _mean(bids.v_rate)            # mean bid per type
+    phi_bar      = _mean(phi_job)                # mean phi(v) per type
+    bid_high_bar = _mean(bids.bid_high)          # mean upper bid-support bound per type
+    energy_bar   = _mean(energy_kwh)
+    power_bar    = _mean(power_kw)
+    C_elec_bar   = _mean(energy_kwh * elec_price)
+    # FIX (week 28): emissions per job = E [kWh] * CI [kgCO2/kWh] -> kgCO2.
+    # Previously this averaged carbon_intensity alone (the energy factor was
+    # commented out), so C_carbon did not scale with job size or duration.
+    C_carbon_bar = _mean(energy_kwh * carbon_intensity)
 
     p = N / max(n_total_for_p, 1)
     return dict(N=N, p=p, d_bar=d_bar, v_bar=v_bar, phi_bar=phi_bar,
@@ -286,13 +337,54 @@ def _per_type_stats(
 
 
 # Normalization
+def _weighted_quantile(x: np.ndarray, w: np.ndarray, q: float) -> float:
+    """Weighted quantile: atoms sorted by x, each placed at the midpoint of its
+    cumulative weight, (cumsum(w) - w/2) / sum(w), then linear interpolation."""
+    x = np.asarray(x, float)
+    w = np.asarray(w, float)
+    order = np.argsort(x, kind="stable")
+    x, w = x[order], w[order]
+    cw = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(q, cw, x))
+
+
+def carbon_scale_from_quantile(
+    raw_sat: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
+    p: np.ndarray, q: float,
+) -> dict:
+    """
+    quantile_linear carbon price, over populated types (p > 0) weighted by p:
+      D_q = (Q_q(SW) + Q_q(|Pi|)) / 2,  K_q = Q_q(K),  s_C = D_q / K_q  [$/kgCO2],
+    so the linear map through the origin K -> s_C * K sends [0, K_q] onto [0, D_q].
+    """
+    m = np.asarray(p) > 0
+    w = np.asarray(p, float)[m]
+    Q_sw     = _weighted_quantile(np.asarray(raw_sat)[m], w, q)
+    Q_abs_pi = _weighted_quantile(np.abs(np.asarray(raw_prof)[m]), w, q)
+    K_q      = _weighted_quantile(np.asarray(raw_carb)[m], w, q)
+    D_q = 0.5 * (Q_sw + Q_abs_pi)
+    if K_q <= 0 or D_q <= 0:
+        import warnings
+        warnings.warn(
+            f"quantile_linear: degenerate scale (D_q={D_q:.4g}, K_q={K_q:.4g}); "
+            f"setting s_C = 0 (no carbon term).",
+            RuntimeWarning,
+        )
+        s_C = 0.0
+    else:
+        s_C = D_q / K_q
+    return dict(q=float(q), Q_sw=Q_sw, Q_abs_pi=Q_abs_pi, D_q=D_q, K_q=K_q, s_C=float(s_C))
+
+
 def _normalize_objectives(
     raw_sat: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
     p: np.ndarray, v: np.ndarray, ds: Dataset, cfg: Config,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[tuple], tuple]:
+    common_scale: Optional[float] = None,
+    carbon_price: Optional[float] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[tuple], tuple, Optional[dict]]:
     """
     Dispatch normalization by cfg.normalization.strategy.
-    Returns (V_sat, V_prof, V_carb, norm_ref, norm_degenerate).
+    Returns (V_sat, V_prof, V_carb, norm_ref, norm_degenerate, norm_info).
 
     Strategy reference (this function is the single source of truth; there is
     no separate normalization module):
@@ -304,8 +396,15 @@ def _normalize_objectives(
                        that all three objectives are in dollars, then all three
                        are divided by ONE shared scale so their real dollar
                        magnitudes stay comparable (see the branch comment).
+      "quantile_linear"  carbon is mapped to dollars linearly through the
+                       origin, C$ = s_C * K, with s_C = D_q / K_q chosen so the
+                       q-quantile of K lands on the mean of the q-quantiles of
+                       SW and |Pi| (carbon_scale_from_quantile). No divisor:
+                       the reward stays in dollars and norm_ref = (1, 1, 1).
+                       `carbon_price` freezes s_C (ReInit passes Phase 0's).
     """
     strategy = cfg.normalization.strategy
+    norm_info = None
 
     def _span(arr: np.ndarray) -> float:
         return max(float(np.max(np.abs(arr[p > 0]))) if np.any(p > 0) else 1.0, 1e-12)
@@ -327,7 +426,8 @@ def _normalize_objectives(
 
         # Divide ALL THREE by ONE shared scale (the largest dollar magnitude
         # across the three objectives, over populated types). 
-        common = max(_span(raw_sat), _span(raw_prof), _span(raw_carb_dollar))
+        common = (max(_span(raw_sat), _span(raw_prof), _span(raw_carb_dollar))
+                  if common_scale is None else float(common_scale))
         V_sat  = raw_sat         / common
         V_prof = raw_prof        / common
         V_carb = raw_carb_dollar / common
@@ -335,10 +435,26 @@ def _normalize_objectives(
         norm_ref = (common, common, common)
         norm_deg = (False, False, False)
 
+    elif strategy == "quantile_linear":
+        # s_C [$/kgCO2] computed once on Phase 0's H, then frozen (ReInit).
+        if carbon_price is None:
+            norm_info = carbon_scale_from_quantile(
+                raw_sat, raw_prof, raw_carb, p, cfg.normalization.quantile)
+            s_C = norm_info["s_C"]
+        else:
+            s_C = float(carbon_price)
+            norm_info = dict(q=cfg.normalization.quantile, s_C=s_C, frozen=True)
+        norm_info = dict(strategy=strategy, **norm_info)
+        V_sat  = raw_sat
+        V_prof = raw_prof
+        V_carb = raw_carb * s_C
+        norm_ref = (1.0, 1.0, 1.0)
+        norm_deg = (False, False, False)
+
     else:
         raise ValueError(f"Unknown normalization strategy: {strategy}")
 
-    return V_sat, V_prof, V_carb, norm_ref, norm_deg
+    return V_sat, V_prof, V_carb, norm_ref, norm_deg, norm_info
 
 
 def _single_objective_max(
@@ -355,8 +471,14 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     # 1. Synthesize bids on-the-fly
     bids = _synthesize_bids(H, cfg, seed=cfg.run.seed)
 
-    # 2. Fit Myerson model on synthesized bids
-    myerson = fit_myerson(bids.v_rate)
+    # 2. Bid model. known_distribution (default): the markup distribution is
+    #    known (sigma = bid.sigma, never fit) and the per-job phi is the
+    #    mechanism's phi_job(v, c_j), the same function ReInit and the online
+    #    reward use. known_distribution=false (ablation): pooled MLE fit, and the
+    #    type reward keeps the legacy generator phi (bids.phi_rate).
+    myerson = bid_model(cfg, bids.v_rate)
+    phi_job = (np.asarray(myerson.phi_job(bids.v_rate, bids.cost_base))
+               if myerson.known else bids.phi_rate)
 
     # 3. Build valuation grid
     grid = build_valuation_grid(
@@ -380,6 +502,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     stats = _per_type_stats(
         H, bids, energy_kwh, power_kw, elec_price, carbon_intensity,
         grid, ts, ds, cfg, n_total_for_p=p_normaliser, myerson=myerson,
+        phi_job=phi_job,
     )
     p              = stats["p"]
     d_bar          = stats["d_bar"]
@@ -392,54 +515,13 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     C_carbon_bar   = stats["C_carbon_bar"]
 
     # 7. Bin floors per type for the PAYMENT RULE only
-    L = np.zeros(n_types)
-    priority_of_type = np.zeros(n_types)
-    A_of_type = np.zeros((n_types, n_res))
-    for tid in range(n_types):
-        k, priority, a_row = ts.decode(tid)
-        L[tid] = grid.bnd_v[k - 1]
-        priority_of_type[tid] = priority
-        A_of_type[tid] = a_row
-
+    L, priority_of_type, A_of_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, bid_high_bar, cfg.bid.strategy, myerson)
 
     # 8. Expected resource volume
     v = A_of_type * d_bar[:, None]
 
-    # 9. Raw per-type objectives using PER-TYPE SAMPLE MEANS (see module docstring)
-    #    W  = priority * v_bar     (was: priority * L)
-    #    Pi = phi_bar - C_elec     (was: phi(L) - C_elec)
-    #    C  = C_carbon_bar (kgCO2)
-    #    The relative weight of carbon against the other objectives is set
-    #    solely by objective.lambda3, applied after normalization.
-    lam = cfg.objective
-    raw_sat  = priority_of_type * v_bar_arr
-    raw_prof = phi_bar_arr - C_elec_bar
-    raw_carb = C_carbon_bar
-
-    # 10. Normalization
-    V_sat, V_prof, V_carb, norm_ref, norm_deg = _normalize_objectives(
-        raw_sat, raw_prof, raw_carb, p, v, ds, cfg,
-    )
-
-    # 11. Build objective matrix and scalarize
-    # For utopian: V_carb is already inverted (1 - C/z_carb), so add it.
-    # For all others: subtract V_carb (lower carbon is better).
-    if cfg.normalization.strategy == "utopian":
-        f = np.column_stack([
-            lam.lambda1 * V_sat,
-            lam.lambda2 * V_prof,
-            lam.lambda3 * V_carb,
-        ])
-    else:
-        f = np.column_stack([
-            lam.lambda1 *  V_sat,
-            lam.lambda2 *  V_prof,
-            -lam.lambda3 * V_carb,
-        ])
-
-    r_rev = lam.lambda1 * V_sat + lam.lambda2 * V_prof
-
+    # 9-11. Raw objectives (per-type SAMPLE MEANS), normalization, scalarization
     if cfg.scalarization.method == "chebyshev":
         import warnings
         warnings.warn(
@@ -449,14 +531,25 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
             "enumeration notebooks.",
             RuntimeWarning,
         )
-
-    weights = np.ones(3)
-    r_tilde = np.asarray(scalarize(
-        f, cfg.scalarization.method, weights, cfg.scalarization.rho
-    ))
+    r_tilde, r_rev, norm_ref, norm_deg, norm_info = scalarized_reward(
+        priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar,
+        p, v, ds, cfg,
+    )
+    carbon_price = (norm_info["s_C"] if cfg.normalization.strategy == "quantile_linear"
+                    else cfg.normalization.carbon_tax_per_kg)
 
     # 12. System constants
-    r_max      = float(np.max(np.abs(r_tilde[p > 0]))) if np.any(p > 0) else 1.0
+    # r_max for gamma: p-weighted quantile of |r_tilde| over populated types
+    # (constants.r_max_quantile; 1.0 = plain max). A quantile < 1 keeps a few
+    # extreme types (e.g. a lognormal phi(v) -> -inf in the left tail) from
+    # dominating gamma through r_max and r_max / v_min.
+    if np.any(p > 0):
+        q_r = cfg.constants.r_max_quantile
+        abs_r = np.abs(r_tilde[p > 0])
+        r_max = (float(np.max(abs_r)) if q_r >= 1.0
+                 else _weighted_quantile(abs_r, p[p > 0], q_r))
+    else:
+        r_max = 1.0
     # gamma's r_max/v_min term must exclude types whose hardware profile is
     # numerically degenerate (a k-means centroid with a component collapsed
     # near zero). Such a type produces v_ij approx 0, inflating gamma by
@@ -501,6 +594,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         n_assigned=stats["n_assigned"],
         norm_degenerate=norm_deg,
         n_types_hw_degenerate=n_types_hw_degenerate,
+        carbon_price=float(carbon_price), norm_info=norm_info,
     )
 
 

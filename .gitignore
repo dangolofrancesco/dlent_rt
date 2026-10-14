@@ -14,3 +14,12 @@ dlent_venv/
 cloud-pricing-sim-5f9d89ae03de.json
 
 data/
+
+tests/
+
+*.csv
+*.json
+*.toml
+
+notebooks/src/
+reports/

@@ -40,7 +40,7 @@ def main():
     ap.add_argument("--bid-strategy", default="uniform",
                     choices=["uniform", "lognormal"])
     ap.add_argument("--normalization", default=None,
-                    choices=["per_job", "moving_avg", "common_currency", "utopian"])
+                    choices=["per_job", "moving_avg", "common_currency", "utopian", "quantile_linear"])
     args = ap.parse_args()
 
     cfg = load_config(args.config) if args.config else default_config()
@@ -53,7 +53,8 @@ def main():
         capacity=dataclasses.replace(cfg.capacity, mode=args.capacity_mode,
                                      fraction=args.fraction,
                                      concurrency_quantile=args.concurrency_quantile),
-        bid=dataclasses.replace(cfg.bid, strategy=args.bid_strategy),
+        bid=dataclasses.replace(cfg.bid, strategy=args.bid_strategy,
+                                known_distribution=args.bid_strategy == "lognormal"),
     )
     if args.scalarization is not None:
         cfg = dataclasses.replace(
@@ -122,14 +123,20 @@ def main():
           f"clamped={dd['clamped_by_ceiling']}")
     print()
 
-    # --- stratified-H diagnostic ---
-    h_hours = pd.to_datetime(ds.H.datetime).hour
-    print("[H stratification]")
-    print(f"  H time range: {ds.H.datetime.min()} -> {ds.H.datetime.max()}")
+    # --- H / stream diagnostic (H = first n0 rows chronologically, no
+    #     stratification -- purely informative, no assertions) ---
+    h_dt = pd.to_datetime(ds.H.datetime)
+    h_hours = h_dt.hour
+    hour_counts = pd.Series(h_hours).value_counts().sort_index()
+    n_days_H = (h_dt.max() - h_dt.min()).days + 1
+    print("[H / stream]")
+    print(f"  H time range: {ds.H.datetime.min()} -> {ds.H.datetime.max()}  "
+          f"({n_days_H} days covered)")
     print(f"  stream starts: {ds.stream.datetime.min()}")
     print(f"  H_span_steps: {ds.H_span_steps:,}")
-    print("  Jobs per hour in H:")
-    print(pd.Series(h_hours).value_counts().sort_index().to_string())
+    print(f"  jobs per hour of day in H: min={hour_counts.min()}  max={hour_counts.max()}  "
+          f"ratio max/min={hour_counts.max() / max(hour_counts.min(), 1):.2f}")
+    print(hour_counts.to_string())
     print()
 
     # --- phase 0 ---
