@@ -14,12 +14,14 @@ dlent_venv/
 cloud-pricing-sim-5f9d89ae03de.json
 
 data/
+!tests/data/
 
-tests/
 
 *.csv
 *.json
 *.toml
 
-notebooks/src/
-reports/
+# reports: only the Markdown write-ups are tracked (figures, tables, CSV, txt stay local)
+reports/**
+!reports/**/
+!reports/**/*.md
