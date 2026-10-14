@@ -67,7 +67,7 @@ class BidCfg:
     # duration. Ref: reinterpretation suggested by advisor — demand-side
     # utility rather than supply-side fee.
     # U_0: the single free parameter of base_utility_mode. Calibrated via
-    # calibrate_base_utility_u0 (bisection on Phase 0's pos_reward_types,
+    # scripts/calibrate_u0.py (bisection on Phase 0's pos_reward_types,
     # target_pos_frac=0.90) against sigma=0.3 -- NOT against this dataclass's
     # own sigma default (1.5), so if sigma is changed away from 0.3 this value
     # no longer hits that 90% target and should be recalibrated.
