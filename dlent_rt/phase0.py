@@ -441,13 +441,6 @@ def _normalize_objectives(
     return V_sat, V_prof, V_carb, norm_ref, norm_deg, norm_info
 
 
-def _single_objective_max(
-    p: np.ndarray, obj: np.ndarray, v: np.ndarray, c: np.ndarray, cfg: Config
-) -> float:
-    lp = solve_lp_rs(p=p, r=obj, v=v, c=c, presolve=cfg.lp.presolve)
-    return lp.optimum
-
-
 # Phase 0 entry point
 def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     H = ds.H
