@@ -392,7 +392,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     elec_price, carbon_intensity = _lookup_grid(H, ds)
 
     # 6. Per-type statistics
-    p_normaliser = ds.H_span_steps if cfg.time.step_semantics == "real_tick" else H.n
+    p_normaliser = ds.H_span_steps                  # p_j = N_j / ticks spanned by H (real-tick time)
 
     stats = _per_type_stats(
         H, bids, energy_kwh, power_kw, elec_price, carbon_intensity,

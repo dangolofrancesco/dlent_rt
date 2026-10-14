@@ -35,8 +35,6 @@ def main():
                              "fraction_of_concurrency_quantile", "from_amax", "absolute"])
     ap.add_argument("--fraction", type=float, default=None)
     ap.add_argument("--concurrency-quantile", type=float, default=None)
-    ap.add_argument("--semantics", default="real_tick",
-                    choices=["real_tick"])
     ap.add_argument("--tick-seconds", type=float, default=1.0)
     # --scalarization defaults to None (not a config value) so
     # that an explicit --config is respected when the user does not also pass
@@ -50,8 +48,7 @@ def main():
         cfg,
         data=dataclasses.replace(cfg.data, batch_csv=args.csv,
                                  grid_csv=args.grid_csv, n0=args.n0),
-        time=dataclasses.replace(cfg.time, step_semantics=args.semantics,
-                                 tick_seconds=args.tick_seconds),
+        time=dataclasses.replace(cfg.time, tick_seconds=args.tick_seconds),
         capacity=dataclasses.replace(cfg.capacity, **{k: v for k, v in dict(
             mode=args.capacity_mode, fraction=args.fraction,
             concurrency_quantile=args.concurrency_quantile).items() if v is not None}),
@@ -67,7 +64,7 @@ def main():
     print("=" * 70)
     print("DLENT-RT smoke test — Phase 0 (new pipeline)")
     print("=" * 70)
-    print(f"csv={args.csv}  n0={args.n0}  semantics={args.semantics}")
+    print(f"csv={args.csv}  n0={args.n0}")
     print(f"capacity={cfg.capacity.mode}  "
           f"scalarization={cfg.scalarization.method}")
     print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization=quantile_linear q={cfg.normalization.quantile}")
@@ -77,11 +74,10 @@ def main():
 
     # --- time model ---
     print("[time model]")
-    print(f"  semantics={ds.step_semantics}  tick_seconds={ds.tick_seconds}")
+    print(f"  tick_seconds={ds.tick_seconds}")
     print(f"  T = {ds.T:,} steps   (online arrivals = {ds.n_arrivals_stream:,})")
-    if ds.step_semantics == "real_tick":
-        print(f"  arrival density = {ds.n_arrivals_stream / max(ds.T, 1):.6f}")
-        print(f"  H spans {ds.H_span_steps:,} ticks")
+    print(f"  arrival density = {ds.n_arrivals_stream / max(ds.T, 1):.6f}")
+    print(f"  H spans {ds.H_span_steps:,} ticks")
     print(f"  d_max = {ds.d_max_steps:,} steps   d_max/T = "
           f"{ds.d_max_steps / max(ds.T, 1):.6f}")
     print()

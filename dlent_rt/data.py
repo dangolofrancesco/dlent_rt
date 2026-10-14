@@ -50,7 +50,6 @@ class Dataset:
     capacity: np.ndarray
     a_max: np.ndarray
     d_max_steps: int
-    step_semantics: str
     tick_seconds: float
     T: int
     n_arrivals_stream: int
@@ -116,12 +115,7 @@ def _duration_to_steps_real_tick(
 def _convert_durations(
     duration_hours: np.ndarray, cfg: Config, d_max_steps: Optional[int]
 ) -> np.ndarray:
-    """Convert duration in hours to steps (real_tick mode only)."""
-    if cfg.time.step_semantics != "real_tick":
-        raise ValueError(
-            f"step_semantics='{cfg.time.step_semantics}' not supported. "
-            "Only 'real_tick' is currently supported."
-        )
+    """Convert duration in hours to steps of time.tick_seconds (real-tick time model)."""
     return _duration_to_steps_real_tick(
         duration_hours, cfg.time.tick_seconds, d_max_steps
     )
@@ -345,14 +339,8 @@ def load_dataset(cfg: Config) -> Dataset:
 
     dts = df[col.datetime].to_numpy()
 
-    if cfg.time.step_semantics == "real_tick":
-        t0 = dts[0]
-        all_steps = _assign_real_tick_steps(dts, t0, cfg.time.tick_seconds)
-    else:
-        raise ValueError(
-            f"step_semantics='{cfg.time.step_semantics}' not supported. "
-            "Only 'real_tick' is currently supported."
-        )
+    # real-tick time model: one step = time.tick_seconds of wall clock
+    all_steps = _assign_real_tick_steps(dts, dts[0], cfg.time.tick_seconds)
 
     # H = first n0 rows chronologically, stream = the rest. df is sorted by
     # datetime (_read_csv) and all_steps is row-aligned to df, so this is a
@@ -452,7 +440,6 @@ def load_dataset(cfg: Config) -> Dataset:
         capacity=capacity,
         a_max=a_max,
         d_max_steps=d_max_steps,
-        step_semantics=cfg.time.step_semantics,
         tick_seconds=cfg.time.tick_seconds,
         T=T,
         n_arrivals_stream=stream.n,

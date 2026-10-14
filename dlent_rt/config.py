@@ -93,8 +93,7 @@ class BidCfg:
 
 @dataclass(frozen=True)
 class TimeCfg:
-    step_semantics: str = "real_tick"
-    tick_seconds: float = 1.0           # wall-clock length of one step (real_tick only)
+    tick_seconds: float = 1.0           # wall-clock length of one step (real-tick time model)
     d_max_quantile: float = 1.0     # 1.0 = max of survivors (no double-trim; see outliers.d_max_quantile)
     d_max_horizon_fraction: float = 0.05
     d_max_ratio_abort: float = 0.10
@@ -286,8 +285,6 @@ class Config:
 
     #  validation 
     def validate(self) -> "Config":
-        assert self.time.step_semantics == "real_tick", \
-            "step_semantics must be 'real_tick' (one_arrival legacy mode is not supported)."
         assert self.time.tick_seconds > 0
         assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
         assert self.scalarization.method in ("chebyshev", "linear")

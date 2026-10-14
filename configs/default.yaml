@@ -21,8 +21,7 @@ data:
 
 # Time model
 time:
-  step_semantics: "real_tick"
-  tick_seconds: 1.0           # wall-clock seconds per step (real_tick only)
+  tick_seconds: 1.0           # wall-clock seconds per step (real-tick time model, the only one)
   d_max_quantile: 1.0         # candidate = this quantile of SURVIVOR step-durations.
                               # Default 1.0 = literal max of survivors (outlier
                               # removal already decided what's "extreme"; this
