@@ -1,7 +1,9 @@
 # %% [markdown]
 # # DLENT-RT — Why is the virtual value φ negative for most jobs? (read-only diagnostic)
 #
-# Config: `BASE = apply_overrides(default_config(), {"bid.strategy": "lognormal", "bid.sigma": 0.3})`, normalization
+# Config: `BASE = apply_overrides(default_config(), {"bid.strategy": "lognormal", "bid.sigma": 0.3, "bid.known_distribution": False})`
+# (week 30: pinned to the legacy pooled fit this diagnostic was written for; `MyersonModel.phi` is now
+# `phi_job(v)` for a dollar bid / `phi_markup(m)` for a markup, so the file:line references below are historical), normalization
 # `quantile_linear`, q = 0.90 (from `configs/default.yaml`). Nothing in `dlent_rt/`, the defaults, the tests or the
 # online loop is modified: every φ below is computed with the mechanism's own estimator (`dlent_rt.bid.fit_myerson` +
 # `MyersonModel.phi`); only the **conditioning** (which bids are pooled into one F) changes. Helpers:
@@ -104,7 +106,8 @@ def apply_overrides(cfg, overrides: dict):
 cfg = default_config()
 cfg = apply_overrides(cfg, {"data.batch_csv": str(ROOT / cfg.data.batch_csv),     # path plumbing only
                             "data.grid_csv": str(ROOT / cfg.data.grid_csv)})
-BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3})
+# pooled-fit era diagnostic (week 28): runs the legacy pooled MLE, bid.known_distribution = false
+BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3, "bid.known_distribution": False})
 
 USE_SYNTHETIC = (os.environ.get("DLENT_SYNTHETIC") == "1" or not Path(BASE.data.batch_csv).is_file())
 if USE_SYNTHETIC:
@@ -183,9 +186,9 @@ phi_ref_s, m_ref = pdg.phi_pooled(S.v)
 obs = pd.DataFrame([
     {"phi": "phi_mech (phase F_hat, online log)", "n": len(ARR), "share<0 %": 100 * (ARR["phi_mech"] < 0).mean()},
     {"phi": "phi_ref (pooled fit on stream)", "n": S.n, "share<0 %": 100 * (phi_ref_s < 0).mean()},
-    {"phi": "phi_P0 (Phase-0 pooled fit, on stream bids)", "n": S.n, "share<0 %": 100 * (st0.myerson.phi(S.v) < 0).mean()},
+    {"phi": "phi_P0 (Phase-0 pooled fit, on stream bids)", "n": S.n, "share<0 %": 100 * (st0.myerson.phi_job(S.v) < 0).mean()},
     {"phi": "phi_gen (stream)", "n": S.n, "share<0 %": 100 * (S.phi_gen < 0).mean()},
-    {"phi": "phi_P0 on H bids", "n": N_H, "share<0 %": 100 * (st0.myerson.phi(st0.bids.v_rate) < 0).mean()},
+    {"phi": "phi_P0 on H bids", "n": N_H, "share<0 %": 100 * (st0.myerson.phi_job(st0.bids.v_rate) < 0).mean()},
     {"phi": "phi_gen (H)", "n": N_H, "share<0 %": 100 * (st0.bids.phi_rate < 0).mean()},
 ]).set_index("phi")
 display(obs.style.format(precision=2))
@@ -330,7 +333,7 @@ for ax, g in zip(axes.ravel(), pick):
     ax.scatter(v[ix], phi_gen[ix], s=4, color=COL["e phi_gen"], alpha=0.5, label="e phi_gen")
     ax.scatter(v[ix], phi_b[ix], s=4, color=COL["b bucket"], alpha=0.6, label="b bucket")
     ax.scatter(v[ix], phi_d[ix], s=3, color=COL["d residual"], alpha=0.4, label="d residual")
-    ax.plot(vv, m_a.phi(vv), color=COL["a pooled"], lw=2, label="a pooled curve")
+    ax.plot(vv, m_a.phi_job(vv), color=COL["a pooled"], lw=2, label="a pooled curve")
     ax.axhline(0, color="k", lw=0.7); ax.set_xscale("log"); ax.set_yscale("symlog", linthresh=1.0)
     ax.set_title(f"{g} (n={ix.sum()})\nphi<0: a {100 * (phi_a[ix] < 0).mean():.0f}%  b {100 * (phi_b[ix] < 0).mean():.0f}%  "
                  f"d {100 * (phi_d[ix] < 0).mean():.0f}%  gen {100 * (phi_gen[ix] < 0).mean():.0f}%", fontsize=8)
@@ -557,7 +560,7 @@ anom = [
      f"(n_min = {BASE.phase_transition.n_min}); fitted sigma per phase state: "
      + ", ".join(f"{s.myerson.sigma:.4f}" for s in model.states)),
     ("lognormal phi monotone in v? (no ironing in the mechanism)",
-     "; ".join(f"sigma={s}: {100 * (np.diff(MyersonModel(0.0, s).phi(np.exp(s * np.linspace(-4, 4, 4001)))) < 0).mean():.1f}% "
+     "; ".join(f"sigma={s}: {100 * (np.diff(MyersonModel(0.0, s).phi_job(np.exp(s * np.linspace(-4, 4, 4001)))) < 0).mean():.1f}% "
                f"of a z-grid decreasing" for s in (SIGMA, round(m_a.sigma, 3), 1.5, round(m_c1.sigma, 3), 2.5))),
     ("arrivals whose type stats were carried forward (5.b)", f"{int(FL.loc['total', 'arrivals on carried types'])} / {len(ARR)}"),
 ]

@@ -106,7 +106,7 @@ class ValuationGrid:
     def _to_space(self, v, myerson):
         if self.space == "v":
             return v
-        ph = np.asarray(myerson.phi(v))
+        ph = np.asarray(myerson.phi_job(v))   # pooled fit only (phi spaces)
         if self.space == "phi":
             return ph
         return ph + self.shift
@@ -137,18 +137,18 @@ def build_valuation_grid(
         bnd_v = edges.copy()
         # known distribution: phi of a bin edge is undefined without c_j
         bnd_phi = (np.full(bnd_v.shape, np.nan) if getattr(myerson, "known", False)
-                   else np.asarray(myerson.phi(bnd_v)))
+                   else np.asarray(myerson.phi_job(bnd_v)))
         shift, rejects = 0.0, False
 
     elif space == "phi":
-        vals = np.asarray(myerson.phi(v_pos))
+        vals = np.asarray(myerson.phi_job(v_pos))
         edges = build_edges(vals, k_star, spacing, phi_floor)
         bnd_phi = edges.copy()
         bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
         shift, rejects = 0.0, True
 
     elif space == "phi_shifted":
-        raw = np.asarray(myerson.phi(v_pos))
+        raw = np.asarray(myerson.phi_job(v_pos))
         shift = float(-raw.min() + max(phi_floor, 1e-9))
         vals = raw + shift
         edges = build_edges(vals, k_star, spacing, phi_floor)

@@ -275,7 +275,7 @@ def run_static(model, st, thin_p=None):
                 adm[i] = True
             else:
                 phys[i] = True
-    return dict(admit=adm, khat=khat, phys=phys, R_own=job_reward(model, st.myerson.phi(S.v)))
+    return dict(admit=adm, khat=khat, phys=phys, R_own=job_reward(model, st.myerson.phi_job(S.v, S.cost_base)))
 
 def occ_series(res, T):
     ev = np.array([(e[0], *e[3:]) for e in res.occupancy_events], float)
@@ -299,7 +299,7 @@ def analyse(run):
     model, res = run["model"], run["res"]
     S = model.stream
     st_ref = reference_state(model)
-    phi_ref = np.asarray(st_ref.myerson.phi(S.v))
+    phi_ref = np.asarray(st_ref.myerson.phi_job(S.v, S.cost_base))
     R_ref = job_reward(model, phi_ref)
     a = arrivals_frame(model, res, st_ref, R_ref)
     opt = offline_opt(model, R_ref)
@@ -630,7 +630,7 @@ def accuracy_table(run):
         mc = mk & np.isfinite(ci)
         F_hat = lognorm.cdf(v_sorted, s=st.myerson.sigma, scale=np.exp(st.myerson.mu))
         ks = max(np.abs(F_hat - e_hi).max(), np.abs(F_hat - e_lo).max())
-        phi_k = np.asarray(st.myerson.phi(S.v))
+        phi_k = np.asarray(st.myerson.phi_job(S.v, S.cost_base))
         _, prio, A_t = type_arrays(st.type_space, st.grid)
         r_ref, *_ = scalarized_reward(prio, mean_by(S.v), mean_by(phi_ref), mean_by(S.C_elec), mean_by(S.C_carbon),
                                       p_ref, A_t * d_ref[:, None], ds, BASE, common_scale=model.s_norm,

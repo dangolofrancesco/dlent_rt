@@ -61,14 +61,14 @@ SITES = [
     ("dlent_rt/models/theory.py", r"R = \(l1 \* sat \+ l2 \* prof - l3 \* carb \* self.tax\) / self.s_norm", "online: LOGGED job reward R"),
     ("dlent_rt/models/theory.py", r"lam_all, _ = hindsight_lambda", "summary: bench_global = lam_hat_ref * T (fluid OPT)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"def job_reward", "nb03: job_reward(model, phi) (yardstick formula)"),
-    ("notebooks/src/03_main_algorithm_analysis.py", r"phi_ref = np.asarray\(st_ref.myerson.phi\(S.v\)\)", "nb03: phi_ref = myerson.phi(v)  <-- no c_j"),
-    ("notebooks/src/03_main_algorithm_analysis.py", r"R_own=job_reward\(model, st.myerson.phi\(S.v\)\)", "nb03 run_static: R_own = myerson.phi(v)  <-- no c_j"),
+    ("notebooks/src/03_main_algorithm_analysis.py", r"phi_ref = np.asarray\(st_ref.myerson.phi\(S.v\)\)", "PRE-FIX nb03: phi_ref = myerson.phi(v), no c_j (NOT FOUND = fixed)"),
+    ("notebooks/src/03_main_algorithm_analysis.py", r"R_own=job_reward\(model, st.myerson.phi\(S.v\)\)", "PRE-FIX nb03 run_static: myerson.phi(v), no c_j (NOT FOUND = fixed)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r'a\["PI"\] = a\["phi_mech"\]', "nb03 arrivals_frame: R_job from logged phi_mech"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"F_hat = lognorm.cdf\(v_sorted", "nb03 accuracy: KS F_hat (markup params) vs raw bids"),
-    ("notebooks/src/03_main_algorithm_analysis.py", r"phi_k = np.asarray\(st.myerson.phi\(S.v\)\)", "nb03 accuracy: phi_k = myerson.phi(v)  <-- no c_j"),
+    ("notebooks/src/03_main_algorithm_analysis.py", r"phi_k = np.asarray\(st.myerson.phi\(S.v\)\)", "PRE-FIX nb03 accuracy: myerson.phi(v), no c_j (NOT FOUND = fixed)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"r_ref, \*_ = scalarized_reward", "nb03 accuracy: r_ref per phase-k type (from phi_ref)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"Ry = float\(R_ref\[adm\].sum\(\)\)", "nb03 baseline_table: R yardstick = sum R_ref"),
-    ("notebooks/src/04_phi_diagnostic.py", r"st0.myerson.phi\(S.v\)", "nb04: myerson.phi(v) (pooled-fit era)"),
+    ("notebooks/src/04_phi_diagnostic.py", r"st0.myerson.phi\(S.v\)", "PRE-FIX nb04: myerson.phi(v) (NOT FOUND = fixed)"),
 ]
 rows = []
 for f, pat, what in SITES:
@@ -109,7 +109,7 @@ def job_terms(i, phi):
 
 
 phi_true = np.asarray(st_ref.myerson.phi_job(S.v, S.cost_base))       # c_j * phi_m(v / c_j)
-phi_nb = np.asarray(st_ref.myerson.phi(S.v))                          # notebook 03: no c_j
+phi_nb = np.asarray(st_ref.myerson.phi_markup(S.v))   # reproduces the pre-fix nb03 bug: markup phi on $ bids
 R_true = job_terms(idx, phi_true)[3]
 R_nb = job_terms(idx, phi_nb)[3]
 
@@ -130,7 +130,7 @@ def mean_by(x):
 type_lvl = {"SW = q v": prio_t * st_ref.v_bar, "Pi = phi - C_elec": st_ref.phi_bar - st_ref.C_elec_bar,
             "K = E CI [kg]": st_ref.C_carbon_bar, "R = r_tilde": st_ref.r_tilde}
 rows = []
-for label, phi in (("phi_job(v, c_j)  [loop]", phi_true), ("myerson.phi(v)  [notebook 03]", phi_nb)):
+for label, phi in (("phi_job(v, c_j)  [loop]", phi_true), ("phi_markup(v)  [pre-fix notebook 03]", phi_nb)):
     SW, PI, K, R = job_terms(idx, phi)
     for (name, tl), jl in zip(type_lvl.items(), (SW, PI, K, R)):
         jm = mean_by(jl)
@@ -168,7 +168,7 @@ checks = [
     ("phi(L) bin floor", "payment only (NaN per type under known_distribution)", f"st_ref.phi_tilde all NaN: {bool(np.isnan(st_ref.phi_tilde).all())}"),
     ("phi_gen (generator)", "diagnostic; equals phi_job analytically",
      f"max |phi_job - phi_gen| = {np.abs(phi_true - S.phi_gen).max():.2e} $"),
-    ("phi in notebook 03", "myerson.phi(v): MARKUP phi on raw $ bids",
+    ("phi in pre-fix notebook 03", "myerson.phi(v): MARKUP phi on raw $ bids",
      f"max |phi_nb - phi_job| = {np.abs(phi_nb - phi_true).max():,.2f} $"),
     ("s_C", "frozen at Phase 0", f"state0 {st0.carbon_price:.6f}, ref {st_ref.carbon_price:.6f}, loop {model.tax:.6f}"),
     ("reward scale", "s_norm = norm_ref[0] = 1 (quantile_linear: no divisor)", f"s_norm = {model.s_norm}"),

@@ -1,7 +1,7 @@
 """
 Helpers for notebook 04 (virtual-value diagnostic). READ-ONLY: every φ is computed
 with the mechanism's own estimator, dlent_rt.bid.fit_myerson (lognormal MLE on ln v)
-+ MyersonModel.phi; only the CONDITIONING (which bids are pooled into one F) changes.
++ MyersonModel.phi_job (pooled fit); only the CONDITIONING (which bids are pooled into one F) changes.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from dlent_rt.bid import fit_myerson
 def phi_pooled(v):
     """(a) one F for every bid."""
     m = fit_myerson(v)
-    return np.asarray(m.phi(v), float), m
+    return np.asarray(m.phi_job(v), float), m
 
 
 def phi_scaled(v, s):
@@ -26,7 +26,7 @@ def phi_scaled(v, s):
     F_v|s(x) = F_u(x/s), f_v|s(x) = f_u(x/s)/s  =>  phi_v(v) = s * phi_u(v/s)."""
     u = np.asarray(v, float) / np.asarray(s, float)
     m = fit_myerson(u)
-    return np.asarray(s, float) * np.asarray(m.phi(u), float), m
+    return np.asarray(s, float) * np.asarray(m.phi_job(u), float), m
 
 
 def phi_by_group(v, groups, fallback, min_n=2):
@@ -40,7 +40,7 @@ def phi_by_group(v, groups, fallback, min_n=2):
             n_fb += int(ix.sum())
             continue
         m = fit_myerson(v[ix])
-        phi[ix] = m.phi(v[ix])
+        phi[ix] = m.phi_job(v[ix])
         models[g] = m
     return phi, models, n_fb
 

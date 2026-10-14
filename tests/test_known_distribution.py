@@ -57,7 +57,7 @@ def test_scaling():                                                    # (a)
     rng = np.random.default_rng(0)
     m = rng.lognormal(-0.045, 0.3, 1000)
     c = np.exp(rng.uniform(-5, 9, 1000))
-    np.testing.assert_allclose(mdl.phi_job(c * m, c), c * mdl.phi(m), rtol=1e-12)
+    np.testing.assert_allclose(mdl.phi_job(c * m, c), c * mdl.phi_markup(m), rtol=1e-12)
     assert mdl.mu == pytest.approx(-0.045) and mdl.sigma == 0.3 and mdl.known
 
 
@@ -66,7 +66,7 @@ def test_negative_share_matches_theory(sigma):                         # (b)
     mdl = MyersonModel.known_markup(sigma)
     n = 400_000
     m = np.random.default_rng(1).lognormal(-sigma ** 2 / 2, sigma, n)
-    share = float((np.asarray(mdl.phi(m)) < 0).mean())
+    share = float((np.asarray(mdl.phi_markup(m)) < 0).mean())
     p = norm.cdf(z_star(sigma))
     assert abs(share - p) < 4 * np.sqrt(p * (1 - p) / n)
     if sigma == 0.3:

@@ -98,7 +98,7 @@ for name, c, st in (("new", NEW, st_new), ("old", OLD, st_old)):
 S = runs["new"][0].stream
 c_s = S.cost_base
 phi_new = np.asarray(st_new.myerson.phi_job(S.v, c_s))          # the one phi (known distribution)
-phi_old_p0 = np.asarray(st_old.myerson.phi(S.v))                # Phase-0 pooled fit, on the stream bids
+phi_old_p0 = np.asarray(st_old.myerson.phi_job(S.v))                # Phase-0 pooled fit, on the stream bids
 phi_old_online = runs["old"][2]["phi_mech"].to_numpy()          # phase F_hat, as logged online
 
 
@@ -147,7 +147,7 @@ for (lab, c), col in zip(levels.items(), (C1, C2, C3, C4)):
     ax.annotate(f"r = {r_m * c:,.2f}", (r_m * c, 0), textcoords="offset points", xytext=(4, 8), fontsize=8,
                 color=INK2)
 vall = np.geomspace(0.3 * min(levels.values()), 2.5 * max(levels.values()), 400)
-ax.plot(vall, st_old.myerson.phi(vall), "--", color="#9a9992", lw=1.5,
+ax.plot(vall, st_old.myerson.phi_job(vall), "--", color="#9a9992", lw=1.5,
         label=f"old pooled φ̂ (σ̂ = {st_old.myerson.sigma:.2f})")
 ax.axhline(0, color=INK2, lw=0.8)
 ax.set_xscale("log"); ax.set_yscale("symlog", linthresh=max(1.0, min(levels.values())))

@@ -15,13 +15,16 @@ from scipy.stats import lognorm
 class MyersonModel:
     """
     Lognormal Myerson model. Two modes:
-      known=False (ablation, legacy): F = LogNormal(mu, sigma) fitted on the pooled
-        bids v (fit_myerson); phi_job(v, c) = phi(v), c is ignored.
       known=True (default, bid.known_distribution): the distribution is KNOWN a
         priori from the config and never refit. (mu, sigma) = (-sigma^2/2, sigma)
         parametrise the MARKUP m = v / c ~ LogNormal(-sigma^2/2, sigma), c = the
-        job's reference cost (cost_base), and phi_job(v, c) = c * phi(v / c).
-    phi_job is the single virtual value used by Phase 0, ReInit and the online reward.
+        job's reference cost (cost_base), and phi_job(v, c) = c * phi_markup(v / c).
+      known=False (ablation, legacy): F = LogNormal(mu, sigma) fitted on the pooled
+        dollar bids v (fit_myerson); phi_job(v, c) = phi of that fit at v, c is ignored.
+
+    phi_job(v, c_j) is the ONLY entry point for the virtual value of a dollar bid; it
+    is used by Phase 0, ReInit, the hindsight benchmark and the online reward.
+    phi_markup(m) takes a markup m = v / c_j (a ratio, NOT a dollar bid).
     """
     mu: float                 # log-space mean (known=True: of the markup m)
     sigma: float              # log-space std  (known=True: bid.sigma from the config)
@@ -32,31 +35,42 @@ class MyersonModel:
         return cls(mu=-0.5 * float(sigma) ** 2, sigma=float(sigma), known=True)
 
     def phi_job(self, v, c=None):
-        """Virtual value of bid v of a job with reference cost c (see class doc)."""
+        """Virtual value of the DOLLAR bid v of a job with reference cost c (see class doc)."""
         if not self.known:
-            return self.phi(v)
+            return self._phi(v)
         if c is None:
             raise ValueError("known-distribution phi needs the job's reference cost c")
         c = np.asarray(c, dtype=float)
-        return c * np.asarray(self.phi(np.asarray(v, dtype=float) / c))
+        return c * np.asarray(self.phi_markup(np.asarray(v, dtype=float) / c))
 
-    def phi(self, v):
-        """Myerson virtual value: phi(v) = v - (1 - F(v)) / f(v)."""
-        v = np.asarray(v, dtype=float)
+    def phi_markup(self, m):
+        """Virtual value of the MARKUP m = v / c_j under LogNormal(-sigma^2/2, sigma).
+        The argument is a ratio, not a dollar bid: for a bid use phi_job(v, c_j).
+        Known distribution only (the legacy pooled fit is over dollar bids)."""
+        if not self.known:
+            raise ValueError("phi_markup needs the known markup distribution; "
+                             "for the pooled fit use phi_job(v)")
+        return self._phi(m)
+
+    def _phi(self, x):
+        """Myerson virtual value of the model's own variable x (markup if known, dollar
+        bid if pooled): phi(x) = x - (1 - F(x)) / f(x)."""
+        x = np.asarray(x, dtype=float)
         scale = np.exp(self.mu)
-        F = lognorm.cdf(v, s=self.sigma, scale=scale)
-        f = lognorm.pdf(v, s=self.sigma, scale=scale)
+        F = lognorm.cdf(x, s=self.sigma, scale=scale)
+        f = lognorm.pdf(x, s=self.sigma, scale=scale)
         inv_hazard = np.where(f > 1e-12, (1.0 - F) / f, 0.0)
-        return v - inv_hazard
+        return x - inv_hazard
 
     def phi_inv(self, target_phi, v_lo: float = 1e-9, v_hi: float = 1e12):
-        """Invert phi numerically (monotone for a regular lognormal)."""
+        """Invert the model's own phi numerically (monotone for a regular lognormal):
+        a markup if known (phi_inv(0) = reserve markup), a dollar bid if pooled."""
         target = np.atleast_1d(np.asarray(target_phi, dtype=float))
         lo = np.full_like(target, v_lo)
         hi = np.full_like(target, v_hi)
         for _ in range(100):
             mid = 0.5 * (lo + hi)
-            pm = np.asarray(self.phi(mid))
+            pm = np.asarray(self._phi(mid))
             go_up = pm < target
             lo = np.where(go_up, mid, lo)
             hi = np.where(go_up, hi, mid)
@@ -216,4 +230,4 @@ def compute_phi_tilde(
         return 2.0 * L - bid_high_bar
     else:
         # bid_high_bar has no meaning for lognormal bids (no compact support)
-        return np.asarray(myerson.phi(L))
+        return np.asarray(myerson.phi_job(L))
