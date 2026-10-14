@@ -55,8 +55,7 @@ class NormalizationCfg:
 
 @dataclass(frozen=True)
 class BidCfg:
-    # bid model: "lognormal" only (ln v = ln cost_base - sigma^2/2 + sigma Z)
-    strategy: str = "lognormal"
+    # bid model (the only one): ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1)
     # Base utility rate ($/hour): minimum hourly value a user derives from
     # job completion, independent of resource footprint. Multiplied by
     # duration. Ref: reinterpretation suggested by advisor — demand-side
@@ -81,7 +80,7 @@ class BidCfg:
     sigma: float = 0.3              # bid dispersion (log-space std of the markup)
     # true  -> the bid distribution is KNOWN a priori: markup v / cost_base ~
     #          LogNormal(-sigma^2/2, sigma) with sigma above; phi_v(v | c) = c * phi_m(v / c).
-    #          Never refit (Phase 0, ReInit, online). lognormal strategy, grid.space="v" only.
+    #          Never refit (Phase 0, ReInit, online). Requires grid.space="v".
     # false -> legacy ablation: pooled lognormal MLE on the bids (refit at every ReInit).
     known_distribution: bool = True
     
@@ -300,7 +299,6 @@ class Config:
         assert self.outliers.policy in ("drop", "clip")
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0
-        assert self.bid.strategy == "lognormal", "bid.strategy: only 'lognormal' is implemented"
         if self.bid.known_distribution:
             assert self.grid.space == "v", \
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"

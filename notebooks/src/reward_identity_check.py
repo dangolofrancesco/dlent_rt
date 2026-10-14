@@ -10,7 +10,7 @@ notebook's totals with ONE job-level reward function.
 
     dlent_venv/bin/python notebooks/src/reward_identity_check.py
 
-Config: default (configs/default.yaml: from_amax capacity, n0 = 10,000) + bid.strategy=lognormal,
+Config: default (configs/default.yaml: from_amax capacity, n0 = 10,000) +
 bid.sigma=0.3 -- the configuration notebook 03 was executed with (scale 1.0). Nothing is modified.
 """
 from __future__ import annotations
@@ -79,7 +79,7 @@ print(pd.DataFrame(rows).to_string(index=False))
 
 # --------------------------------------------------------------------------- setup
 cfg = default_config()
-cfg = dataclasses.replace(cfg, bid=dataclasses.replace(cfg.bid, strategy="lognormal", sigma=0.3)).validate()
+cfg = dataclasses.replace(cfg, bid=dataclasses.replace(cfg.bid, sigma=0.3)).validate()
 assert resolve_path(cfg.data.batch_csv).is_file(), "real trace required"
 L1, L2, L3 = cfg.objective.lambda1, cfg.objective.lambda2, cfg.objective.lambda3
 t0 = time.time()

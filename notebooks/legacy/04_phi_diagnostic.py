@@ -1,7 +1,7 @@
 # %% [markdown]
 # # DLENT-RT — Why is the virtual value φ negative for most jobs? (read-only diagnostic)
 #
-# Config: `BASE = apply_overrides(default_config(), {"bid.strategy": "lognormal", "bid.sigma": 0.3, "bid.known_distribution": False})`
+# Config: `BASE = apply_overrides(default_config(), {"bid.sigma": 0.3, "bid.known_distribution": False})`
 # (week 30: pinned to the legacy pooled fit this diagnostic was written for; `MyersonModel.phi` is now
 # `phi_job(v)` for a dollar bid / `phi_markup(m)` for a markup, so the file:line references below are historical), normalization
 # `quantile_linear`, q = 0.90 (from `configs/default.yaml`). Nothing in `dlent_rt/`, the defaults, the tests or the
@@ -108,7 +108,7 @@ cfg = default_config()
 cfg = apply_overrides(cfg, {"data.batch_csv": str(ROOT / cfg.data.batch_csv),     # path plumbing only
                             "data.grid_csv": str(ROOT / cfg.data.grid_csv)})
 # pooled-fit era diagnostic (week 28): runs the legacy pooled MLE, bid.known_distribution = false
-BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3, "bid.known_distribution": False})
+BASE = apply_overrides(cfg, {"bid.sigma": 0.3, "bid.known_distribution": False})
 
 USE_SYNTHETIC = (os.environ.get("DLENT_SYNTHETIC") == "1" or not Path(BASE.data.batch_csv).is_file())
 if USE_SYNTHETIC:
@@ -126,7 +126,7 @@ SIGMA = BASE.bid.sigma
 L1, L2, L3 = BASE.objective.lambda1, BASE.objective.lambda2, BASE.objective.lambda3
 print(f"seeds: run.seed={SEED} (H bids)  stream bids={SEED + BASE.online.bid_seed_offset}  "
       f"thinning={SEED + BASE.online.thinning_seed_offset}  subsampling/bootstrap rng={SEED}")
-print(f"bid: {BASE.bid.strategy} sigma={SIGMA} u0={BASE.bid.base_utility_u0} mode={BASE.bid.base_utility_mode} "
+print(f"bid: lognormal sigma={SIGMA} u0={BASE.bid.base_utility_u0} mode={BASE.bid.base_utility_mode} "
       f"gamma1={BASE.bid.gamma1} gamma2={BASE.bid.gamma2}")
 print(f"normalization: {BASE.normalization.strategy} q={BASE.normalization.quantile}   lambda=({L1}, {L2}, {L3})")
 

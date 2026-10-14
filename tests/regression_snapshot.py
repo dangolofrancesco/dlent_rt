@@ -34,7 +34,7 @@ def _config(which: str, tmp: Path):
         from tests.synthetic import synthetic_config
         return synthetic_config(tmp, n0=400, n_jobs=3000, drift=True)
     cfg = default_config()
-    return replace(cfg, bid=replace(cfg.bid, strategy="lognormal", sigma=0.3)).validate()
+    return replace(cfg, bid=replace(cfg.bid, sigma=0.3)).validate()
 
 
 def snapshot(which: str) -> dict:

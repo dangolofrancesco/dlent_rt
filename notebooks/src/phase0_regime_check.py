@@ -6,7 +6,7 @@ sensitivity tables call the existing ErrorParams methods on copies with xi or ga
     dlent_venv/bin/python notebooks/src/phase0_regime_check.py         # real trace
     DLENT_SYNTHETIC=1 dlent_venv/bin/python notebooks/src/phase0_regime_check.py
 
-Config: default + bid.strategy=lognormal, bid.sigma=0.3, data.n0=10000.
+Config: default + bid.sigma=0.3, data.n0=10000.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def apply_overrides(cfg, overrides):
 
 
 cfg = default_config()
-cfg = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3, "data.n0": 10000})
+cfg = apply_overrides(cfg, {"bid.sigma": 0.3, "data.n0": 10000})
 if os.environ.get("DLENT_SYNTHETIC") == "1" or not resolve_path(cfg.data.batch_csv).is_file():
     from tests.synthetic import write_synthetic
     b, g = write_synthetic(Path(tempfile.mkdtemp()), n_jobs=3000, drift=True)

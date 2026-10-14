@@ -67,7 +67,7 @@ def main():
     print(f"csv={args.csv}  n0={args.n0}")
     print(f"capacity={cfg.capacity.mode}  "
           f"scalarization={cfg.scalarization.method}")
-    print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization=quantile_linear q={cfg.normalization.quantile}")
+    print(f"bid=lognormal sigma={cfg.bid.sigma}  normalization=quantile_linear q={cfg.normalization.quantile}")
     print()
 
     ds = load_dataset(cfg)
@@ -134,7 +134,7 @@ def main():
     cons = (st.p[mask, None] * st.v[mask]).sum(axis=0)
 
     print("[phase 0]")
-    print(f"  bid strategy: {cfg.bid.strategy}")
+    print(f"  bid: lognormal sigma={cfg.bid.sigma} known_distribution={cfg.bid.known_distribution}")
     print(f"  normalization: quantile_linear q={cfg.normalization.quantile}  s_C={st.carbon_price:.4g} $/kgCO2")
     print(f"  n_types={st.n_types}  (K*={st.type_space.k_star} x "
           f"|Q|={len(st.type_space.priorities)} x |A|={st.type_space.n_hw})")

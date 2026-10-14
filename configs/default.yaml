@@ -86,7 +86,7 @@ energy_model:
   pue: 1.10                   # power usage effectiveness
 
 bid:
-  strategy: "lognormal"         # only "lognormal" (ln v = ln cost_base - sigma^2/2 + sigma Z)
+  # bid model (the only one): ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1)
   # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
   # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
   # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.

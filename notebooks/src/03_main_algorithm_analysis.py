@@ -1,7 +1,7 @@
 # %% [markdown]
 # # DLENT-RT — Main algorithm analysis (theory model)
 #
-# One configuration only: `BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3})` on top of
+# One configuration only: `BASE = apply_overrides(cfg, {"bid.sigma": 0.3})` on top of
 # `configs/default.yaml`, with the default normalization (`quantile_linear`, q = 0.90, no common divisor,
 # s_C frozen in Phase 0). Reward in dollars, unbounded.
 # Theoretical setting: the true duration of an admitted job is known at arrival (`model.kind = "theory"`).
@@ -78,7 +78,7 @@ for _p in (BATCH_CSV, GRID_CSV):
         raise FileNotFoundError(f"required input not found: {_p}")
 
 cfg = apply_overrides(default_config(), {"data.batch_csv": str(BATCH_CSV), "data.grid_csv": str(GRID_CSV)})
-BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3})
+BASE = apply_overrides(cfg, {"bid.sigma": 0.3})
 # Notebook-only guard: the analysis is run with n0 = 10,000 (|stream| = 15,308), the value configs/default.yaml
 # currently has; if the YAML changes, this override keeps the notebook on the same H/stream split.
 N0_OVERRIDE = 10_000
@@ -93,7 +93,7 @@ BASELINE_SCALE = 1.0
 assert BASELINE_SCALE in CAPACITY_SCALES
 L1, L2, L3 = BASE.objective.lambda1, BASE.objective.lambda2, BASE.objective.lambda3
 print(f"model={BASE.model.kind}  oracle={BASE.oracle.kind}  scalarization={BASE.scalarization.method}")
-print(f"bid: strategy={BASE.bid.strategy} sigma={BASE.bid.sigma} u0={BASE.bid.base_utility_u0} "
+print(f"bid: lognormal sigma={BASE.bid.sigma} u0={BASE.bid.base_utility_u0} "
       f"mode={BASE.bid.base_utility_mode}")
 print(f"normalization: quantile_linear  q={BASE.normalization.quantile}")
 print(f"lambda = ({L1}, {L2}, {L3})   k_star={BASE.grid.k_star}  hw profiles={BASE.hardware.n_profiles}")
@@ -993,7 +993,7 @@ setup = pd.Series({
     "lambda1": L1, "lambda2": L2, "lambda3": L3, "lambda sum": L1 + L2 + L3,
     "s_C ($/kgCO2, frozen)": SC0, "normalization": "quantile_linear",
     "quantile q": BASE.normalization.quantile,
-    "bid strategy": BASE.bid.strategy, "bid sigma": BASE.bid.sigma, "u0": BASE.bid.base_utility_u0,
+    "bid model": "lognormal", "bid sigma": BASE.bid.sigma, "u0": BASE.bid.base_utility_u0,
     "k_star": BASE.grid.k_star, "hw profiles": BASE.hardware.n_profiles, "model": BASE.model.kind,
     "n_type_min": BASE.phase_transition.n_type_min, "n_min": BASE.phase_transition.n_min,
 }, name="value")
