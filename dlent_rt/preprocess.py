@@ -17,7 +17,6 @@ class HardwareCatalogue:
     """A fixed catalogue of canonical VM shapes and an assignment function."""
     centroids: np.ndarray          
     log_space: bool
-    method: str
 
     @property
     def n_profiles(self) -> int:
@@ -68,77 +67,14 @@ def _kmeans(X: np.ndarray, k: int, seed: int, iters: int = 100) -> np.ndarray:
     return C
 
 
-def _quantile_grid(X: np.ndarray, k: int) -> np.ndarray:
-    """
-    Quantile-grid centroids: split each dimension into ~k^(1/d) quantile bins,
-    take the cell centers. Deterministic alternative to kmeans.
-    """
-    d = X.shape[1]
-    per_dim = max(int(round(k ** (1.0 / d))), 1)
-    edges = [np.quantile(X[:, j], np.linspace(0, 1, per_dim + 1)) for j in range(d)]
-    centers_per_dim = [0.5 * (e[:-1] + e[1:]) for e in edges]
-    mesh = np.array(np.meshgrid(*centers_per_dim)).reshape(d, -1).T
-    return mesh
-
-
-def _geometric_grid(X: np.ndarray, k: int) -> np.ndarray:
-    """
-    Per-dimension GEOMETRIC bins, cross-product cells. X is assumed already in
-    the working space (log-space if configured), so geometric spacing there is
-    linear spacing here. Deterministic; spreads bins evenly across the observed
-    range rather than across the observed mass.
-    """
-    d = X.shape[1]
-    per_dim = max(int(round(k ** (1.0 / d))), 1)
-    centers_per_dim = []
-    for j in range(d):
-        lo, hi = float(X[:, j].min()), float(X[:, j].max())
-        if hi <= lo:
-            hi = lo + 1e-9
-        e = np.linspace(lo, hi, per_dim + 1)
-        centers_per_dim.append(0.5 * (e[:-1] + e[1:]))
-    return np.array(np.meshgrid(*centers_per_dim)).reshape(d, -1).T
-
-
-def _quantile_1d(X: np.ndarray, k: int) -> np.ndarray:
-    """
-    Quantile bins on a SINGLE scalar summary (the sum across resources), then
-    the centroid of each bin in full dimension.
-
-    Motivation: in most cloud traces CPU and RAM requests are strongly
-    correlated (a job asking for more cores usually asks for more memory), so
-    the joint distribution lies close to a 1-D curve. Binning along that curve
-    uses all k profiles productively, whereas a 2-D cross-product grid wastes
-    most cells on empty off-diagonal regions.
-    """
-    s = X.sum(axis=1)
-    edges = np.quantile(s, np.linspace(0, 1, k + 1))
-    edges = np.maximum.accumulate(edges)
-    centroids = []
-    for i in range(k):
-        lo, hi = edges[i], edges[i + 1]
-        m = (s >= lo) & (s <= hi) if i == k - 1 else (s >= lo) & (s < hi)
-        centroids.append(X[m].mean(axis=0) if m.any() else X[np.argmin(np.abs(s - lo))])
-    return np.array(centroids)
-
-
 def fit_hardware_catalogue(A_fit: np.ndarray, cfg: Config) -> HardwareCatalogue:
-    """Fit the canonical VM-shape catalogue on A_fit (native units)."""
+    """Fit the canonical VM-shape catalogue on A_fit (native units): k-means++
+    in (optionally) log space, the only method."""
     hw = cfg.hardware
     X = np.log(np.clip(A_fit, 1e-9, None)) if hw.log_space else A_fit
-    if hw.method == "kmeans":
-        C = _kmeans(X, hw.n_profiles, seed=cfg.run.seed)
-    elif hw.method == "quantile_grid":
-        C = _quantile_grid(X, hw.n_profiles)
-    elif hw.method == "geometric_grid":
-        C = _geometric_grid(X, hw.n_profiles)
-    elif hw.method == "quantile_1d":
-        C = _quantile_1d(X, hw.n_profiles)
-    else:
-        raise ValueError(f"unknown hardware method: {hw.method}")
+    C = _kmeans(X, hw.n_profiles, seed=cfg.run.seed)
     centroids = np.exp(C) if hw.log_space else C
-    return HardwareCatalogue(centroids=centroids, log_space=hw.log_space,
-                             method=hw.method)
+    return HardwareCatalogue(centroids=centroids, log_space=hw.log_space)
 
 
 # --------------------------------------------------------------------------- #

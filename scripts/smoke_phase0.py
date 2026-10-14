@@ -109,8 +109,7 @@ def main():
     print(f"    by resource={orep.n_dropped_resource}  by duration={orep.n_dropped_duration}")
     print(f"    a_max thresholds={np.round(orep.a_max_thresholds, 4)}  "
           f"d_max hours={orep.d_max_hours_threshold:.2f}")
-    print(f"  hardware: {ds.hw_catalogue.n_profiles} profiles "
-          f"({ds.hw_catalogue.method})")
+    print(f"  hardware: {ds.hw_catalogue.n_profiles} profiles (k-means)")
     dd = ds.d_max_diag
     print(f"  d_max: candidate={dd['candidate_from_quantile']} "
           f"ceiling={dd['horizon_ceiling']} chosen={dd['chosen']} "

@@ -37,8 +37,7 @@ time:
 # Hardware profile discretization
 hardware:
   n_profiles: 32              
-  method: "kmeans"            # "kmeans" | "quantile_grid"
-  log_space: true             # cluster in log-space (requests span orders of magnitude)
+  log_space: true             # k-means++ in log-space (requests span orders of magnitude)
   fit_on: "full"              # "full" (H+stream) | "H"
   hw_floor: 1.0e-5            # min hardware profile component; excludes degenerate
                               # k-means centroids from gamma's v_min term only

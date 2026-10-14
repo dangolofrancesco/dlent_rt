@@ -108,13 +108,7 @@ class TimeCfg:
 @dataclass(frozen=True)
 class HardwareCfg:
     n_profiles: int = 12
-    # "kmeans"          -> k-means in (optionally) log space; adapts to clusters
-    # "quantile_grid"   -> per-dimension quantile bins, cross-product cells
-    # "geometric_grid"  -> per-dimension geometric bins, cross-product cells
-    # "quantile_1d"     -> quantile bins on a single scalar summary (cpu+ram),
-    #                      then centroid per bin. Robust when the two resources
-    #                      are strongly correlated (as in most cloud traces).
-    method: str = "kmeans"
+    # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
     fit_on: str = "full"            # "full" | "H"
     # Minimum value for any hardware profile component (CPU or RAM).
@@ -328,8 +322,6 @@ class Config:
         assert 0.0 <= self.admission.a_buffer_fraction <= 1.0
         assert 0.0 < self.time.d_max_quantile <= 1.0
         assert 0.0 < self.time.d_max_horizon_fraction <= 1.0
-        assert self.hardware.method in (
-            "kmeans", "quantile_grid", "geometric_grid", "quantile_1d")
         assert self.hardware.fit_on in ("full", "H")
         assert self.hardware.n_profiles >= 1
         assert self.grid.space in ("v", "phi", "phi_shifted")
