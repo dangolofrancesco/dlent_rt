@@ -70,13 +70,11 @@ class BidCfg:
     #   "linear" -> U_base(q) = u0 * q
     #   "log"    -> U_base(q) = u0 * (1 + ln(q))
     base_utility_mode: str = "log"
-    # reserve prices, anchored to GCP Preemptible VM pricing (n1-standard class, public
-    # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
-    # pricing for comparable instance classes falls in the same order of
-    # magnitude. These values were independently confirmed (not derived) by
-    # an empirical grid search targeting pos_reward_types, which converged
-    # to the same order of magnitude -- used here as a consistency check,
-    # not as the primary justification.
+    # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
+    # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
+    # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.
+    # base_utility_u0 was calibrated WITH these values (scripts/calibrate_u0.py):
+    # changing gamma1/gamma2 requires recalibrating base_utility_u0.
     gamma1: float = 0.0332          # $/core-hour reserve price
     gamma2: float = 0.00445         # $/GB-hour reserve price
     # lognormal params
@@ -216,10 +214,10 @@ class PhaseTransitionCfg:
 
 @dataclass(frozen=True)
 class ConstantsCfg:
-    # Forced values for the paper's system constants (Zhang & Cheung 2025,
-    # Appendix A). null -> use the data-derived value from Phase 0.
-    # Forcing is a deliberate deviation: the data-derived gamma/xi make every
-    # threshold vacuous and p_U ~ 0 (see week-28 notes). When xi is forced,
+    # System constants of Zhang & Cheung (2025, Appendix A). null -> the
+    # data-derived value from Phase 0. The defaults are FORCED, NOT
+    # DATA-JUSTIFIED: the data-derived gamma/xi make every threshold vacuous
+    # and p_U ~ 0 (week-28 notes); the forced values are an open decision. When xi is forced,
     # Test 1 uses the implied a_max,i = xi * c_i so that xi = max_i a_max,i/c_i
     # still holds; the physical gate always uses the true A of each job.
     xi_override: Optional[float] = 0.001

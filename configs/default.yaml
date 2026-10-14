@@ -47,7 +47,8 @@ outliers:
   a_max_quantile: 0.90        # resource-request cutoff (per resource, on the trace)
   d_max_quantile: 0.95        # duration cutoff (hours); jobs longer are dropped/clipped
   # xi safety check: warn if max_i a_max,i / c_i exceeds this after handling
-  xi_warn_threshold: 0.10     # ~ 1/log(T) for T ~ 25k
+  xi_warn_threshold: 0.10     # ~ 1/log(T). Under capacity.mode from_amax, xi_data = xi_target (0.5),
+                              # so this warning always fires: expected, not an error
 
 # Cluster capacity
 capacity:
@@ -71,7 +72,7 @@ capacity:
   # mode "absolute": c_i taken directly from `absolute` below (real deployments).
   mode: "from_amax"
   xi_target: 0.5              # used only by from_amax (sizing only, not constants.xi_override)
-  fraction: 0.40              # load factor rho (static sim used 0.60)
+  fraction: 0.40              # fraction_of_* modes only (unused under from_amax)
   concurrency_quantile: 0.80   # used only by fraction_of_concurrency_quantile
   absolute:                   # used only when mode == "absolute"
     cpu: null
@@ -86,16 +87,14 @@ energy_model:
 
 bid:
   strategy: "lognormal"         # only "lognormal" (ln v = ln cost_base - sigma^2/2 + sigma Z)
-  # Anchored to GCP Preemptible VM pricing (n1-standard class, public
-  # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
-  # pricing for comparable instance classes falls in the same order of
-  # magnitude. These values were independently confirmed (not derived) by
-  # an empirical grid search targeting pos_reward_types, which converged
-  # to the same order of magnitude -- used here as a consistency check,
-  # not as the primary justification.
+  # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
+  # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
+  # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.
+  # base_utility_u0 was calibrated WITH these values (scripts/calibrate_u0.py):
+  # changing gamma1/gamma2 requires recalibrating base_utility_u0.
   gamma1: 0.0332                # $/core-hour reserve price
   gamma2: 0.00445               # $/GB-hour reserve price
-  sigma: 0.3                  # lognormal dispersion (only for lognormal strategy)
+  sigma: 0.3                  # log-space std of the markup v / cost_base (generator and known distribution)
   # Bid distribution KNOWN a priori (never refit): markup v / cost_base ~
   # LogNormal(-sigma^2/2, sigma), phi_v(v | c) = c * phi_m(v / c), the same phi in
   # Phase 0, ReInit and the online reward. false = legacy pooled-MLE ablation.
@@ -180,10 +179,12 @@ logging:
 # Online loop (week 28)
 # --------------------------------------------------------------------------- #
 constants:
-  # Forced system constants (Zhang & Cheung 2025, App. A). null = data-derived.
-  # xi = 0.001: order of magnitude of a_max/c_min in a production cluster
-  #   (week 17); gives eps_D ~ 0.45 and 1 - eps_D - xi > 0 for T ~ 1e5, delta = T^-3.
-  # gamma = 1.0: >= r_max of the common_currency-normalised reward (max |r~| <= 0.9).
+  # System constants of Zhang & Cheung (2025, App. A). null = data-derived (Phase 0).
+  # xi_override and gamma_override are FORCED, NOT DATA-JUSTIFIED: they are set by
+  # hand so that the error parameters are not vacuous (eps_D = 0.50 and
+  # 1 - eps_D - xi > 0 at xi = 0.001). On the data, xi = 0.5 (from_amax) and the
+  # dollar reward has max |r~| ~ 2.4e4 (week-30 phase0_regime_check), so neither
+  # value follows from the data. Their values are an open decision.
   xi_override: 0.001
   gamma_override: 1.0
   # r_max in the data-derived gamma = p-weighted quantile of |r~| over populated
