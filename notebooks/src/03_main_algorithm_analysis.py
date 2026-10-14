@@ -7,7 +7,7 @@
 # Theoretical setting: the true duration of an admitted job is known at arrival (`model.kind = "theory"`).
 #
 # Notebook-only knob: `capacity_scale` multiplies the initial cluster capacity c_i (CPU and RAM) **before Phase 0**.
-# It is an override inside this notebook, not a change of the default. Sweep: capacity_scale in {0.5, 1.0, 1.5, 2.0, 3.0};
+# It is an override inside this notebook, not a change of the default. Sweep: capacity_scale in {0.5, 1.0} (`DLENT_SCALES` to change);
 # every section below is for the baseline 1.0, the sweep is the compact table + occupancy figure of Section 6.
 #
 # Sections: 0. Setup &middot; 1. Distributions (C.1) &middot; 2. Per-phase margin (C.2) &middot;
@@ -79,16 +79,16 @@ for _p in (BATCH_CSV, GRID_CSV):
 
 cfg = apply_overrides(default_config(), {"data.batch_csv": str(BATCH_CSV), "data.grid_csv": str(GRID_CSV)})
 BASE = apply_overrides(cfg, {"bid.strategy": "lognormal", "bid.sigma": 0.3})
-# Notebook-only override (week-29 report): configs/default.yaml now has data.n0 = 24,000 (|stream| = 133);
-# the analysis is run with the H/stream split it was designed for, n0 = 20,000 (|stream| = 4,133).
-N0_OVERRIDE = 20_000
+# Notebook-only guard: the analysis is run with n0 = 10,000 (|stream| = 15,308), the value configs/default.yaml
+# currently has; if the YAML changes, this override keeps the notebook on the same H/stream split.
+N0_OVERRIDE = 10_000
 if BASE.data.n0 != N0_OVERRIDE:
     print(f"OVERRIDE: data.n0 {BASE.data.n0:,} (configs/default.yaml) -> {N0_OVERRIDE:,} (this notebook only)")
     BASE = apply_overrides(BASE, {"data.n0": N0_OVERRIDE})
 BASE = BASE.validate()
 print(f"batch trace: {BATCH_CSV}\ngrid data:   {GRID_CSV}")
 
-CAPACITY_SCALES = [float(x) for x in os.environ.get("DLENT_SCALES", "0.5,1.0,1.5,2.0,3.0").split(",")]
+CAPACITY_SCALES = [float(x) for x in os.environ.get("DLENT_SCALES", "0.5,1.0").split(",")]
 BASELINE_SCALE = 1.0
 assert BASELINE_SCALE in CAPACITY_SCALES
 L1, L2, L3 = BASE.objective.lambda1, BASE.objective.lambda2, BASE.objective.lambda3
@@ -869,7 +869,7 @@ plt.tight_layout(); plt.show()
 
 # %%
 an = []
-# 1. |H| and s_C depend on data.n0 (notebook 01 overrides n0 = 10,000; default.yaml has 20,000)
+# 1. |H| and s_C depend on data.n0 (this notebook and default.yaml: n0 = 10,000)
 for n0 in sorted({10_000, BASE.data.n0}):
     c_n = apply_overrides(BASE, {"data.n0": n0})
     ds_n = load_dataset(c_n); st_n = run_phase0(ds_n, c_n)
