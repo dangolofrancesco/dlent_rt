@@ -11,23 +11,7 @@ import numpy as np
 from .bid import MyersonModel
 
 
-# Four spacing strategies
-def _edges_quantile(values: np.ndarray, k: int) -> np.ndarray:
-    """
-    Equal-MASS bins: edges at evenly spaced quantiles, so each bin holds ~n/k
-    observations. Strongly preferred for heavily skewed data -- geometric or
-    linear spacing on a skewed distribution starves most bins and piles all the
-    mass into one or two.
-    """
-    probs = np.linspace(0.0, 1.0, k + 1)
-    e = np.quantile(values, probs)
-    e = np.maximum.accumulate(e)
-    for i in range(1, len(e)):
-        if e[i] <= e[i - 1]:
-            e[i] = np.nextafter(e[i - 1], np.inf)
-    return e
-
-
+# Bin edges: geometric (multiplicative) spacing, the only spacing (paper-faithful)
 def _edges_geometric(values: np.ndarray, k: int, floor: float) -> np.ndarray:
     """Multiplicative spacing (paper-faithful). Requires strictly positive values."""
     lo = max(float(np.min(values)), floor)
@@ -38,33 +22,8 @@ def _edges_geometric(values: np.ndarray, k: int, floor: float) -> np.ndarray:
     return lo * ratio ** np.arange(k + 1)
 
 
-def _edges_log_linear(values: np.ndarray, k: int, floor: float) -> np.ndarray:
-    """Uniform spacing in log-space."""
-    lo = np.log(max(float(np.min(values)), floor))
-    hi = np.log(max(float(np.max(values)), floor * (1 + 1e-6)))
-    if hi <= lo:
-        hi = lo + 1e-6
-    return np.exp(np.linspace(lo, hi, k + 1))
-
-
-def _edges_linear(values: np.ndarray, k: int) -> np.ndarray:
-    """Uniform spacing in the native space."""
-    lo, hi = float(np.min(values)), float(np.max(values))
-    if hi <= lo:
-        hi = lo + 1e-9
-    return np.linspace(lo, hi, k + 1)
-
-
-def build_edges(values: np.ndarray, k: int, spacing: str, floor: float) -> np.ndarray:
-    if spacing == "quantile":
-        return _edges_quantile(values, k)
-    if spacing == "geometric":
-        return _edges_geometric(values, k, floor)
-    if spacing == "log_linear":
-        return _edges_log_linear(values, k, floor)
-    if spacing == "linear":
-        return _edges_linear(values, k)
-    raise ValueError(f"unknown spacing: {spacing}")
+def build_edges(values: np.ndarray, k: int, floor: float) -> np.ndarray:
+    return _edges_geometric(values, k, floor)
 
 
 
@@ -90,7 +49,6 @@ class ValuationGrid:
     bnd_phi: np.ndarray
     k_star: int
     space: str
-    spacing: str
     shift: float = 0.0
     rejects_below_floor: bool = False
 
@@ -122,16 +80,16 @@ class ValuationGrid:
 
 def build_valuation_grid(
     v_rate: np.ndarray, myerson: MyersonModel, k_star: int,
-    space: str, spacing: str, phi_floor: float,
+    space: str, phi_floor: float,
 ) -> ValuationGrid:
-    """Build the valuation grid in the configured space with the configured spacing."""
+    """Build the geometric valuation grid in the configured space."""
     v_pos = v_rate[v_rate > 0]
     if getattr(myerson, "known", False) and space != "v":
         raise ValueError("known bid distribution: phi depends on the job's c_j, "
                          "so the grid must be built in bid space (grid.space='v')")
 
     if space == "v":
-        edges = build_edges(v_pos, k_star, spacing, phi_floor)
+        edges = build_edges(v_pos, k_star, phi_floor)
         bnd_v = edges.copy()
         # known distribution: phi of a bin edge is undefined without c_j
         bnd_phi = (np.full(bnd_v.shape, np.nan) if getattr(myerson, "known", False)
@@ -141,12 +99,12 @@ def build_valuation_grid(
     elif space in ("phi", "phi_shifted"):
         from .legacy.pooled_mle import phi_space_grid      # legacy ablation (audit L4)
         edges, bnd_v, bnd_phi, shift, rejects = phi_space_grid(
-            v_pos, myerson, k_star, space, spacing, phi_floor)
+            v_pos, myerson, k_star, space, phi_floor)
 
     else:
         raise ValueError(f"unknown grid space: {space}")
 
     return ValuationGrid(
         edges=edges, bnd_v=bnd_v, bnd_phi=bnd_phi, k_star=k_star,
-        space=space, spacing=spacing, shift=shift, rejects_below_floor=rejects,
+        space=space, shift=shift, rejects_below_floor=rejects,
     )

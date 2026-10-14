@@ -80,7 +80,7 @@ def build_window_state(
             from ...legacy.pooled_mle import fit_myerson
             myerson = fit_myerson(v_arr)
         grid = build_valuation_grid(v_arr, myerson, cfg.grid.k_star, cfg.grid.space,
-                                    cfg.grid.spacing, cfg.grid.phi_floor)
+                                    cfg.grid.phi_floor)
     else:
         myerson, grid = prev.myerson, prev.grid
 

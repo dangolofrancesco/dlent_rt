@@ -174,13 +174,7 @@ class GridCfg:
     #   "phi_shifted"-> grid over (phi - min(phi) + eps): keeps phi ordering but
     #                   makes all values positive, so nothing is dropped.
     space: str = "v"
-    # HOW the bin edges are spaced within that space:
-    #   "quantile"  -> equal-MASS bins (each bin holds ~n/K jobs). Best for
-    #                  heavily skewed distributions: no bin is starved.
-    #   "geometric" -> multiplicative spacing.
-    #   "log_linear"-> uniform in log-space.
-    #   "linear"    -> uniform spacing.
-    spacing: str = "geometric"
+    # bin edges are always geometric (multiplicative) in that space
 
 
 @dataclass(frozen=True)
@@ -339,7 +333,6 @@ class Config:
         assert self.hardware.fit_on in ("full", "H")
         assert self.hardware.n_profiles >= 1
         assert self.grid.space in ("v", "phi", "phi_shifted")
-        assert self.grid.spacing in ("quantile", "geometric", "log_linear", "linear")
         assert self.outliers.policy in ("drop", "clip")
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0

@@ -27,8 +27,7 @@ def fit_myerson(v_rate: np.ndarray) -> MyersonModel:
     return MyersonModel(mu=mu, sigma=sigma)
 
 
-def phi_space_grid(v_pos, myerson: MyersonModel, k_star: int, space: str, spacing: str,
-                   phi_floor: float):
+def phi_space_grid(v_pos, myerson: MyersonModel, k_star: int, space: str, phi_floor: float):
     """Edges of the valuation grid in virtual-value space (pooled fit only).
     Returns (edges, bnd_v, bnd_phi, shift, rejects_below_floor)."""
     from ..grid import build_edges
@@ -36,7 +35,7 @@ def phi_space_grid(v_pos, myerson: MyersonModel, k_star: int, space: str, spacin
         raise ValueError("phi-space grids need one phi(v) for every job (pooled fit only)")
     if space == "phi":
         vals = np.asarray(myerson.phi_job(v_pos))
-        edges = build_edges(vals, k_star, spacing, phi_floor)
+        edges = build_edges(vals, k_star, phi_floor)
         bnd_phi = edges.copy()
         bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
         shift, rejects = 0.0, True
@@ -45,7 +44,7 @@ def phi_space_grid(v_pos, myerson: MyersonModel, k_star: int, space: str, spacin
         raw = np.asarray(myerson.phi_job(v_pos))
         shift = float(-raw.min() + max(phi_floor, 1e-9))
         vals = raw + shift
-        edges = build_edges(vals, k_star, spacing, phi_floor)
+        edges = build_edges(vals, k_star, phi_floor)
         bnd_phi = edges - shift
         bnd_v = np.asarray(myerson.phi_inv(bnd_phi))
         rejects = False

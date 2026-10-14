@@ -378,7 +378,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     # 3. Build valuation grid
     grid = build_valuation_grid(
         bids.v_rate, myerson, cfg.grid.k_star,
-        cfg.grid.space, cfg.grid.spacing, cfg.grid.phi_floor,
+        cfg.grid.space, cfg.grid.phi_floor,
     )
 
     # 4. Build type space
