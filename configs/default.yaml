@@ -137,10 +137,10 @@ confidence:
   delta: null                 # if null, set to 1/T^3 at runtime (T = online horizon)
   delta_power: 3              # delta = 1 / T^delta_power when delta is null
 
-# Experimental axes (the ablation grid)
+# Online model: only "theory" is implemented (paper-faithful: true D at admission,
+# single counter, vanilla Bernoulli thinning). The practical ablations (delayed D,
+# admission buffer, revision, phantoms) will add their keys when they are built.
 model:
-  # "theory"    -> paper-faithful: true D at admission, single counter, vanilla Bernoulli
-  # "practical" -> realistic: delayed D, dual counters, four-case gate, strategy-D
   kind: "theory"
 
 scalarization:
@@ -155,24 +155,7 @@ scalarization:
   rho: 1.0e-3                 # augmentation term for augmented Chebyshev
 
 oracle:
-  # "frozen"     -> uses phase-averaged grid costs (preserves Lemma 1)
-  # "time_aware" -> substitutes live grid prices at decision time
-  # theory model uses frozen; practical model uses time_aware by default,
-  # but this flag lets you cross them for the ablation.
-  kind: "frozen"
-
-admission:
-  a_buffer_fraction: 1.0      # a_buffer = fraction * a_max  (practical model only)
-                              # 1.0 = as conservative as Test 1; 0.0 = max packing
-
-revision:
-  # "continuous"     -> re-revise every in-flight job every step (max rule)
-  # "at_completion"  -> single O(1) revision when the job finishes
-  mode: "continuous"
-
-phantom:
-  # whether Case-B phantoms are re-revised in the in-flight loop (Step 3)
-  revise_in_flight: false     # default: keep "what DLENT would have earned" semantics
+  kind: "frozen"              # only "frozen": phase-averaged grid costs (preserves Lemma 1)
 
 # LP solver (HiGHS via highspy)
 lp:

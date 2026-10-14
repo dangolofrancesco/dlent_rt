@@ -179,7 +179,7 @@ class ConfidenceCfg:
 
 @dataclass(frozen=True)
 class ModelCfg:
-    kind: str = "theory"          # "theory" | "practical"
+    kind: str = "theory"          # only "theory" (the practical model is not implemented)
 
 
 @dataclass(frozen=True)
@@ -197,22 +197,7 @@ class ScalarizationCfg:
 
 @dataclass(frozen=True)
 class OracleCfg:
-    kind: str = "frozen"          # "frozen" | "time_aware"
-
-
-@dataclass(frozen=True)
-class AdmissionCfg:
-    a_buffer_fraction: float = 1.0
-
-
-@dataclass(frozen=True)
-class RevisionCfg:
-    mode: str = "continuous"      # "continuous" | "at_completion"
-
-
-@dataclass(frozen=True)
-class PhantomCfg:
-    revise_in_flight: bool = False
+    kind: str = "frozen"          # only "frozen" (phase-averaged costs, preserves Lemma 1)
 
 
 @dataclass(frozen=True)
@@ -291,9 +276,6 @@ class Config:
     model: ModelCfg = field(default_factory=ModelCfg)
     scalarization: ScalarizationCfg = field(default_factory=ScalarizationCfg)
     oracle: OracleCfg = field(default_factory=OracleCfg)
-    admission: AdmissionCfg = field(default_factory=AdmissionCfg)
-    revision: RevisionCfg = field(default_factory=RevisionCfg)
-    phantom: PhantomCfg = field(default_factory=PhantomCfg)
     lp: LpCfg = field(default_factory=LpCfg)
     test3: Test3Cfg = field(default_factory=Test3Cfg)
     phase_transition: PhaseTransitionCfg = field(default_factory=PhaseTransitionCfg)
@@ -307,10 +289,9 @@ class Config:
         assert self.time.step_semantics == "real_tick", \
             "step_semantics must be 'real_tick' (one_arrival legacy mode is not supported)."
         assert self.time.tick_seconds > 0
-        assert self.model.kind in ("theory", "practical")
+        assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
         assert self.scalarization.method in ("chebyshev", "linear")
-        assert self.oracle.kind in ("frozen", "time_aware")
-        assert self.revision.mode in ("continuous", "at_completion")
+        assert self.oracle.kind == "frozen", "oracle.kind: only 'frozen' is implemented"
         assert self.capacity.mode in (
             "fraction_of_volume", "fraction_of_peak",
             "fraction_of_concurrency_quantile", "from_amax", "absolute",
@@ -319,7 +300,6 @@ class Config:
         assert 0.0 < self.capacity.concurrency_quantile <= 1.0
         assert 0.0 < self.capacity.fraction <= 1.0
         assert self.grid.k_star >= 2
-        assert 0.0 <= self.admission.a_buffer_fraction <= 1.0
         assert 0.0 < self.time.d_max_quantile <= 1.0
         assert 0.0 < self.time.d_max_horizon_fraction <= 1.0
         assert self.hardware.fit_on in ("full", "H")
@@ -347,10 +327,6 @@ class Config:
         if self.capacity.mode == "absolute":
             assert self.capacity.absolute.cpu is not None
             assert self.capacity.absolute.ram is not None
-        # theory model consistency: it must not use practical-only features
-        if self.model.kind == "theory" and self.oracle.kind == "time_aware":
-            # allowed but flagged — crossing axes is a legitimate ablation
-            pass
         return self
 
 
@@ -399,7 +375,6 @@ _DATACLASS_REGISTRY = {
     "AbsoluteCapCfg": AbsoluteCapCfg, "CapacityCfg": CapacityCfg,
     "ObjectiveCfg": ObjectiveCfg, "GridCfg": GridCfg, "ConfidenceCfg": ConfidenceCfg,
     "ModelCfg": ModelCfg, "ScalarizationCfg": ScalarizationCfg, "OracleCfg": OracleCfg,
-    "AdmissionCfg": AdmissionCfg, "RevisionCfg": RevisionCfg, "PhantomCfg": PhantomCfg,
     "LpCfg": LpCfg, "Test3Cfg": Test3Cfg, "PhaseTransitionCfg": PhaseTransitionCfg,
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
