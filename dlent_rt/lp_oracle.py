@@ -1,5 +1,6 @@
 """
-LP-RS solver and scalarization.
+LP-RS solver and scalarization. The online loop uses the linear scalarization
+only; augmented Chebyshev lives in dlent_rt.pareto (offline Pareto fronts).
 """
 from __future__ import annotations
 
@@ -17,27 +18,13 @@ def scalarize_linear(f: np.ndarray, weights: np.ndarray) -> np.ndarray:
     return f @ weights
 
 
-def scalarize_chebyshev(
-    f: np.ndarray, weights: np.ndarray, rho: float
-) -> np.ndarray:
-    """
-    Augmented Chebyshev scalarization, evaluated per type independently.
-    The ideal point is the per-objective max over types.
-    """
-    ideal = f.max(axis=0)                           # (3,)
-    gap = ideal[None, :] - f                        # (n_types, 3), >= 0 ideally
-    weighted = weights[None, :] * gap               # (n_types, 3)
-    cheb = weighted.max(axis=1)                     # (n_types,)
-    aug = rho * gap.sum(axis=1)                     # (n_types,)
-    return -(cheb + aug)                            # reward = -distance
-
-
 def scalarize(
     f: np.ndarray, method: str, weights: np.ndarray, rho: float,
 ) -> np.ndarray:
     if method == "linear":
         return scalarize_linear(f, weights)
     if method == "chebyshev":
+        from .pareto import scalarize_chebyshev       # offline Pareto enumeration only
         return scalarize_chebyshev(f, weights, rho)
     raise ValueError(f"unknown scalarization method: {method}")
 
