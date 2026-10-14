@@ -68,7 +68,7 @@ SITES = [
     ("notebooks/src/03_main_algorithm_analysis.py", r"phi_k = np.asarray\(st.myerson.phi\(S.v\)\)", "PRE-FIX nb03 accuracy: myerson.phi(v), no c_j (NOT FOUND = fixed)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"r_ref, \*_ = scalarized_reward", "nb03 accuracy: r_ref per phase-k type (from phi_ref)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"Ry = float\(R_ref\[adm\].sum\(\)\)", "nb03 baseline_table: R yardstick = sum R_ref"),
-    ("notebooks/src/04_phi_diagnostic.py", r"st0.myerson.phi\(S.v\)", "PRE-FIX nb04: myerson.phi(v) (NOT FOUND = fixed)"),
+    ("notebooks/legacy/04_phi_diagnostic.py", r"st0.myerson.phi\(S.v\)", "PRE-FIX nb04: myerson.phi(v) (NOT FOUND = fixed)"),
 ]
 rows = []
 for f, pat, what in SITES:

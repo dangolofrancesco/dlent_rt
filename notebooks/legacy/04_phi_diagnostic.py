@@ -7,12 +7,13 @@
 # `quantile_linear`, q = 0.90 (from `configs/default.yaml`). Nothing in `dlent_rt/`, the defaults, the tests or the
 # online loop is modified: every φ below is computed with the mechanism's own estimator (`dlent_rt.bid.fit_myerson` +
 # `MyersonModel.phi`); only the **conditioning** (which bids are pooled into one F) changes. Helpers:
-# `notebooks/src/phi_diag.py`.
+# `notebooks/legacy/phi_diag.py`.
 #
 # Sections: 0. Code reading &middot; 1. Heterogeneity &middot; 2. φ under alternative conditioning &middot;
 # 3. Bias vs variance &middot; 4. Where the negatives sit &middot; 5. Impact on the reward &middot; 6. Summary tables.
 #
-# Rebuild/execute: `python notebooks/src/build.py 04_phi_diagnostic --execute`.
+# LEGACY (week 30, audit D15): the pooled-fit question is closed (known distribution). Kept for the record;
+# not built by `notebooks/src/build.py`. To execute it, copy it to notebooks/src/ and run the build.
 # Synthetic fallback: `DLENT_SYNTHETIC=1` (or a missing trace).
 
 # %% [markdown]
@@ -71,7 +72,7 @@ warnings.simplefilter("ignore")
 
 ROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "dlent_rt").is_dir())
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "notebooks" / "src"))
+sys.path.insert(0, str(ROOT / "notebooks" / "legacy"))
 
 from dlent_rt.config import default_config
 from dlent_rt.data import load_dataset
