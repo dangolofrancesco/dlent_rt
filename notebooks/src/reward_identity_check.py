@@ -54,7 +54,7 @@ SITES = [
     ("dlent_rt/phase0.py", r"r_tilde = np.asarray\(scalarize", "r_tilde (type reward, $/job)"),
     ("dlent_rt/phase0.py", r"p = N / max\(n_total_for_p", "Phase 0: p_j = N_j / H_span_steps (per tick)"),
     ("dlent_rt/models/core/reinit.py", r"phi_arr = \(np.asarray\(myerson.phi_job", "ReInit / hindsight: per-job phi"),
-    ("dlent_rt/models/core/reinit.py", r"r_tilde, r_rev, norm_ref, norm_deg, _ = scalarized_reward", "ReInit / hindsight: r_tilde via scalarized_reward"),
+    ("dlent_rt/models/core/reinit.py", r"r_tilde, r_nocarbon, norm_ref, norm_deg, _ = scalarized_reward", "ReInit / hindsight: r_tilde via scalarized_reward"),
     ("dlent_rt/models/core/reinit.py", r"p = N / max\(W, 1\)", "ReInit / hindsight: p_j = N_j / W"),
     ("dlent_rt/models/core/reinit.py", r"def hindsight_lambda", "hindsight benchmark (lam_hat per tick)"),
     ("dlent_rt/models/theory.py", r"phi = float\(st.myerson.phi_job", "online: per-job phi of the arrival"),

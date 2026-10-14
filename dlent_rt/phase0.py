@@ -152,7 +152,7 @@ def scalarized_reward(
     scale s (the online loop passes Phase 0's s so r_tilde stays on one scale
     across phases). `carbon_price` freezes the quantile_linear carbon price s_C
     in the same way (ReInit passes Phase 0's s_C; it is never recomputed on the
-    stream). Returns (r_tilde, r_rev, norm_ref, norm_deg, norm_info).
+    stream). Returns (r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info).
     """
     lam = cfg.objective
     raw_sat  = priority_of_type * v_bar
@@ -166,9 +166,9 @@ def scalarized_reward(
         f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, lam.lambda3 * V_carb])
     else:
         f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
-    r_rev = lam.lambda1 * V_sat + lam.lambda2 * V_prof
+    r_nocarbon = lam.lambda1 * V_sat + lam.lambda2 * V_prof
     r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
-    return r_tilde, r_rev, norm_ref, norm_deg, norm_info
+    return r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info
 
 
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
@@ -198,7 +198,7 @@ class PhaseState:
     energy_bar: np.ndarray                # mean energy_kwh per type
     power_bar: np.ndarray                 # mean power_kw per type
     r_tilde: np.ndarray                   # frozen scalarized reward
-    r_rev: np.ndarray                     # revenue-only base (time-aware oracle)
+    r_nocarbon: np.ndarray                # r_tilde without the carbon term (diagnostic)
     C_elec_bar: np.ndarray                # mean electricity cost per type
     C_carbon_bar: np.ndarray              # mean carbon emissions per type (kgCO2)
     v: np.ndarray                         # (n_types, |I|) expected resource volume
@@ -490,7 +490,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
             "enumeration notebooks.",
             RuntimeWarning,
         )
-    r_tilde, r_rev, norm_ref, norm_deg, norm_info = scalarized_reward(
+    r_tilde, r_nocarbon, norm_ref, norm_deg, norm_info = scalarized_reward(
         priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar,
         p, v, ds, cfg,
     )
@@ -542,7 +542,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         myerson=myerson, grid=grid, type_space=ts, bids=bids,
         p=p, d_bar=d_bar, v_bar=v_bar_arr, phi_bar=phi_bar_arr,
         energy_bar=energy_bar_arr, power_bar=power_bar_arr,
-        r_tilde=r_tilde, r_rev=r_rev,
+        r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=C_elec_bar, C_carbon_bar=C_carbon_bar,
         v=v, L=L, phi_tilde=phi_tilde,
         tau=tau, lam_star=lp.optimum,

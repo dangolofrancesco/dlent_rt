@@ -413,10 +413,10 @@ for m, st in enumerate(M0.states, start=1):
     pp = st.p > 0
     neg_rows.append({"level": "type", "scope": f"phase {m} state", "n": int(pp.sum()),
                      "R<0 %": 100 * np.average(st.r_tilde[pp] < 0, weights=st.p[pp]),
-                     "R<0 no carbon %": 100 * np.average(st.r_rev[pp] < 0, weights=st.p[pp])})
+                     "R<0 no carbon %": 100 * np.average(st.r_nocarbon[pp] < 0, weights=st.p[pp])})
 neg_rows.append({"level": "type", "scope": "reference (full stream)", "n": int(pop.sum()),
                  "R<0 %": 100 * np.average(st_ref0.r_tilde[pop] < 0, weights=wt),
-                 "R<0 no carbon %": 100 * np.average(st_ref0.r_rev[pop] < 0, weights=wt)})
+                 "R<0 no carbon %": 100 * np.average(st_ref0.r_nocarbon[pop] < 0, weights=wt)})
 display(pd.DataFrame(neg_rows).set_index(["level", "scope"]).style.format(precision=2))
 
 neg = A0[A0["R_job"] < 0]

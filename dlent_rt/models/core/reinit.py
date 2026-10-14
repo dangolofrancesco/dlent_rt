@@ -129,7 +129,7 @@ def build_window_state(
     L, prio, A_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
     v = A_type * md["d_bar"][:, None]
-    r_tilde, r_rev, norm_ref, norm_deg, _ = scalarized_reward(
+    r_tilde, r_nocarbon, norm_ref, norm_deg, _ = scalarized_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
         p, v, ds, cfg, common_scale=common_scale, carbon_price=prev.carbon_price,
     )
@@ -142,7 +142,7 @@ def build_window_state(
     st = replace(
         prev, myerson=myerson, grid=grid, bids=bids, p=p, d_bar=md["d_bar"],
         v_bar=mv["v_bar"], phi_bar=mv["phi_bar"], energy_bar=md["energy_bar"],
-        power_bar=md["power_bar"], r_tilde=r_tilde, r_rev=r_rev,
+        power_bar=md["power_bar"], r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=md["C_elec_bar"], C_carbon_bar=md["C_carbon_bar"], v=v, L=L,
         phi_tilde=phi_tilde, tau=tau, lam_star=lp.optimum, norm_ref=norm_ref,
         n_assigned=int(ok.sum()), n_ir_rejected=int((~ok).sum()),

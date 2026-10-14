@@ -60,12 +60,12 @@ def test_q_changes_only_carbon_price(setup):
     out = {}
     for q in (0.5, 0.75, 0.9, 0.99):
         cfg_q = _with(cfg, quantile=q)
-        r, r_rev, ref, _, info = scalarized_reward(
+        r, r_nocarbon, ref, _, info = scalarized_reward(
             prio, st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, st.v, ds, cfg_q)
-        out[q] = (r, r_rev, info)
+        out[q] = (r, r_nocarbon, info)
         lam = cfg.objective
-        np.testing.assert_allclose(r_rev, lam.lambda1 * sat + lam.lambda2 * prof, rtol=1e-12)
-        np.testing.assert_allclose(r - r_rev, -lam.lambda3 * info["s_C"] * carb, rtol=1e-12, atol=1e-15)
+        np.testing.assert_allclose(r_nocarbon, lam.lambda1 * sat + lam.lambda2 * prof, rtol=1e-12)
+        np.testing.assert_allclose(r - r_nocarbon, -lam.lambda3 * info["s_C"] * carb, rtol=1e-12, atol=1e-15)
         assert ref == (1.0, 1.0, 1.0)
     revs = [o[1] for o in out.values()]
     assert all(np.array_equal(revs[0], x) for x in revs[1:])
@@ -75,7 +75,7 @@ def test_q_changes_only_carbon_price(setup):
         warnings.simplefilter("ignore")
         st75 = run_phase0(ds, _with(cfg, quantile=0.75))
     assert np.isclose(st75.carbon_price, out[0.75][2]["s_C"], rtol=1e-12)
-    np.testing.assert_array_equal(st75.r_rev, st.r_rev)
+    np.testing.assert_array_equal(st75.r_nocarbon, st.r_nocarbon)
 
 
 # (c) ReInit reuses the frozen Phase-0 s_C
@@ -153,7 +153,7 @@ def test_zero_carbon_has_no_carbon_term(setup):
     C0 = st.C_carbon_bar.copy()
     j = int(np.flatnonzero(st.p > 0)[0])
     C0[j] = 0.0
-    r, r_rev, _, _, _ = scalarized_reward(
+    r, r_nocarbon, _, _, _ = scalarized_reward(
         prio, st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, st.v, ds, cfg,
         carbon_price=st.carbon_price)
-    assert r[j] == r_rev[j]
+    assert r[j] == r_nocarbon[j]
