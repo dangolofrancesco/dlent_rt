@@ -90,7 +90,7 @@ def build_window_state(
     phi_arr = (np.asarray(myerson.phi_job(v_arr, stream.cost_base[idx_arr]))
                if idx_arr.size else np.zeros(0))
     N, mv = _means(tid_arr[ok], n_types, dict(
-        v_bar=v_arr[ok], phi_bar=phi_arr[ok], bid_high_bar=stream.bid_high[idx_arr][ok]))
+        v_bar=v_arr[ok], phi_bar=phi_arr[ok]))
 
     tid_obs = types_of(idx_obs)
     oko = tid_obs >= 0
@@ -127,7 +127,7 @@ def build_window_state(
 
     p = N / max(W, 1)
     L, prio, A_type = type_arrays(ts, grid)
-    phi_tilde = compute_phi_tilde(L, mv["bid_high_bar"], cfg.bid.strategy, myerson)
+    phi_tilde = compute_phi_tilde(L, myerson)
     v = A_type * md["d_bar"][:, None]
     r_tilde, r_rev, norm_ref, norm_deg, _ = scalarized_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],

@@ -2,7 +2,7 @@
 Phase 0 — Offline Bootstrap
 
 Computes everything the online loop needs to start its first phase:
-  - Bid synthesis (uniform or lognormal, on-the-fly)
+  - Bid synthesis (lognormal, on-the-fly)
   - Myerson model and valuation grid
   - Energy model (power draw from CPU/RAM/scheduling_class)
   - Grid-data lookup (electricity price + carbon intensity at request_time)
@@ -35,8 +35,7 @@ from .lp_oracle import scalarize, solve_lp_rs, LPResult
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
 from .bid import (
     MyersonModel, fit_myerson, bid_model, compute_phi_tilde,
-    UniformBidParams, LognormalBidParams, BidResult,
-    synthesize_uniform, synthesize_lognormal,
+    LognormalBidParams, BidResult, synthesize_lognormal,
 )
 
 # Bid and energy helpers
@@ -53,33 +52,20 @@ def _make_energy_params(cfg: Config) -> EnergyParams:
 def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
     """Generate bids on the fly from resource requests."""
     rng = np.random.default_rng(seed)
-    if cfg.bid.strategy == "uniform":
-        params = UniformBidParams(
-            gamma1=cfg.bid.gamma1, gamma2=cfg.bid.gamma2,
-            base_utility_u0=cfg.bid.base_utility_u0,
-            base_utility_mode=cfg.bid.base_utility_mode,
-            spec_cpu_core=cfg.energy_model.spec_cpu_core,
-            spec_ram_gb=cfg.energy_model.spec_ram_gb,
-        )
-        return synthesize_uniform(
-            jobs.A[:, 0], jobs.A[:, 1],
-            jobs.duration_hours, jobs.priority, params, rng,
-        )
-    else:  # lognormal
-        params = LognormalBidParams(
-            sigma=cfg.bid.sigma,
-            base_multiplier=cfg.bid.base_multiplier,
-            base_utility_u0=cfg.bid.base_utility_u0,
-            base_utility_mode=cfg.bid.base_utility_mode,
-            gamma1=cfg.bid.gamma1,
-            gamma2=cfg.bid.gamma2,
-            spec_cpu_core=cfg.energy_model.spec_cpu_core,
-            spec_ram_gb=cfg.energy_model.spec_ram_gb,
-        )
-        return synthesize_lognormal(
-            jobs.A[:, 0], jobs.A[:, 1],
-            jobs.duration_hours, jobs.priority, params, rng,
-        )
+    params = LognormalBidParams(
+        sigma=cfg.bid.sigma,
+        base_multiplier=cfg.bid.base_multiplier,
+        base_utility_u0=cfg.bid.base_utility_u0,
+        base_utility_mode=cfg.bid.base_utility_mode,
+        gamma1=cfg.bid.gamma1,
+        gamma2=cfg.bid.gamma2,
+        spec_cpu_core=cfg.energy_model.spec_cpu_core,
+        spec_ram_gb=cfg.energy_model.spec_ram_gb,
+    )
+    return synthesize_lognormal(
+        jobs.A[:, 0], jobs.A[:, 1],
+        jobs.duration_hours, jobs.priority, params, rng,
+    )
 
 
 def _compute_job_energy(jobs: JobArrays, cfg: Config) -> np.ndarray:
@@ -317,7 +303,6 @@ def _per_type_stats(
     d_bar        = _mean(jobs.duration_steps)
     v_bar        = _mean(bids.v_rate)            # mean bid per type
     phi_bar      = _mean(phi_job)                # mean phi(v) per type
-    bid_high_bar = _mean(bids.bid_high)          # mean upper bid-support bound per type
     energy_bar   = _mean(energy_kwh)
     power_bar    = _mean(power_kw)
     C_elec_bar   = _mean(energy_kwh * elec_price)
@@ -328,7 +313,6 @@ def _per_type_stats(
 
     p = N / max(n_total_for_p, 1)
     return dict(N=N, p=p, d_bar=d_bar, v_bar=v_bar, phi_bar=phi_bar,
-                bid_high_bar=bid_high_bar,
                 energy_bar=energy_bar, power_bar=power_bar,
                 C_elec_bar=C_elec_bar, C_carbon_bar=C_carbon_bar,
                 type_ids=type_ids, n_ir_rejected=n_ir_rejected,
@@ -508,7 +492,6 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     d_bar          = stats["d_bar"]
     v_bar_arr      = stats["v_bar"]
     phi_bar_arr    = stats["phi_bar"]
-    bid_high_bar   = stats["bid_high_bar"]
     energy_bar_arr = stats["energy_bar"]
     power_bar_arr  = stats["power_bar"]
     C_elec_bar     = stats["C_elec_bar"]
@@ -516,7 +499,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
 
     # 7. Bin floors per type for the PAYMENT RULE only
     L, priority_of_type, A_of_type = type_arrays(ts, grid)
-    phi_tilde = compute_phi_tilde(L, bid_high_bar, cfg.bid.strategy, myerson)
+    phi_tilde = compute_phi_tilde(L, myerson)
 
     # 8. Expected resource volume
     v = A_of_type * d_bar[:, None]
@@ -601,8 +584,8 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
 
 def calibrate_base_utility_u0(
     ds: Dataset, cfg: Config,
-    mode: str, strategy: str,
-    sigma: Optional[float] = None,   # only used when strategy == "lognormal"
+    mode: str,
+    sigma: Optional[float] = None,
     target_pos_frac: float = 0.90,
     seed: int = 42,
     lo: float = 0.0, hi: float = 500.0, tol: float = 0.5, max_iter: int = 25,
@@ -610,20 +593,18 @@ def calibrate_base_utility_u0(
     """
     Bisection search for the smallest U_0 such that the fraction of
     POPULATED TYPES with r_tilde > 0 (pos_reward_types) reaches
-    target_pos_frac, for the given base_utility_mode and bid strategy.
+    target_pos_frac, for the given base_utility_mode and sigma.
 
     Calibrating on the raw per-job phi(v) > 0 fraction instead would be a
-    no-op: for both the uniform and lognormal bid models, cost_base enters
-    v (and hence phi(v)) as a pure per-job scale factor, so phi(v)'s SIGN
-    depends only on the job's priority (via M, uniform) or on sigma
-    (lognormal) -- never on cost_base's magnitude, and therefore never on
-    U_0. U_0 only starts to matter once bids are aggregated into r_tilde
+    no-op: cost_base enters v (and hence phi(v)) as a pure per-job scale
+    factor, so phi(v)'s SIGN depends only on sigma -- never on cost_base's
+    magnitude, and therefore never on U_0. U_0 only starts to matter once bids are aggregated into r_tilde
     per type together with W and C, where it shifts V_prof's magnitude
     relative to the other two (already-normalized) objectives.
     """
     def pos_frac(u0: float) -> float:
         cfg_i = replace(cfg, bid=replace(
-            cfg.bid, strategy=strategy, base_utility_u0=u0, base_utility_mode=mode,
+            cfg.bid, base_utility_u0=u0, base_utility_mode=mode,
             sigma=sigma if sigma is not None else cfg.bid.sigma,
         ), run=replace(cfg.run, seed=seed))
         st_i = run_phase0(ds, cfg_i)

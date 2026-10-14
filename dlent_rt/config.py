@@ -60,25 +60,23 @@ class NormalizationCfg:
 
 @dataclass(frozen=True)
 class BidCfg:
-    # "uniform" (recommended) | "lognormal" (legacy)
-    strategy: str = "uniform"
+    # bid model: "lognormal" only (ln v = ln cost_base - sigma^2/2 + sigma Z)
+    strategy: str = "lognormal"
     # Base utility rate ($/hour): minimum hourly value a user derives from
     # job completion, independent of resource footprint. Multiplied by
     # duration. Ref: reinterpretation suggested by advisor — demand-side
     # utility rather than supply-side fee.
     # U_0: the single free parameter of base_utility_mode. Calibrated via
     # calibrate_base_utility_u0 (bisection on Phase 0's pos_reward_types,
-    # target_pos_frac=0.90) against bid.strategy="lognormal", sigma=0.3 --
-    # NOT against this dataclass's own strategy default ("uniform"), so if
-    # bid.strategy is changed away from "lognormal"/sigma=0.3 this value no
-    # longer hits that 90% target and should be recalibrated.
+    # target_pos_frac=0.90) against sigma=0.3 -- NOT against this dataclass's
+    # own sigma default (1.5), so if sigma is changed away from 0.3 this value
+    # no longer hits that 90% target and should be recalibrated.
     base_utility_u0: float = 23.926
     # How U_base(q) scales with priority q in {1,...,5}:
     #   "linear" -> U_base(q) = u0 * q
     #   "log"    -> U_base(q) = u0 * (1 + ln(q))
     base_utility_mode: str = "log"
-    # uniform params
-    # Anchored to GCP Preemptible VM pricing (n1-standard class, public
+    # reserve prices, anchored to GCP Preemptible VM pricing (n1-standard class, public
     # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
     # pricing for comparable instance classes falls in the same order of
     # magnitude. These values were independently confirmed (not derived) by
@@ -350,10 +348,8 @@ class Config:
         assert self.outliers.policy in ("drop", "clip")
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0
-        assert self.bid.strategy in ("uniform", "lognormal")
+        assert self.bid.strategy == "lognormal", "bid.strategy: only 'lognormal' is implemented"
         if self.bid.known_distribution:
-            assert self.bid.strategy == "lognormal", \
-                "bid.known_distribution=true requires bid.strategy='lognormal'"
             assert self.grid.space == "v", \
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
             assert self.bid.sigma > 0

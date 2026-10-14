@@ -92,9 +92,6 @@ def bid_model(cfg, v_rate: np.ndarray) -> MyersonModel:
     """The mechanism's bid model: known markup distribution (bid.known_distribution,
     sigma = bid.sigma, no fit) or the legacy pooled lognormal MLE on v_rate."""
     if cfg.bid.known_distribution:
-        if cfg.bid.strategy != "lognormal":
-            raise ValueError("bid.known_distribution=true is implemented for "
-                             "bid.strategy='lognormal' only; set it to false")
         return MyersonModel.known_markup(cfg.bid.sigma)
     return fit_myerson(v_rate)
 
@@ -122,19 +119,8 @@ def compute_base_utility(
 
 
 @dataclass
-class UniformBidParams:
-    """Parameters for the cost-based uniform bid synthesis."""
-    gamma1: float = 0.02       # $/core-hour (infrastructure reserve price)
-    gamma2: float = 0.004      # $/GB-hour (infrastructure reserve price)
-    base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
-    base_utility_mode: str = "log"  # "linear" | "log"
-    spec_cpu_core: float = 64  # cores per 1.0 normalized CPU
-    spec_ram_gb: float = 256   # GB per 1.0 normalized RAM
-
-
-@dataclass
 class LognormalBidParams:
-    """Parameters for the legacy lognormal bid synthesis."""
+    """Parameters for the lognormal bid synthesis."""
     sigma: float = 1.5
     base_multiplier: float = 1.0
     base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
@@ -153,35 +139,6 @@ class BidResult:
     bid_low: np.ndarray       
     bid_high: np.ndarray      
     cost_base: Optional[np.ndarray] = None   # reference cost c_j (public, from features)
-
-
-def synthesize_uniform(
-    cpu_norm: np.ndarray, ram_norm: np.ndarray,
-    duration_hours: np.ndarray, priority: np.ndarray,
-    params: UniformBidParams, rng: np.random.Generator,
-) -> BidResult:
-    """
-    Cost-based uniform bid synthesis.
-    """
-    cpu_cores = cpu_norm * params.spec_cpu_core
-    ram_gb = ram_norm * params.spec_ram_gb
-    base_utility = compute_base_utility(
-        priority, params.base_utility_u0, params.base_utility_mode,
-    )
-    cost_base = (
-        base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
-    ) * duration_hours
-    cost_base = np.maximum(cost_base, 1e-9)  # avoid zero
-
-    M = 1.0 + np.log(priority + 1.0)
-    bid_low = cost_base
-    bid_high = (1.0 + 2.0 * M) * cost_base
-
-    v_rate = rng.uniform(bid_low, bid_high)
-    phi_rate = 2.0 * v_rate - bid_high  # closed-form Myerson for U[a,b]
-
-    return BidResult(v_rate=v_rate, phi_rate=phi_rate,
-                     bid_low=bid_low, bid_high=bid_high, cost_base=cost_base)
 
 
 def synthesize_lognormal(
@@ -216,18 +173,10 @@ def synthesize_lognormal(
                      bid_low=bid_low, bid_high=bid_high, cost_base=cost_base)
 
 
-def compute_phi_tilde(
-    L: np.ndarray,
-    bid_high_bar: np.ndarray,
-    strategy: str,
-    myerson: "MyersonModel",
-) -> np.ndarray:
+def compute_phi_tilde(L: np.ndarray, myerson: "MyersonModel") -> np.ndarray:
+    """Per-type virtual value at the bin floor L (payment rule)."""
     if myerson.known:
         # per-type phi(L) is undefined: phi depends on the job's c_j, which is not
         # part of the type. The payment is computed per job, phi_job(L_k, c_j).
         return np.full(np.shape(L), np.nan)
-    if strategy == "uniform":
-        return 2.0 * L - bid_high_bar
-    else:
-        # bid_high_bar has no meaning for lognormal bids (no compact support)
-        return np.asarray(myerson.phi_job(L))
+    return np.asarray(myerson.phi_job(L))

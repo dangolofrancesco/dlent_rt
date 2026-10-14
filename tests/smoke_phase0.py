@@ -37,8 +37,6 @@ def main():
     # these flags. Only override the loaded config when the flag IS given.
     ap.add_argument("--scalarization", default=None,
                     choices=["linear", "chebyshev"])
-    ap.add_argument("--bid-strategy", default="uniform",
-                    choices=["uniform", "lognormal"])
     ap.add_argument("--normalization", default=None,
                     choices=["per_job", "moving_avg", "common_currency", "utopian", "quantile_linear"])
     args = ap.parse_args()
@@ -53,8 +51,6 @@ def main():
         capacity=dataclasses.replace(cfg.capacity, mode=args.capacity_mode,
                                      fraction=args.fraction,
                                      concurrency_quantile=args.concurrency_quantile),
-        bid=dataclasses.replace(cfg.bid, strategy=args.bid_strategy,
-                                known_distribution=args.bid_strategy == "lognormal"),
     )
     if args.scalarization is not None:
         cfg = dataclasses.replace(
@@ -76,7 +72,7 @@ def main():
     print(f"csv={args.csv}  n0={args.n0}  semantics={args.semantics}")
     print(f"capacity={args.capacity_mode}@{args.fraction}  "
           f"scalarization={cfg.scalarization.method}")
-    print(f"bid={args.bid_strategy}  normalization={cfg.normalization.strategy}")
+    print(f"bid={cfg.bid.strategy} sigma={cfg.bid.sigma}  normalization={cfg.normalization.strategy}")
     print()
 
     ds = load_dataset(cfg)

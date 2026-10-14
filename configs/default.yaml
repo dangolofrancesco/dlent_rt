@@ -88,7 +88,7 @@ energy_model:
   pue: 1.10                   # power usage effectiveness
 
 bid:
-  strategy: "lognormal"         # "uniform" | "lognormal"
+  strategy: "lognormal"         # only "lognormal" (ln v = ln cost_base - sigma^2/2 + sigma Z)
   # Anchored to GCP Preemptible VM pricing (n1-standard class, public
   # pricing as of 2024): ~$0.00996/core-hour, ~$0.00135/GB-hour. AWS Spot
   # pricing for comparable instance classes falls in the same order of
@@ -110,10 +110,8 @@ bid:
   # than supply-side fee.
   # U_0: the single free parameter of base_utility_mode. Calibrated via
   # calibrate_base_utility_u0 (bisection on Phase 0's pos_reward_types,
-  # target_pos_frac=0.90) against strategy="lognormal", sigma=0.3 -- NOT
-  # against this file's own strategy default ("uniform"), so if strategy
-  # is changed away from "lognormal"/sigma=0.3 this value no longer hits
-  # that 90% target and should be recalibrated.
+  # target_pos_frac=0.90) against sigma=0.3: if sigma is changed, this value
+  # no longer hits that 90% target and should be recalibrated.
   base_utility_u0: 23.926
   base_utility_mode: "log"    # "linear" | "log"
 
