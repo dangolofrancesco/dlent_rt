@@ -584,7 +584,9 @@ plt.tight_layout(); plt.show()
 #   data that built the state.
 # * d̂ error: |d̂ − d_ref| / d_ref over types with p_ref > 0 (p_ref-weighted mean and median). CI: 95% normal half-width
 #   1.96·sd/√M of the observed durations that built the state, relative to their mean, over types with M ≥ 2.
-# * KS(F̂_k, F_emp): pooled lognormal F̂_k vs the empirical CDF of all stream bids; φ error: mean |φ̂_k(v) − φ_ref(v)|.
+# * KS(F̂_k, F_emp): the phase's bid model F̂_k vs the empirical CDF of all stream MARKUPS m = v / c_j. Under the known
+#   distribution F̂_k = LogNormal(−σ²/2, σ) in every phase (never refit), so this measures the fit of the configured
+#   markup distribution, not learning. φ error: mean |φ_k(v) − φ(v)|, 0 by construction with one known φ.
 # * reward error: p_ref-weighted mean |r̃_k − r_ref| ($ and relative to mean |r_ref|) and sign-mismatch rate.
 # * ‖τ̂_k − τ*‖ with τ* the dual of the full-stream hindsight LP.
 # * decision agreement: share of phase-k arrivals where k̂ (phase oracle) equals the hindsight oracle
@@ -597,7 +599,7 @@ def accuracy_table(run):
     S, ds, ep = model.stream, model.ds, model.ep
     nmin = BASE.phase_transition.n_type_min
     phi_ref = run["J"]["phi"]                                     # the one known phi
-    v_sorted = np.sort(S.v); n = S.n
+    m_sorted = np.sort(S.v / S.cost_base); n = S.n                # markups, the known model's variable
     e_hi, e_lo = np.arange(1, n + 1) / n, np.arange(n) / n
     rows = []
     for k, st in enumerate(model.states, start=1):
@@ -631,7 +633,8 @@ def accuracy_table(run):
         ci = np.divide(1.96 * np.sqrt(np.clip(var, 0, None) / np.maximum(M, 1)), mu,
                        out=np.full(nT, np.nan), where=(M > 1) & (mu > 0))
         mc = mk & np.isfinite(ci)
-        F_hat = lognorm.cdf(v_sorted, s=st.myerson.sigma, scale=np.exp(st.myerson.mu))
+        assert st.myerson.known, "KS on markups assumes bid.known_distribution"
+        F_hat = lognorm.cdf(m_sorted, s=st.myerson.sigma, scale=np.exp(st.myerson.mu))
         ks = max(np.abs(F_hat - e_hi).max(), np.abs(F_hat - e_lo).max())
         phi_k = np.asarray(st.myerson.phi_job(S.v, S.cost_base))
         _, prio, A_t = type_arrays(st.type_space, st.grid)
