@@ -3,7 +3,6 @@ run:
   name: "default"
   seed: 42                    # single seed controls every stochastic element
   output_dir: "runs"          # where per-step logs and summaries are written
-  log_level: "INFO"
 
 # Data ingestion
 data:
@@ -170,7 +169,6 @@ phase_transition:
   n_type_min: 5               # min observations for a type's stats to be trusted
   n_min: 80                   # min phase-arrival count to refit the grid (else reuse)
                               # (recommended: max(30, 5 * k_star))
-  short_phase_tracking: true  # log short / consecutive-short phases
 
 # Logging granularity
 logging:

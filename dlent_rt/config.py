@@ -16,7 +16,6 @@ class RunCfg:
     name: str = "default"
     seed: int = 42
     output_dir: str = "runs"
-    log_level: str = "INFO"
 
 
 @dataclass(frozen=True)
@@ -214,7 +213,6 @@ class Test3Cfg:
 class PhaseTransitionCfg:
     n_type_min: int = 5
     n_min: int = 80
-    short_phase_tracking: bool = True
 
 
 @dataclass(frozen=True)
