@@ -983,15 +983,16 @@ adm_neg = pd.Series({
     "admitted with payment<0": int((A0.loc[A0["admit"], "payment"] < 0).sum()),
 }, name="value")
 
-_Ry = BT0["R $"]
-_opt, _p0 = _Ry["offline job-level OPT (ORACLE)"], _Ry["static Phase 0 (H)"]
-_p0t, _alg = _Ry["static Phase 0 (H) + thinning at cap"], _Ry["DLENT-RT (online)"]
+# Discretization loss = job OPT - fluid OPT (per-job decisions vs the fluid LP on type means).
+# The rest, fluid OPT - online, mixes estimation, thinning and learning; it is NOT split yet
+# (preliminary). The static baselines of table06 are reference policies, not a decomposition.
+_opt, _fluid = BOUNDS0["R_OPT job MILP"], BOUNDS0["R_OPT fluid (bench_global)"]
+_alg = BT0["R $"]["DLENT-RT (online)"]
 _tot = _opt - _alg
 t7 = pd.DataFrame([
-    {"step": "OPT (job-level) -> static Phase 0", "attributed to": "discretization / type aggregation (Phase-0 types, no learning)", "$": _opt - _p0},
-    {"step": "static Phase 0 -> + thinning at cap", "attributed to": "thinning", "$": _p0 - _p0t},
-    {"step": "+ thinning at cap -> DLENT-RT online", "attributed to": "learning (ReInit) + early-phase thinning below the cap", "$": _p0t - _alg},
-    {"step": "total regret (OPT - online)", "attributed to": "", "$": _tot},
+    {"step": "job OPT -> fluid OPT", "attributed to": "discretization loss", "$": _opt - _fluid},
+    {"step": "fluid OPT -> DLENT-RT online", "attributed to": "estimation + thinning + learning (not yet separated; preliminary)", "$": _fluid - _alg},
+    {"step": "total regret (job OPT - online)", "attributed to": "", "$": _tot},
 ]).set_index("step")
 t7["% of total"] = 100 * t7["$"] / _tot
 t7b = PR0.drop(index="total").copy()

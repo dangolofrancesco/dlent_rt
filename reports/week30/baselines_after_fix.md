@@ -32,6 +32,10 @@ theory model, seed 42, capacity scale 1.0.
 * 101,086.81 $ against the fluid OPT (= `summary["regret_global"]`, unchanged).
 * 107,006.00 $ against the job-level MILP.
 
+Split (`table07_regret_decomposition`): the **discretization loss** is job OPT − fluid OPT = 155,397.61 − 149,478.42 =
+**5,919.19 $** (6,100.93 $ with the no-capacity bound Σ R_job⁺ instead of the MILP). The remaining 101,086.81 $
+(fluid OPT − online) mixes estimation, thinning and learning. It is not separated yet; this attribution is preliminary.
+
 The online run admits 7,405 jobs, while static τ* admits 12,612 with the same physical gate. The gap is real and is
 not explained by the accounting. Learning, thinning (p_U ≈ 0.53 at a phase start) and the 9 timeout restarts are
 candidates; they are not diagnosed here.

@@ -1,0 +1,203 @@
+# Variant of configs/default.yaml with a BINDING capacity (week 30): identical except
+# capacity.mode = fraction_of_concurrency_quantile, fraction = 0.30, concurrency_quantile = 0.60.
+# Use: load_config("configs/binding_capacity.yaml"). Not the project default.
+# DLENT-RT default configuration
+run:
+  name: "default"
+  seed: 42                    # single seed controls every stochastic element
+  output_dir: "runs"          # where per-step logs and summaries are written
+
+# Data ingestion
+data:
+  batch_csv: "data/batch_may2019_30k.csv"     # relative paths: to the repository root
+  grid_csv: "data/grid_data_may_2019.csv"
+  n0: 10000
+  columns:
+    collection_id: "collection_id"
+    datetime: "request_time"
+    priority: "priority"
+    scheduling_class: "scheduling_class"
+    requested_cpu: "CPU"
+    requested_ram: "RAM"
+    duration_hours: "duration"
+
+# Time model
+time:
+  tick_seconds: 1.0           # wall-clock seconds per step (real-tick time model, the only one)
+  d_max_quantile: 1.0         # candidate = this quantile of SURVIVOR step-durations.
+                              # Default 1.0 = literal max of survivors (outlier
+                              # removal already decided what's "extreme"; this
+                              # should not silently re-trim on top of that).
+                              # Set <1.0 only if you want additional conservatism
+                              # beyond outlier removal.
+  d_max_horizon_fraction: 0.05  # HARD ceiling: d_max <= this * T (theory needs d_max << T)
+  d_max_ratio_abort: 0.10     # abort with diagnostic if final d_max/T still exceeds this
+  duration_floor_hours: 0.016667  # 1 minute = 1/60 hour
+
+
+# Hardware profile discretization
+hardware:
+  n_profiles: 32              
+  log_space: true             # k-means++ in log-space (requests span orders of magnitude)
+  fit_on: "full"              # "full" (H+stream) | "H"
+  hw_floor: 1.0e-5            # min hardware profile component; excludes degenerate
+                              # k-means centroids from gamma's v_min term only
+
+
+# Outlier handling (resource requests and durations)
+outliers:
+  policy: "drop"              # "drop" | "clip"
+  a_max_quantile: 0.90        # resource-request cutoff (per resource, on the trace)
+  d_max_quantile: 0.95        # duration cutoff (hours); jobs longer are dropped/clipped
+  # xi safety check: warn if max_i a_max,i / c_i exceeds this after handling
+  xi_warn_threshold: 0.10     # ~ 1/log(T). Under capacity.mode from_amax, xi_data = xi_target (0.5),
+                              # so this warning always fires: expected, not an error
+
+# Cluster capacity
+capacity:
+  # All modes below size capacity on the FULL historical dataset (H + stream
+  # combined, on one shared timeline) -- NOT on stream alone. Sizing on
+  # stream alone can misrepresent typical concurrency if the stream window
+  # happens to capture a non-representative slice of load (verified
+  # empirically: stream-only concurrency was ~3x the full-dataset
+  # concurrency in one configuration). See _size_capacity in data.py.
+  # mode "fraction_of_volume": c_i = fraction * sum_j (A_ij * D_j)  [core-hours]
+  #   Matches the static simulator's b_i = rho * sum_j V_ij (load factor rho).
+  # mode "fraction_of_peak": c_i = fraction * MAX concurrent occupancy. For
+  #   heavy-tailed workloads peak >> average, so the LP-RS (an
+  #   average-occupancy constraint) rarely binds here except at tiny fractions.
+  # mode "fraction_of_concurrency_quantile": c_i = fraction * (concurrency_quantile)
+  #   -th percentile of the concurrent-occupancy time series (not the max).
+  #   Sits between average and peak; this is the mode most likely to bind at
+  #   intuitive fractions (0.5-0.8) under a heavy-tailed real trace.
+  # mode "from_amax": c_i = a_max,i / xi_target, a_max,i = max request of resource i
+  #   over the kept jobs (H + stream). Same xi = a_max,i / c_i for CPU and RAM.
+  # mode "absolute": c_i taken directly from `absolute` below (real deployments).
+  mode: "fraction_of_concurrency_quantile"
+  xi_target: 0.5              # used only by from_amax (sizing only, not constants.xi_override)
+  fraction: 0.30              # fraction_of_* modes only (unused under from_amax)
+  concurrency_quantile: 0.60   # used only by fraction_of_concurrency_quantile
+  absolute:                   # used only when mode == "absolute"
+    cpu: null
+    ram: null
+
+energy_model:
+  spec_cpu_core: 64           # cores per 1.0 normalized CPU in Google trace
+  spec_ram_gb: 256            # GB per 1.0 normalized RAM in Google trace
+  p_core: 15.0                # watts per physical core (Fan et al. 2007)
+  p_gb: 0.35                  # watts per GB RAM
+  pue: 1.10                   # power usage effectiveness
+
+bid:
+  # bid model (the only one): ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1)
+  # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
+  # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
+  # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.
+  # base_utility_u0 was calibrated WITH these values (scripts/calibrate_u0.py):
+  # changing gamma1/gamma2 requires recalibrating base_utility_u0.
+  gamma1: 0.0332                # $/core-hour reserve price
+  gamma2: 0.00445               # $/GB-hour reserve price
+  sigma: 0.3                  # log-space std of the markup v / cost_base (generator and known distribution)
+  # Bid distribution KNOWN a priori (never refit): markup v / cost_base ~
+  # LogNormal(-sigma^2/2, sigma), phi_v(v | c) = c * phi_m(v / c), the same phi in
+  # Phase 0, ReInit and the online reward. false = legacy pooled-MLE ablation.
+  known_distribution: true
+  # Base utility rate ($/hour): minimum hourly value a user derives from job
+  # completion, independent of resource footprint. Multiplied by duration.
+  # Ref: reinterpretation suggested by advisor — demand-side utility rather
+  # than supply-side fee.
+  # U_0: the single free parameter of base_utility_mode. Calibrated via
+  # scripts/calibrate_u0.py (bisection on Phase 0's pos_reward_types,
+  # target_pos_frac=0.90) against sigma=0.3: if sigma is changed, this value
+  # no longer hits that 90% target and should be recalibrated.
+  base_utility_u0: 23.926
+  base_utility_mode: "log"    # "linear" | "log"
+
+normalization:
+  # quantile_linear (the only normalization): carbon K [kgCO2] -> s_C * K [$]
+  # (linear, through the origin; CV = customer value q*v), s_C = D_q / K_q with D_q = (Q_q(CV) + Q_q(|Pi|)) / 2,
+  # K_q = Q_q(K), weighted quantiles over populated types. Computed once in Phase 0
+  # and frozen. The reward stays in dollars (no divisor).
+  quantile: 0.90
+
+# Mechanism / objective weights
+objective:
+  lambda1: 1.0
+  lambda2: 1.0
+  lambda3: 1.0
+
+# Discretization grid
+grid:
+  k_star: 128                  # fixed number of geometric bins (constant across phases)
+  phi_floor: 1.0e-6           # clip Phi_min to avoid geometric-ratio blowup
+  priority_classes: [1, 2, 3, 4, 5]
+
+# Confidence / error parameters
+confidence:
+  delta: null                 # if null, set to 1/T^3 at runtime (T = online horizon)
+  delta_power: 3              # delta = 1 / T^delta_power when delta is null
+
+# Online model: only "theory" is implemented (paper-faithful: true D at admission,
+# single counter, vanilla Bernoulli thinning). The practical ablations (delayed D,
+# admission buffer, revision, phantoms) will add their keys when they are built.
+model:
+  kind: "theory"
+
+scalarization:
+  # "linear"    -> weighted sum (default). Reward keeps an absolute sign, which is
+  #               what the online LP-RS admission oracle expects.
+  # "chebyshev" -> augmented Chebyshev distance-to-ideal. Reaches non-convex Pareto
+  #               regions, but produces reward <= 0 by construction: used directly
+  #               as the LP-RS reward it makes the oracle admit nothing. Intended
+  #               for offline Pareto-front enumeration in the analysis notebooks,
+  #               NOT for the online loop.
+  method: "linear"
+  rho: 1.0e-3                 # augmentation term for augmented Chebyshev
+
+oracle:
+  kind: "frozen"              # only "frozen": phase-averaged grid costs (preserves Lemma 1)
+
+# LP solver (HiGHS via highspy)
+lp:
+  presolve: true
+
+# Test 3 cost control
+test3:
+  s_grid: "geometric"         # "geometric" | "full"
+  geometric_base: 2           # s-checkpoints at tau_{m-1} + {0,1,2,4,8,...}
+
+# Phase-transition fallback (thin types)
+phase_transition:
+  n_type_min: 5               # min observations for a type's stats to be trusted
+  n_min: 80                   # min phase-arrival count to refit the grid (else reuse)
+                              # (recommended: max(30, 5 * k_star))
+
+# Logging granularity
+logging:
+  per_step: true              # full per-step parquet log
+  per_phase: true             # per-phase summary
+  short_phase_log: true       # dedicated short-phase / consecutive-short log
+
+# --------------------------------------------------------------------------- #
+# Online loop (week 28)
+# --------------------------------------------------------------------------- #
+constants:
+  # System constants of Zhang & Cheung (2025, App. A). null = data-derived (Phase 0).
+  # xi_override and gamma_override are FORCED, NOT DATA-JUSTIFIED: they are set by
+  # hand so that the error parameters are not vacuous (eps_D = 0.50 and
+  # 1 - eps_D - xi > 0 at xi = 0.001). On the data, xi = 0.5 (from_amax) and the
+  # dollar reward has max |r~| ~ 2.4e4 (week-30 phase0_regime_check), so neither
+  # value follows from the data. Their values are an open decision.
+  xi_override: 0.001
+  gamma_override: 1.0
+  # r_max in the data-derived gamma = p-weighted quantile of |r~| over populated
+  # types (1.0 = max). 0.8 keeps the extreme phi(v) tail from dominating gamma.
+  r_max_quantile: 0.8
+
+tests:
+  drop_dual_learning_terms: true   # Exact-LP: eps_E = eps_F = 0 (week 17)
+  piecewise_tol: 1.0e-7   # ~ HiGHS default feasibility tolerance
+
+online:
+  bid_seed_offset: 1
+  thinning_seed_offset: 2
