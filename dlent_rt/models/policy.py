@@ -16,11 +16,12 @@ Policies:
   * StaticPolicy: the FROZEN (r~, tau, v) of one PhaseState (e.g. Phase 0 or the full-stream
     hindsight state), want = 1[r~_j - tau^T v_j > 0] (optionally thinned with the online run's
     common random numbers); no learning, no tests, no restarts.
-  * GreedyPolicy: TO BE ADDED (not implemented). It will admit an arrival on its own job-level
-    information instead of the type oracle (e.g. whenever its job reward R_job is positive and
-    it fits physically), under the same gate, to measure what the type oracle and the shadow
-    prices add over a myopic first-come rule. It plugs in by implementing the three methods
-    of Policy.
+  * Greedy policies: TO BE ADDED (not implemented). Two myopic first-come rules, under the
+    same gate, to measure what the shadow prices (and learning) add:
+      G1  type-level reward only: admit when the arrival's type reward r~_j > 0 (no tau);
+      G2  informed: admit when the job's own R_job > 0, with the known bid distribution F
+          (phi_job of the known markup lognormal, Phase 0's frozen s_C).
+    Each plugs in by implementing the three methods of Policy.
 """
 from __future__ import annotations
 
