@@ -431,6 +431,10 @@ if len(na):
     print(f"  share with phi_mech < 0                      : {100 * (na['phi_mech'] < 0).mean():.1f}%")
     print(f"  share with R_job >= 0 without carbon (carbon flips the sign): "
           f"{100 * (na['R_nocarb'] >= 0).mean():.1f}%")
+    # job table: the job reward next to the TYPE-level expected reward r~ the oracle used
+    JOB_COLS = ["i", "m", "type", "q", "v", "CV", "PI", "Cusd", "R_job", "r_tilde", "shadow_cost", "score", "decision"]
+    print("admitted jobs with the most negative R_job (r_tilde = type-level expected reward the oracle saw):")
+    display(na.sort_values("R_job")[JOB_COLS].head(15).style.format(precision=3))
 
 # %% [markdown]
 # ## Section 2: Per-phase margin (C.2, baseline scale)
