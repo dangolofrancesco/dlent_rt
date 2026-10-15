@@ -13,7 +13,8 @@ from dlent_rt.bid import MyersonModel
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids
 from dlent_rt.models.theory import TheoryModel
-from dlent_rt.config import default_config
+from dlent_rt.config import default_config, resolve_path
+from tests.synthetic import synthetic_config
 
 
 GOLDEN = Path(__file__).parent / "data" / "golden_known_false.npz"
@@ -29,9 +30,25 @@ class _Recording(TheoryModel):
         super()._new_phase(state, tau_prev, W_prev)
 
 
-def _run(known: bool):
+def _golden_config(tmp: Path):
+    """The synthetic config the golden (tests/data/golden_known_false.npz) was frozen with,
+    week 29: capacity fraction_of_concurrency_quantile 0.40 / q 0.80, outliers d_max 0.90."""
+    cfg = synthetic_config(tmp, n0=400, n_jobs=3000, drift=True)
+    return replace(cfg, outliers=replace(cfg.outliers, d_max_quantile=0.90),
+                   capacity=replace(cfg.capacity, mode="fraction_of_concurrency_quantile",
+                                    fraction=0.40, concurrency_quantile=0.80))
+
+
+def _run(known: bool, which: str):
     with tempfile.TemporaryDirectory() as d:
-        cfg = default_config()
+        if which == "real":
+            cfg = default_config()
+            if not resolve_path(cfg.data.batch_csv).is_file():
+                pytest.skip("real trace not available")
+        elif which == "golden":
+            cfg = _golden_config(Path(d))
+        else:
+            cfg = synthetic_config(Path(d), n0=400, n_jobs=3000, drift=True)
         cfg = replace(cfg, bid=replace(cfg.bid, known_distribution=known))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -42,9 +59,10 @@ def _run(known: bool):
     return cfg, ds, m, res
 
 
-@pytest.fixture(scope="module")
-def known_run():
-    return _run(True)
+@pytest.fixture(scope="module", params=["synthetic", pytest.param("real", marks=pytest.mark.slow)])
+def known_run(request):
+    """(c), (d) and the threshold price on the synthetic twin (fast) and on the real trace (slow)."""
+    return _run(True, request.param)
 
 
 def z_star(sigma: float) -> float:
@@ -73,7 +91,6 @@ def test_negative_share_matches_theory(sigma):                         # (b)
         assert p == pytest.approx(0.167, abs=1e-3)
 
 
-@pytest.mark.slow   # real trace (default_config), full online run
 def test_same_phi_everywhere(known_run):                               # (c)
     cfg, ds, m, res = known_run
     st0, S = m.state0, m.stream
@@ -100,7 +117,6 @@ def test_same_phi_everywhere(known_run):                               # (c)
     np.testing.assert_allclose(phi_mech, np.asarray(f0(S.v, S.cost_base)), rtol=1e-12)
 
 
-@pytest.mark.slow   # real trace (default_config), full online run
 def test_sigma_constant_across_phases(known_run):                      # (d)
     cfg, ds, m, res = known_run
     sig = cfg.bid.sigma
@@ -110,7 +126,6 @@ def test_sigma_constant_across_phases(known_run):                      # (d)
     assert all(np.isnan(st.phi_tilde).all() for st in m.states)        # no pooled phi(L) per type
 
 
-@pytest.mark.slow   # real trace (default_config), full online run
 def test_threshold_price_logged(known_run):
     cfg, ds, m, res = known_run
     for a in res.arrivals:
@@ -122,10 +137,9 @@ def test_threshold_price_logged(known_run):
             assert a["threshold_markup"] == pytest.approx(a["threshold_price"] / a["cost_base"])
 
 
-@pytest.mark.slow   # real trace (default_config), full online run
 def test_known_false_reproduces_previous_numbers():                    # (e)
     g = np.load(GOLDEN)
-    cfg, ds, m, res = _run(False)
+    cfg, ds, m, res = _run(False, "golden")
     st = m.state0
     for f in ["p", "v_bar", "phi_bar", "r_tilde", "phi_tilde", "tau", "L"]:
         np.testing.assert_allclose(getattr(st, f), g["p0_" + f], rtol=1e-10, atol=1e-12, err_msg=f)
