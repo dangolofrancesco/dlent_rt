@@ -406,6 +406,11 @@ tid_H = assign_type_ids(state0.type_space, k_H, H.priority, H.hw_idx)
 N_type = np.bincount(tid_H[tid_H >= 0], minlength=state0.n_types)
 E_H = _compute_job_energy(H, cfg)
 price_H, ci_H = _lookup_grid(H, ds)
+# job-level reward terms of every H job from the single reward module (dlent_rt.reward)
+from dlent_rt import reward
+JT = reward.job_terms(H.priority, state0.bids.v_rate, state0.bids.cost_base,
+                      reward.electricity_cost(E_H, price_H), reward.carbon_kg(E_H, ci_H),
+                      state0.myerson, s_C, lam)
 
 def wpct(x, ref):
     """p-weighted percentile of x within ref (populated types), midpoint convention."""
@@ -418,10 +423,9 @@ pick = np.sort(rng25.choice(H.n, size=15, replace=False))
 tau0 = state0.tau
 rows_d = []
 for i in pick:
-    j = int(tid_H[i]); v_i = float(state0.bids.v_rate[i]); phi_i = float(state0.bids.phi_rate[i])
-    C_elec_i = float(E_H[i] * price_H[i]); K_i = float(E_H[i] * ci_H[i])
-    sw, pi, cd = float(H.priority[i]) * v_i, phi_i - C_elec_i, s_C * K_i
-    R = lam.lambda1 * sw + lam.lambda2 * pi - lam.lambda3 * cd
+    j = int(tid_H[i]); v_i = float(state0.bids.v_rate[i]); phi_i = float(JT.phi[i])
+    C_elec_i = float(E_H[i] * price_H[i])
+    sw, pi, cd, R = float(JT.cv[i]), float(JT.profit[i]), float(JT.carbon_usd[i]), float(JT.R[i])
     if j < 0:
         r_t = margin = np.nan; dec = "rejected: IR"; v_type = np.full(len(tau0), np.nan); n_j = d_j = np.nan
     else:
@@ -535,8 +539,7 @@ display(pd.DataFrame(rows_e).set_index("q").style.format(precision=2))
 
 # job-level mismatch rate over the whole H
 ok_H = tid_H >= 0
-R_H = (lam.lambda1 * H.priority * state0.bids.v_rate
-       + lam.lambda2 * (state0.bids.phi_rate - E_H * price_H) - lam.lambda3 * s_C * E_H * ci_H)
+R_H = JT.R
 print(f"decision errors due to discretization (R_job vs r~_type) over H: {100 * np.mean(np.sign(R_H[ok_H]) != np.sign(state0.r_tilde[tid_H[ok_H]])):.1f}% "
       f"of {ok_H.sum()} jobs")
 
