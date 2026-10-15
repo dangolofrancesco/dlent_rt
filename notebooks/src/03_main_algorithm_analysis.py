@@ -39,7 +39,7 @@ from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays
 from dlent_rt.reward import type_reward, weighted_quantile as _weighted_quantile
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.benchmarks import Benchmarks, regret
-from dlent_rt.models.policy import run_static
+from dlent_rt.models.policy import run_static, run_policy, TypeGreedyPolicy, JobGreedyPolicy
 from dlent_rt.models.core.error_params import make_error_params
 
 plt.rcParams["figure.figsize"] = (13, 3.6)
@@ -266,6 +266,12 @@ def analyse(run):
     base = {}
     for name, (st, thin) in static.items():
         r = run_static(S, model.c, st, thin_p=thin, u_rand=model.u_rand)
+        base[name] = dict(admit=r.admit, phys=r.phys_reject)
+    greedy = {"G1 (type greedy, cumulative r~)": TypeGreedyPolicy.from_state(model.state0, S, R_job,
+                                                                            model.ds.H_span_steps),
+              "G2 (job greedy, R_job > 0)": JobGreedyPolicy(R_job)}
+    for name, pol in greedy.items():
+        r = run_policy(S, model.c, pol)
         base[name] = dict(admit=r.admit, phys=r.phys_reject)
     te, Ue = occ_series(res, int(model.ds.T))
     run.update(B=B, st_ref=st_ref, J=J, R_job=R_job, A=a, opt=opt, base=base, te=te, Ue=Ue,
@@ -702,6 +708,10 @@ print(f"metrics monotone over all phases: {(V0['monotone (all phases)'] == 'yes'
 # * **static Phase 0 (H)**: (r̃, τ, v) of Phase 0 (from H), never updated; no thinning.
 # * **static Phase 0 (H) + thinning at cap**: same, with U(t) ~ Bern((1 − ξ)/(1 + ε_D)), same random numbers as the
 #   online run (isolates the thinning effect from learning).
+# * **G1 (type greedy)**: `TypeGreedyPolicy`, admit iff r̃_j > 0 for the arrival's Phase-0 type; r̃_j starts at Phase 0's
+#   value and is the cumulative running mean of R_job over H and every stream arrival seen so far (admitted or not;
+#   this uses the realised R_job of rejected jobs). Unseen types are rejected. No τ, LP, thinning or phases.
+# * **G2 (job greedy)**: `JobGreedyPolicy`, admit iff the job's own R_job > 0 (known F, frozen s_C, realised energy).
 
 # %%
 def baseline_table(run):
@@ -744,7 +754,7 @@ Rr = R0["R_job"][order]
 lam_ref = R0["st_ref"].lam_star
 fig, ax = plt.subplots(1, 2, figsize=(14, 4))
 cum_opt = np.cumsum(Rr * R0["opt"]["x"][order])
-for (name, d), cc in zip(ALGS0.items(), ["k", "teal", "steelblue", "darkorange", "seagreen"]):
+for (name, d), cc in zip(ALGS0.items(), ["k", "teal", "steelblue", "darkorange", "purple", "crimson"]):
     if name.startswith("offline"):
         continue
     cum = np.cumsum(Rr * d["admit"][order])

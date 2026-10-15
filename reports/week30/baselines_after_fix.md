@@ -40,6 +40,49 @@ The online run admits 7,405 jobs, while static τ* admits 12,612 with the same p
 not explained by the accounting. Learning, thinning (p_U ≈ 0.53 at a phase start) and the 9 timeout restarts are
 candidates; they are not diagnosed here.
 
+## Greedy policies G1 and G2
+
+Both run through `dlent_rt.models.policy.simulate` with the same physical gate, stream, seed (42) and R_job scoring
+as DLENT-RT and StaticPolicy. Neither uses τ, an LP, thinning or phases. Source: `notebooks/src/greedy_check.py`
+(both configs) and nb03 `table06_baselines` (default config).
+
+* **G1** (`TypeGreedyPolicy`) admits iff r̃_j > 0 for the arrival's Phase-0 type (grid never refit). r̃_j starts at
+  Phase 0's value (H) and is the cumulative running mean of R_job over H and every stream arrival seen so far, admitted
+  or not, updated after each decision. It therefore uses the realised R_job, and so the realised energy, of rejected
+  jobs. A type with no observation is rejected ("unseen type").
+* **G2** (`JobGreedyPolicy`) admits iff the job's own R_job > 0 (phi_job under the known F, frozen s_C, realised energy).
+* Decision errors (G1 only): arrivals with an observed type where sign(R_job) ≠ sign(r̃_j used in the decision).
+
+**configs/default.yaml** (from_amax). Fluid OPT 149,478.42 $, job OPT (MILP) 155,397.61 $.
+
+| policy | R ($) | % of fluid OPT | admitted | rej r̃ ≤ 0 or R ≤ 0 | rej unseen type | rej physical | decision errors | admitted with R_job < 0 |
+|---|---|---|---|---|---|---|---|---|
+| DLENT-RT (online) | 48,391.61 | 32.4% | 7,405 | – | – | 2 | – | 6.9% |
+| static Phase 0 (H) | 54,216.40 | 36.3% | 10,226 | – | – | 1 | – | 6.9% |
+| **G1** | **82,626.18** | **55.3%** | 11,662 | 2,486 | 1,155 | 5 | 12.1% | 6.5% |
+| **G2** | **155,011.00** | **103.7%** | 12,826 | 2,468 | 0 | 14 | – | 0.0% |
+
+**configs/binding_capacity.yaml** (fraction_of_concurrency_quantile 0.30 / 0.60). Fluid OPT 149,478.42 $ (capacity
+slack in the fluid LP, τ* = 0). Job OPT not computed.
+
+| policy | R ($) | % of fluid OPT | admitted | rej r̃ ≤ 0 or R ≤ 0 | rej unseen type | rej physical | decision errors | admitted with R_job < 0 |
+|---|---|---|---|---|---|---|---|---|
+| DLENT-RT (online) | 43,692.76 | 29.2% | 6,965 | – | – | 338 | – | – |
+| static Phase 0 (H) | 47,682.20 | 31.9% | 9,691 | – | – | 536 | – | 6.6% |
+| **G1** | **71,071.96** | **47.5%** | 10,871 | 2,486 | 1,155 | 796 | 12.1% | 6.2% |
+| **G2** | **123,081.60** | **82.3%** | 11,546 | 2,468 | 0 | 1,294 | – | 0.0% |
+
+**Check, G1 on frozen H types vs StaticPolicy (Phase 0):** the admit masks are identical on every arrival in both configs
+(τ in Phase 0 = 0 in both, so StaticPolicy's rule 1[r̃_j − τᵀv_j > 0] reduces to G1's). With the cumulative update G1
+differs from StaticPolicy on 1,980 (default) and 2,098 (binding) arrivals. Frozen G1 rejects 2,762 arrivals of types
+unseen in H; the cumulative update cuts that to 1,155, one per type absent from H (only its first arrival, since
+the update after the decision makes the type observed).
+
+**Reading (preliminary):**
+* G2 exceeds the fluid OPT because the fluid OPT decides on type means, while G2 sees each job's R_job. On the default
+  config it reaches 99.75% of the job OPT: with capacity slack, R_job > 0 is close to optimal.
+* G1 beats DLENT-RT by 34k $ (default) with the same type information and no τ, no thinning and no restarts.
+
 ## Accuracy metrics (phase 1 to 11)
 
 | metric | before | after |
