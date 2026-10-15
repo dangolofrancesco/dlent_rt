@@ -16,12 +16,14 @@ Policies:
   * StaticPolicy: the FROZEN (r~, tau, v) of one PhaseState (e.g. Phase 0 or the full-stream
     hindsight state), want = 1[r~_j - tau^T v_j > 0] (optionally thinned with the online run's
     common random numbers); no learning, no tests, no restarts.
-  * Greedy policies: TO BE ADDED (not implemented). Two myopic first-come rules, under the
-    same gate, to measure what the shadow prices (and learning) add:
-      G1  type-level reward only: admit when the arrival's type reward r~_j > 0 (no tau);
-      G2  informed: admit when the job's own R_job > 0, with the known bid distribution F
-          (phi_job of the known markup lognormal, Phase 0's frozen s_C).
-    Each plugs in by implementing the three methods of Policy.
+  * Greedy policies: two myopic first-come rules under the same gate, to measure what the
+    shadow prices, thinning and the phase structure add. No tau, no LP, no thinning, no tests.
+      G1 TypeGreedyPolicy  type-level: want = 1[r~_j > 0] for the arrival's type j (Phase-0 grid
+          and types, never refit); r~_j starts at Phase 0's value (H) and is the cumulative
+          running mean of R_job over H and ALL stream arrivals seen so far (admitted or not),
+          updated after each decision. A type never observed is rejected ("unseen type").
+      G2 JobGreedyPolicy   informed: want = 1[R_job > 0], R_job of dlent_rt.reward (phi_job under
+          the known F, Phase 0's frozen s_C, the job's realised energy). No types.
 """
 from __future__ import annotations
 
@@ -96,3 +98,93 @@ def run_static(stream, capacity, state: PhaseState, thin_p: Optional[float] = No
     """StaticPolicy of `state` through the shared event-driven loop (no occupancy log)."""
     return simulate(stream, Occupancy(capacity, record=False),
                     StaticPolicy(state, stream, thin_p=thin_p, u_rand=u_rand))
+
+
+# --------------------------------------------------------------------------- #
+# Greedy policies (week 30)
+# --------------------------------------------------------------------------- #
+REJ_NONE, REJ_R, REJ_UNSEEN, REJ_NOTYPE, REJ_PHYS = 0, 1, 2, 3, 4
+REJ_NAMES = {REJ_R: "r<=0", REJ_UNSEEN: "unseen type", REJ_NOTYPE: "no type (IR)", REJ_PHYS: "physical"}
+
+
+class TypeGreedyPolicy:
+    """
+    G1: want_i = 1[r~_j > 0] for the arrival's type j = tid[i]. r~ starts at r0 with n0
+    observations per type (Phase 0: r0 = r~ from H, n0 = H counts) and, if update, absorbs
+    every arrival after its decision: n_j += 1, r~_j += (R_i - r~_j) / n_j (cumulative mean
+    of R_job, no discounting). A type with n_j = 0 is rejected as "unseen type"; tid = -1
+    (no type) as "no type (IR)". Logged per arrival: reason (REJ_*), r_dec (r~_j used, NaN
+    when unseen / no type).
+    """
+
+    def __init__(self, tid: np.ndarray, R: np.ndarray, r0: np.ndarray, n0: np.ndarray,
+                 update: bool = True):
+        self.tid = np.asarray(tid, np.int64)
+        self.R = np.asarray(R, float)
+        self.r = np.array(r0, float)
+        self.n = np.array(n0, np.int64)
+        self.update = update
+        n = self.tid.size
+        self.reason = np.zeros(n, np.int8)
+        self.r_dec = np.full(n, np.nan)
+
+    @classmethod
+    def from_state(cls, state: PhaseState, stream, R: np.ndarray, H_span_steps: int,
+                   update: bool = True) -> "TypeGreedyPolicy":
+        """Phase-0 types (grid of `state`, not refit), r0 = state.r_tilde, n0 = H counts
+        (p_j = N_j / H_span_steps, as in Phase 0)."""
+        k = state.grid.assign(stream.v, state.myerson)
+        tid = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
+        n0 = np.rint(np.asarray(state.p) * H_span_steps).astype(np.int64)
+        return cls(tid, R, state.r_tilde, n0, update=update)
+
+    def before_arrival(self, i: int, t: int) -> None:
+        pass
+
+    def want(self, i: int, t: int) -> bool:
+        j = self.tid[i]
+        if j < 0:
+            self.reason[i] = REJ_NOTYPE
+            return False
+        if self.n[j] == 0:
+            self.reason[i] = REJ_UNSEEN
+            return False
+        self.r_dec[i] = self.r[j]
+        if self.r[j] <= 0:
+            self.reason[i] = REJ_R
+            return False
+        return True
+
+    def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
+        if want and not fits:
+            self.reason[i] = REJ_PHYS
+        j = self.tid[i]
+        if self.update and j >= 0:
+            self.n[j] += 1
+            self.r[j] += (self.R[i] - self.r[j]) / self.n[j]
+
+
+class JobGreedyPolicy:
+    """G2: want_i = 1[R_i > 0] on the job's own reward R_job (no types)."""
+
+    def __init__(self, R: np.ndarray):
+        self.R = np.asarray(R, float)
+        self.reason = np.zeros(self.R.size, np.int8)
+
+    def before_arrival(self, i: int, t: int) -> None:
+        pass
+
+    def want(self, i: int, t: int) -> bool:
+        if self.R[i] > 0:
+            return True
+        self.reason[i] = REJ_R
+        return False
+
+    def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
+        if want and not fits:
+            self.reason[i] = REJ_PHYS
+
+
+def run_policy(stream, capacity, policy) -> SimResult:
+    """Any Policy through the shared event-driven loop (no occupancy log)."""
+    return simulate(stream, Occupancy(capacity, record=False), policy)
