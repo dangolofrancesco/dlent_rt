@@ -1038,3 +1038,133 @@ print(f"figures -> {FIG_DIR}:")
 print("  " + "\n  ".join(saved_figs))
 print(f"tables -> {TAB_DIR}:")
 print("  " + "\n  ".join(saved_tabs))
+
+# %% [markdown]
+# ## Section 8: capacity × type-grid sweep (week 30)
+#
+# Six configurations, each an override of `BASE` (configs/default.yaml with the notebook's σ = 0.3 and n0 = 10,000;
+# seed 42; no yaml file added):
+# * **capacity**: `fraction_of_concurrency_quantile` with `concurrency_quantile` = 0.7 and fraction ∈ {0.3, 0.5, 1.0},
+#   c_i = fraction × (0.7 time-weighted quantile of the concurrent occupancy of H + stream). The mode literally named
+#   `fraction_of_peak` exists too, but it sizes on the MAX concurrency and takes no quantile, so it is not used here.
+# * **`capacity.drop_jobs_exceeding_capacity` = true**: after the outlier policy (0.90 / 0.95, unchanged) and the
+#   sizing, every job with A_ij > c_i on any resource leaves H and the stream, for every model and benchmark. The
+#   "would drop" columns are computed with the flag OFF on the same c: jobs removed, their share of the stream's
+#   Σ R_job⁺, and their share of Phase 0's profitable load (H jobs of types with r̃ > 0, volume A_type·D / H span).
+# * **type grid**: default (k* = 128, 32 hardware profiles) and reduced (k* = 64, 16 profiles); 5 priority classes.
+#
+# For each configuration, on the same stream, R_job and physical gate: DLENT-RT online, StaticPolicy (Phase 0),
+# G1 (`TypeGreedyPolicy` as implemented: cumulative running mean of R_job over ALL arrivals, i.e. it uses the
+# realised R_job of rejected jobs; a strict observable-only G1 is not implemented), G2 (`JobGreedyPolicy`), the
+# fluid OPT and the job-level OPT (MILP, time limit below; gap reported). Decision errors = share of arrivals with
+# sign(R_job) ≠ sign(r̃ of their type): Phase 0 types (stream arrivals of types populated in H), G1 (r̃ used at the
+# decision, observed types) and DLENT-RT (r̃ of the phase state at the arrival).
+#
+# **The two grids do not run on an identical cluster or stream.** Each job's request A is snapped to its hardware
+# profile (k-means centroid), so `hardware.n_profiles` changes A, hence the occupancy series that sizes c, the drop
+# filter, the physical gate, the job energy (C_elec, K) and R_job; R_job also depends on the grid through s_C (Phase 0
+# quantiles). c and s_C are reported per run.
+#
+# The six configurations run in parallel worker processes (`notebooks/src/capacity_grid_sweep.run_one`).
+
+# %%
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+sys.path.insert(0, str(ROOT / "notebooks" / "src"))
+from capacity_grid_sweep import run_one
+
+SWEEP_Q = 0.7
+SWEEP_FRACTIONS = (0.3, 0.5, 1.0)
+SWEEP_GRIDS = {"default (k*=128, hw=32)": (128, 32), "reduced (k*=64, hw=16)": (64, 16)}
+MILP_TIME_LIMIT = 600.0
+sweep_cfgs = {
+    (f, g): apply_overrides(BASE, {"capacity.mode": "fraction_of_concurrency_quantile",
+                                   "capacity.concurrency_quantile": SWEEP_Q, "capacity.fraction": f,
+                                   "capacity.drop_jobs_exceeding_capacity": True,
+                                   "grid.k_star": k, "hardware.n_profiles": h}).validate()
+    for f in SWEEP_FRACTIONS for g, (k, h) in SWEEP_GRIDS.items()
+}
+t_sw = time.time()
+with ProcessPoolExecutor(max_workers=len(sweep_cfgs), mp_context=mp.get_context("spawn")) as pool:
+    futs = {key: pool.submit(run_one, c, f"fraction={key[0]} {key[1]}", MILP_TIME_LIMIT)
+            for key, c in sweep_cfgs.items()}
+    SW = {key: fu.result() for key, fu in futs.items()}
+for key, o in SW.items():
+    print(f"fraction={key[0]:<4} {key[1]:<24} online {o['t_online_s']:.0f} s, MILP {o['t_milp_s']:.0f} s "
+          f"({o['milp_status']}, gap {o['milp_gap']:.2e})")
+print(f"sweep wall time {time.time() - t_sw:.0f} s")
+
+# %%
+SW_DF = pd.DataFrame([{"fraction": k[0], "grid": k[1], **v} for k, v in SW.items()]).set_index(["fraction", "grid"])
+POLS = [("DLENT", "DLENT-RT"), ("static", "StaticPolicy (P0)"), ("G1", "G1"), ("G2", "G2")]
+cols = {
+    # cluster and capacity filter
+    "c_cores": "c CPU (cores)", "c_GB": "c RAM (GB)",
+    "drop_n_H": "would drop: H jobs", "drop_n_stream": "would drop: stream jobs",
+    "drop_share_Rpos_pct": "would drop: % of stream ΣR_job⁺",
+    "drop_share_prof_load_cpu_pct": "would drop: % of P0 profitable load CPU",
+    "drop_share_prof_load_ram_pct": "would drop: % of P0 profitable load RAM",
+    "n_H": "H jobs kept", "n_stream": "stream jobs kept",
+    # Phase 0
+    "p0_lp_use_cpu_pct": "P0 LP usage CPU %", "p0_lp_use_ram_pct": "P0 LP usage RAM %",
+    "p0_prof_load_cpu_pct": "P0 profitable load CPU %", "p0_prof_load_ram_pct": "P0 profitable load RAM %",
+    "tau0_cpu": "tau_0 CPU", "tau0_ram": "tau_0 RAM", "n_types": "types", "n_types_populated": "populated types",
+    "jobs_per_populated_type": "H jobs per populated type", "s_C": "s_C $/kgCO2",
+    # online DLENT-RT
+    "n_phases": "phases", **{f"end_{r}": f"end {r}" for r in ("timeout", "test1", "test2", "test3", "horizon")},
+    "phases_tau_pos": "phases with tau>0", "tau_per_phase": "tau per phase (cpu,ram)",
+    "dlent_phys_rejects": "DLENT physical rejects", "dlent_thinning_rejects": "DLENT thinning rejects",
+    # benchmarks
+    "R_fluid": "R fluid OPT $", "R_job_opt": "R job OPT (MILP) $", "milp_gap": "MILP gap",
+    **{f"R_{k}": f"R {n} $" for k, n in POLS},
+    **{f"pct_fluid_{k}": f"{n} % of fluid" for k, n in POLS},
+    **{f"regret_fluid_{k}": f"{n} regret vs fluid $" for k, n in POLS},
+    **{f"regret_jobopt_{k}": f"{n} regret vs job OPT $" for k, n in POLS},
+    "phys_G1": "G1 physical rejects", "G1_rej_r": "G1 rej r~<=0", "G1_rej_unseen": "G1 rej unseen type",
+    "phys_G2": "G2 physical rejects",
+    # discretization
+    "disc_loss": "discretization loss (job OPT - fluid) $",
+    "dec_err_P0_pct": "decision errors P0 types %", "dec_err_G1_pct": "decision errors G1 %",
+    "dec_err_DLENT_pct": "decision errors DLENT %",
+}
+SW_TAB = SW_DF[list(cols)].rename(columns=cols)
+for f in SWEEP_FRACTIONS:
+    print(f"\n=== capacity fraction {f} (q = {SWEEP_Q}), rows = grid")
+    display(SW_TAB.loc[f].T)
+
+SUMMARY_COLS = ["c CPU (cores)", "c RAM (GB)", "would drop: stream jobs", "tau_0 CPU", "tau_0 RAM", "phases",
+                "end timeout", "end test1", "end test2", "end test3", "end horizon", "phases with tau>0",
+                "R DLENT-RT $", "R StaticPolicy (P0) $", "R G1 $", "R G2 $", "R fluid OPT $", "R job OPT (MILP) $",
+                "DLENT-RT % of fluid", "StaticPolicy (P0) % of fluid", "G1 % of fluid", "G2 % of fluid",
+                "discretization loss (job OPT - fluid) $", "decision errors P0 types %", "decision errors G1 %",
+                "H jobs per populated type", "MILP gap"]
+SW_SUM = SW_TAB[SUMMARY_COLS]
+display(SW_SUM)
+
+# %%
+def _fmt(v):
+    if isinstance(v, (int, np.integer)):
+        return f"{v:,}"
+    if isinstance(v, (float, np.floating)):
+        return "nan" if not np.isfinite(v) else (f"{v:,.2f}" if abs(v) >= 1 or v == 0 else f"{v:.3g}")
+    return str(v)
+
+def md_table(df, index_name):
+    head = "| " + index_name + " | " + " | ".join(map(str, df.columns)) + " |"
+    sep = "|" + "---|" * (len(df.columns) + 1)
+    body = ["| " + " / ".join(map(str, k if isinstance(k, tuple) else (k,))) + " | "
+            + " | ".join(_fmt(v) for v in row) + " |" for k, row in zip(df.index, df.itertuples(index=False))]
+    return "\n".join([head, sep, *body])
+
+saved_sw = [_csv(SW_SUM, "table08_capacity_grid_sweep"), _csv(SW_TAB, "table08_capacity_grid_sweep_full")]
+md = [f"# Capacity × type-grid sweep: generated tables (nb03 Section 8)\n",
+      f"Capacity `fraction_of_concurrency_quantile`, q = {SWEEP_Q}; `drop_jobs_exceeding_capacity` = true; seed "
+      f"{BASE.run.seed}; σ = {BASE.bid.sigma}; MILP time limit {MILP_TIME_LIMIT:.0f} s. Generated by the notebook; "
+      f"do not edit by hand.\n"]
+for f in SWEEP_FRACTIONS:
+    saved_sw.append(_csv(SW_TAB.loc[f], f"table08_capacity_grid_sweep_f{f}"))
+    md += [f"\n## Fraction {f} (rows = grid)\n", md_table(SW_TAB.loc[f].T, "quantity"), ""]
+md += ["\n## Summary across the six runs\n", md_table(SW_SUM.T, "quantity"), ""]
+(REPORT_DIR / "capacity_grid_sweep_tables.md").write_text("\n".join(md))
+print("tables ->", TAB_DIR, "\n  " + "\n  ".join(saved_sw))
+print("markdown ->", REPORT_DIR / "capacity_grid_sweep_tables.md")
