@@ -112,7 +112,7 @@ bid:
 
 normalization:
   # quantile_linear (the only normalization): carbon K [kgCO2] -> s_C * K [$]
-  # (linear, through the origin), s_C = D_q / K_q with D_q = (Q_q(SW) + Q_q(|Pi|)) / 2,
+  # (linear, through the origin; CV = customer value q*v), s_C = D_q / K_q with D_q = (Q_q(CV) + Q_q(|Pi|)) / 2,
   # K_q = Q_q(K), weighted quantiles over populated types. Computed once in Phase 0
   # and frozen. The reward stays in dollars (no divisor).
   quantile: 0.90

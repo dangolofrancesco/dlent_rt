@@ -49,7 +49,7 @@ class EnergyModelCfg:
 @dataclass(frozen=True)
 class NormalizationCfg:
     # quantile_linear (the only normalization): q of the weighted quantiles
-    # Q_q(SW), Q_q(|Pi|), Q_q(K) that set the carbon price s_C = D_q / K_q
+    # Q_q(CV), Q_q(|Pi|), Q_q(K) that set the carbon price s_C = D_q / K_q
     # (frozen at Phase 0). The reward stays in dollars (no divisor).
     quantile: float = 0.90
 

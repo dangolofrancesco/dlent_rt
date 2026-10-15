@@ -153,14 +153,14 @@ def scalarized_reward(
     stream). Returns (r_tilde, r_nocarbon, norm_info).
     """
     lam = cfg.objective
-    raw_sat  = priority_of_type * v_bar
+    raw_cv  = priority_of_type * v_bar
     raw_prof = phi_bar - C_elec_bar
     raw_carb = C_carbon_bar
-    V_sat, V_prof, V_carb, norm_info = _normalize_objectives(
-        raw_sat, raw_prof, raw_carb, p, cfg, carbon_price=carbon_price,
+    V_cv, V_prof, V_carb, norm_info = _normalize_objectives(
+        raw_cv, raw_prof, raw_carb, p, cfg, carbon_price=carbon_price,
     )
-    f = np.column_stack([lam.lambda1 * V_sat, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
-    r_nocarbon = lam.lambda1 * V_sat + lam.lambda2 * V_prof
+    f = np.column_stack([lam.lambda1 * V_cv, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
+    r_nocarbon = lam.lambda1 * V_cv + lam.lambda2 * V_prof
     r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
     return r_tilde, r_nocarbon, norm_info
 
@@ -216,7 +216,7 @@ class PhaseState:
     n_types_hw_degenerate: int = 0
     # $/kgCO2 applied to C_carbon_bar: s_C (quantile_linear), frozen at Phase 0
     carbon_price: float = 0.0             # always overwritten in run_phase0
-    norm_info: Optional[dict] = None      # quantile_linear: q, Q_sw, Q_abs_pi, D_q, K_q, s_C
+    norm_info: Optional[dict] = None      # quantile_linear: q, Q_cv, Q_abs_pi, D_q, K_q, s_C
 
 
 
@@ -308,20 +308,20 @@ def _weighted_quantile(x: np.ndarray, w: np.ndarray, q: float) -> float:
 
 
 def carbon_scale_from_quantile(
-    raw_sat: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
+    raw_cv: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
     p: np.ndarray, q: float,
 ) -> dict:
     """
     quantile_linear carbon price, over populated types (p > 0) weighted by p:
-      D_q = (Q_q(SW) + Q_q(|Pi|)) / 2,  K_q = Q_q(K),  s_C = D_q / K_q  [$/kgCO2],
+      D_q = (Q_q(CV) + Q_q(|Pi|)) / 2,  K_q = Q_q(K),  s_C = D_q / K_q  [$/kgCO2],
     so the linear map through the origin K -> s_C * K sends [0, K_q] onto [0, D_q].
     """
     m = np.asarray(p) > 0
     w = np.asarray(p, float)[m]
-    Q_sw     = _weighted_quantile(np.asarray(raw_sat)[m], w, q)
+    Q_cv     = _weighted_quantile(np.asarray(raw_cv)[m], w, q)
     Q_abs_pi = _weighted_quantile(np.abs(np.asarray(raw_prof)[m]), w, q)
     K_q      = _weighted_quantile(np.asarray(raw_carb)[m], w, q)
-    D_q = 0.5 * (Q_sw + Q_abs_pi)
+    D_q = 0.5 * (Q_cv + Q_abs_pi)
     if K_q <= 0 or D_q <= 0:
         import warnings
         warnings.warn(
@@ -332,31 +332,31 @@ def carbon_scale_from_quantile(
         s_C = 0.0
     else:
         s_C = D_q / K_q
-    return dict(q=float(q), Q_sw=Q_sw, Q_abs_pi=Q_abs_pi, D_q=D_q, K_q=K_q, s_C=float(s_C))
+    return dict(q=float(q), Q_cv=Q_cv, Q_abs_pi=Q_abs_pi, D_q=D_q, K_q=K_q, s_C=float(s_C))
 
 
 def _normalize_objectives(
-    raw_sat: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
+    raw_cv: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
     p: np.ndarray, cfg: Config, carbon_price: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     quantile_linear (the only normalization): carbon is mapped to dollars
     linearly through the origin, C$ = s_C * K, with s_C = D_q / K_q chosen so
-    the q-quantile of K lands on the mean of the q-quantiles of SW and |Pi|
+    the q-quantile of K lands on the mean of the q-quantiles of CV (customer value q*v) and |Pi|
     (carbon_scale_from_quantile). No divisor: the reward stays in dollars.
     s_C is computed once on Phase 0's H; `carbon_price` freezes it (ReInit
     passes Phase 0's, it is never recomputed on the stream).
-    Returns (V_sat, V_prof, V_carb, norm_info).
+    Returns (V_cv, V_prof, V_carb, norm_info).
     """
     if carbon_price is None:
         norm_info = carbon_scale_from_quantile(
-            raw_sat, raw_prof, raw_carb, p, cfg.normalization.quantile)
+            raw_cv, raw_prof, raw_carb, p, cfg.normalization.quantile)
         s_C = norm_info["s_C"]
     else:
         s_C = float(carbon_price)
         norm_info = dict(q=cfg.normalization.quantile, s_C=s_C, frozen=True)
     norm_info = dict(strategy="quantile_linear", **norm_info)
-    return raw_sat, raw_prof, raw_carb * s_C, norm_info
+    return raw_cv, raw_prof, raw_carb * s_C, norm_info
 
 
 # Phase 0 entry point

@@ -48,7 +48,7 @@ section("1. Where job-level / type-level / logged / yardstick rewards are comput
 SITES = [
     ("dlent_rt/phase0.py", r"phi_job = \(np.asarray\(myerson.phi_job", "Phase 0: per-job phi (known: phi_job(v, c_j))"),
     ("dlent_rt/phase0.py", r"phi_bar      = _mean\(phi_job\)", "Phase 0: type mean phi_bar"),
-    ("dlent_rt/phase0.py", r"raw_sat  = priority_of_type \* v_bar", "scalarized_reward: SW = q * v_bar (TYPE level)"),
+    ("dlent_rt/phase0.py", r"raw_cv  = priority_of_type \* v_bar", "scalarized_reward: CV (customer value) = q * v_bar (TYPE level)"),
     ("dlent_rt/phase0.py", r"raw_prof = phi_bar - C_elec_bar", "scalarized_reward: Pi = phi_bar - C_elec_bar"),
     ("dlent_rt/phase0.py", r"V_carb = raw_carb \* s_C", "quantile_linear: carbon $ = s_C * K_bar"),
     ("dlent_rt/phase0.py", r"r_tilde = np.asarray\(scalarize", "r_tilde (type reward, $/job)"),
@@ -58,7 +58,7 @@ SITES = [
     ("dlent_rt/models/core/reinit.py", r"p = N / max\(W, 1\)", "ReInit / hindsight: p_j = N_j / W"),
     ("dlent_rt/models/core/reinit.py", r"def hindsight_lambda", "hindsight benchmark (lam_hat per tick)"),
     ("dlent_rt/models/theory.py", r"phi = float\(st.myerson.phi_job", "online: per-job phi of the arrival"),
-    ("dlent_rt/models/theory.py", r"R = l1 \* sat \+ l2 \* prof - l3 \* carb \* self.tax", "online: LOGGED job reward R"),
+    ("dlent_rt/models/theory.py", r"R = l1 \* cv \+ l2 \* prof - l3 \* carb \* self.tax", "online: LOGGED job reward R"),
     ("dlent_rt/models/theory.py", r"lam_all, _ = hindsight_lambda", "summary: bench_global = lam_hat_ref * T (fluid OPT)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"def job_reward", "nb03: job_reward(model, phi) (yardstick formula)"),
     ("notebooks/src/03_main_algorithm_analysis.py", r"phi_ref = np.asarray\(st_ref.myerson.phi\(S.v\)\)", "PRE-FIX nb03: phi_ref = myerson.phi(v), no c_j (NOT FOUND = fixed)"),
@@ -102,10 +102,10 @@ st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, fallback=False)
 
 # ONE job-level reward function (the online loop's formula, theory.py), vectorised
 def job_terms(i, phi):
-    SW = S.priority[i] * S.v[i]
+    CV = S.priority[i] * S.v[i]
     PI = phi - S.C_elec[i]
     K = S.C_carbon[i]
-    return SW, PI, K, L1 * SW + L2 * PI - L3 * sC * K
+    return CV, PI, K, L1 * CV + L2 * PI - L3 * sC * K
 
 
 phi_true = np.asarray(st_ref.myerson.phi_job(S.v, S.cost_base))       # c_j * phi_m(v / c_j)
@@ -127,12 +127,12 @@ def mean_by(x):
                      out=np.zeros(st_ref.n_types), where=N > 0)
 
 
-type_lvl = {"SW = q v": prio_t * st_ref.v_bar, "Pi = phi - C_elec": st_ref.phi_bar - st_ref.C_elec_bar,
+type_lvl = {"CV = q v": prio_t * st_ref.v_bar, "Pi = phi - C_elec": st_ref.phi_bar - st_ref.C_elec_bar,
             "K = E CI [kg]": st_ref.C_carbon_bar, "R = r_tilde": st_ref.r_tilde}
 rows = []
 for label, phi in (("phi_job(v, c_j)  [loop]", phi_true), ("phi_markup(v)  [pre-fix notebook 03]", phi_nb)):
-    SW, PI, K, R = job_terms(idx, phi)
-    for (name, tl), jl in zip(type_lvl.items(), (SW, PI, K, R)):
+    CV, PI, K, R = job_terms(idx, phi)
+    for (name, tl), jl in zip(type_lvl.items(), (CV, PI, K, R)):
         jm = mean_by(jl)
         d = np.abs(tl[pop] - jm[pop])
         rows.append({"job-level phi": label, "term": name, "type-level (p-weighted mean)": np.average(tl[pop], weights=N[pop]),

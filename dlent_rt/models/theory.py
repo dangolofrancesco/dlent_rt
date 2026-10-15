@@ -75,7 +75,7 @@ class TheoryModel:
         self.ph_arr: list[int] = []
         self.ph_adm: list[int] = []
         self.ph = dict(R=0.0, n_phys_reject=0, n_khat=0, n_thinned=0,
-                       sat=0.0, prof_phi=0.0, prof_pay=0.0, carb_kg=0.0)
+                       cv=0.0, prof_phi=0.0, prof_pay=0.0, carb_kg=0.0)
         # threshold bin per (q, a): smallest k with r~ - tau^T v > 0 (0 = none)
         ts = state.type_space
         shape = (ts.k_star, len(ts.priorities), ts.n_hw)
@@ -150,14 +150,14 @@ class TheoryModel:
         phi = float(st.myerson.phi_job(S.v[i], c_i))
         qi = int(np.searchsorted(st.type_space.priorities, S.priority[i]))
         thr = float(self.L_thr[qi, int(S.hw_idx[i])])
-        R = sat = prof = carb = pay = 0.0
+        R = cv = prof = carb = pay = 0.0
         if admit:
             self.occ.add(i, S.A[i], t, int(S.D[i]))
             l1, l2, l3 = self.lam
-            sat = float(S.priority[i] * S.v[i])
+            cv = float(S.priority[i] * S.v[i])
             prof = phi - float(S.C_elec[i])
             carb = float(S.C_carbon[i])
-            R = l1 * sat + l2 * prof - l3 * carb * self.tax
+            R = l1 * cv + l2 * prof - l3 * carb * self.tax
             # payment: phi at the type's bin floor L_k (known distribution: given c_j)
             pay = (float(st.myerson.phi_job(st.L[j], c_i)) if st.myerson.known
                    else float(st.phi_tilde[j]))
@@ -167,7 +167,7 @@ class TheoryModel:
         ph = self.ph
         ph["R"] += R; ph["n_khat"] += int(k_hat); ph["n_thinned"] += int(k_hat and not U)
         ph["n_phys_reject"] += int(want and not fits)
-        ph["sat"] += sat; ph["prof_phi"] += prof; ph["carb_kg"] += carb
+        ph["cv"] += cv; ph["prof_phi"] += prof; ph["carb_kg"] += carb
         ph["prof_pay"] += (pay - float(S.C_elec[i])) if admit else 0.0
         return dict(
             i=i, t=t, m=self.m, type=j, k_bin=k, q=float(S.priority[i]), hw=int(S.hw_idx[i]),

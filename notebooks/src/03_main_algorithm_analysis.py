@@ -50,7 +50,7 @@ pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", 60)
 
 # palette (notebook 01 conventions: named matplotlib colours)
-C_SW, C_PI, C_C, C_BID = "steelblue", "darkorange", "gray", "steelblue"
+C_CV, C_PI, C_C, C_BID = "steelblue", "darkorange", "gray", "steelblue"
 C_CPU, C_RAM = "steelblue", "darkorange"
 DEC_ORDER = ["accepted", "oracle reject", "thinning reject", "physical reject", "IR reject"]
 DEC_STYLE = {"accepted": ("seagreen", "o"), "oracle reject": ("gray", "x"),
@@ -213,9 +213,9 @@ def job_terms(model):
     """THE job-level reward of every stream job (the online loop's formula, theory.py), vectorised."""
     S, st0 = model.stream, model.state0
     phi = np.asarray(st0.myerson.phi_job(S.v, S.cost_base))
-    SW, PI, K = S.priority * S.v, phi - S.C_elec, S.C_carbon
-    R_nocarb = L1 * SW + L2 * PI
-    return dict(phi=phi, SW=SW, PI=PI, K=K, Cusd=st0.carbon_price * K, R_nocarb=R_nocarb,
+    CV, PI, K = S.priority * S.v, phi - S.C_elec, S.C_carbon
+    R_nocarb = L1 * CV + L2 * PI
+    return dict(phi=phi, CV=CV, PI=PI, K=K, Cusd=st0.carbon_price * K, R_nocarb=R_nocarb,
                 R=R_nocarb - L3 * st0.carbon_price * K)
 
 def decision_of(df):
@@ -227,7 +227,7 @@ def arrivals_frame(model, res, st_ref, J):
     S = model.stream
     a = pd.DataFrame(res.arrivals)
     i = a["i"].to_numpy()
-    for k in ("SW", "PI", "K", "Cusd", "R_nocarb"):
+    for k in ("CV", "PI", "K", "Cusd", "R_nocarb"):
         a[k] = J[k][i]
     a["R_job"] = J["R"][i]                                         # what the loop collects if admitted
     a["decision"] = decision_of(a)
@@ -364,30 +364,30 @@ qhist(ax[3], A0["phi_gen"], "gray", "phi_gen(v) [$] (generator, diagnostic)")
 plt.tight_layout(); plt.show()
 
 # %% [markdown]
-# ### 1.b SW, Π, C$ = s_C·K: job level (stream) and type level (full-stream reference types, weights p_j)
+# ### 1.b Customer value CV = q·v, Π, C$ = s_C·K: job level (stream) and type level (full-stream reference types, weights p_j)
 
 # %%
 st_ref0 = R0["st_ref"]
 _, prio_ref, _ = type_arrays(st_ref0.type_space, st_ref0.grid)
 pop = st_ref0.p > 0
 wt = st_ref0.p[pop]
-SW_t = (prio_ref * st_ref0.v_bar)[pop]
+CV_t = (prio_ref * st_ref0.v_bar)[pop]
 PI_t = (st_ref0.phi_bar - st_ref0.C_elec_bar)[pop]
 C_t = SC0 * st_ref0.C_carbon_bar[pop]
 
 fig, ax = plt.subplots(2, 3, figsize=(14, 6))
-qhist(ax[0, 0], A0["SW"], C_SW, "JOB  SW = q*v [$]")
+qhist(ax[0, 0], A0["CV"], C_CV, "JOB  CV = q*v [$]")
 qhist(ax[0, 1], A0["PI"], C_PI, "JOB  Pi = phi_mech - C_elec [$]")
 qhist(ax[0, 2], A0["Cusd"], C_C, "JOB  C$ = s_C*K [$]")
-qhist(ax[1, 0], SW_t, C_SW, "TYPE SW [$] (w = p_j)", w=wt)
+qhist(ax[1, 0], CV_t, C_CV, "TYPE CV [$] (w = p_j)", w=wt)
 qhist(ax[1, 1], PI_t, C_PI, "TYPE Pi [$] (w = p_j)", w=wt)
 qhist(ax[1, 2], C_t, C_C, "TYPE C$ [$] (w = p_j)", w=wt)
 plt.tight_layout(); plt.show()
 
 desc = []
-for lvl, (sw, pi, cu, w) in {"job": (A0["SW"], A0["PI"], A0["Cusd"], None),
-                             "type": (SW_t, PI_t, C_t, wt)}.items():
-    for name, x in (("SW", sw), ("Pi", pi), ("C$", cu)):
+for lvl, (sw, pi, cu, w) in {"job": (A0["CV"], A0["PI"], A0["Cusd"], None),
+                             "type": (CV_t, PI_t, C_t, wt)}.items():
+    for name, x in (("CV", sw), ("Pi", pi), ("C$", cu)):
         x = np.asarray(x, float); ww = np.ones_like(x) if w is None else w
         desc.append({"level": lvl, "objective": name, "min": x.min(),
                      **{f"p{int(q * 100)}": _weighted_quantile(x, ww, q) for q in (.01, .1, .5, .9, .99)},
@@ -395,7 +395,7 @@ for lvl, (sw, pi, cu, w) in {"job": (A0["SW"], A0["PI"], A0["Cusd"], None),
 display(pd.DataFrame(desc).set_index(["level", "objective"]).style.format(precision=4))
 
 # %% [markdown]
-# ### 1.c Negative base reward R = λ1·SW + λ2·Π − λ3·s_C·K
+# ### 1.c Negative base reward R = λ1·CV + λ2·Π − λ3·s_C·K (CV = customer value q·v)
 #
 # Job level: R_job of every stream arrival (φ of its phase). Type level: r̃ of the state used in each phase, weighted
 # by that state's p̂ (populated types); "reference" = full-stream types weighted by p_ref. "no carbon" drops −λ3·s_C·K.
@@ -482,7 +482,7 @@ for m, g_all in A0.groupby("m"):
 # ## Section 3: Results per phase (C.3, baseline scale)
 #
 # Rejections by reason: IR (no type), oracle (r̃ − τᵀv ≤ 0), thinning (oracle yes, U(t) = 0), physical
-# (oracle yes, U(t) = 1, U + A > c). Reward = logged dollars; its three parts are λ1·SW, λ2·Π and −λ3·s_C·K of the
+# (oracle yes, U(t) = 1, U + A > c). Reward = logged dollars; its three parts are λ1·CV, λ2·Π and −λ3·s_C·K of the
 # admitted jobs (they sum to the total). Occupancy = exact step function from the event log (heap releases), as a
 # fraction of the current capacity, time-weighted over the phase's ticks.
 
@@ -507,7 +507,7 @@ def phase_table(run):
             "rej thinning": int((g["decision"] == "thinning reject").sum()),
             "rej physical": int((g["decision"] == "physical reject").sum()),
             "adm rate %": 100 * len(adm) / max(len(g), 1),
-            "R $": adm["R"].sum(), "l1*SW $": L1 * adm["SW"].sum(), "l2*Pi $": L2 * adm["PI"].sum(),
+            "R $": adm["R"].sum(), "l1*CV $": L1 * adm["CV"].sum(), "l2*Pi $": L2 * adm["PI"].sum(),
             "-l3*s_C*K $": -L3 * adm["Cusd"].sum(),
             "adm R<0": int((adm["R"] < 0).sum()), "adm R<0 %": 100 * (adm["R"] < 0).mean() if len(adm) else 0.0,
             "occ cpu mean %": 100 * mean[0] / c[0], "occ ram mean %": 100 * mean[1] / c[1],
@@ -564,7 +564,7 @@ for col, d in (("rej oracle", "oracle reject"), ("rej thinning", "thinning rejec
     bottom += body[col].to_numpy(float)
 ax[1].legend(fontsize=8); ax[1].set_title("rejected per phase, by reason"); ax[1].set_xlabel("phase")
 wb = 0.2
-for k, (col, cc) in enumerate((("R $", "k"), ("l1*SW $", C_SW), ("l2*Pi $", C_PI), ("-l3*s_C*K $", C_C))):
+for k, (col, cc) in enumerate((("R $", "k"), ("l1*CV $", C_CV), ("l2*Pi $", C_PI), ("-l3*s_C*K $", C_C))):
     ax[2].bar(idx + (k - 1.5) * wb, body[col], width=wb, color=cc, label=col)
 ax[2].axhline(0, color="k", lw=0.7); ax[2].legend(fontsize=8); ax[2].set_title("reward per phase [$]")
 ax[2].set_xlabel("phase")
@@ -943,7 +943,7 @@ _SRC = [c.source for c in _parse_src((ROOT / "notebooks" / "src" / "03_main_algo
 # (file stem, unique marker of the plotting cell, names for successive plt.show calls or None = numbered)
 FIG_SPECS = [
     ("fig01_bids_phi", 'qhist(ax[0], A0["v"]', ["fig01_bids_phi"]),
-    ("fig02_objectives_job_type", 'qhist(ax[0, 0], A0["SW"]', ["fig02_objectives_job_type"]),
+    ("fig02_objectives_job_type", 'qhist(ax[0, 0], A0["CV"]', ["fig02_objectives_job_type"]),
     ("fig03_margin_phase", "N_PLOT = 800", None),
     ("fig04_occupancy", "plot_occupancy(ax[0], ax[1], R0", ["fig04_occupancy"]),
     ("fig05_phase_bars", "body = PT0.drop", ["fig05_phase_bars"]),
