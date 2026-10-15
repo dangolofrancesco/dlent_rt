@@ -37,8 +37,8 @@ sys.path.insert(0, str(ROOT))
 
 from dlent_rt.config import default_config
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import (run_phase0, assign_type_ids, type_arrays, scalarized_reward,
-                             _weighted_quantile)
+from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays
+from dlent_rt.reward import job_reward, type_reward, weighted_quantile as _weighted_quantile
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.models.core.occupancy import Occupancy
 from dlent_rt.models.core.reinit import build_window_state
@@ -210,13 +210,10 @@ def reference_state(model):
     return st
 
 def job_terms(model):
-    """THE job-level reward of every stream job (the online loop's formula, theory.py), vectorised."""
-    S, st0 = model.stream, model.state0
-    phi = np.asarray(st0.myerson.phi_job(S.v, S.cost_base))
-    CV, PI, K = S.priority * S.v, phi - S.C_elec, S.C_carbon
-    R_nocarb = L1 * CV + L2 * PI
-    return dict(phi=phi, CV=CV, PI=PI, K=K, Cusd=st0.carbon_price * K, R_nocarb=R_nocarb,
-                R=R_nocarb - L3 * st0.carbon_price * K)
+    """THE job-level reward of every stream job: dlent_rt.reward.job_reward (the online loop's terms)."""
+    t = job_reward(model.stream, model.state0, BASE.objective)
+    return dict(phi=t.phi, CV=t.cv, PI=t.profit, K=t.carbon_kg, Cusd=t.carbon_usd,
+                R_nocarb=t.R_nocarbon, R=t.R)
 
 def decision_of(df):
     rules = [(df["admit"], "accepted"), (df["ir_reject"], "IR reject"), (~df["k_hat"], "oracle reject"),
@@ -642,9 +639,8 @@ def accuracy_table(run):
         ks = max(np.abs(F_hat - e_hi).max(), np.abs(F_hat - e_lo).max())
         phi_k = np.asarray(st.myerson.phi_job(S.v, S.cost_base))
         _, prio, A_t = type_arrays(st.type_space, st.grid)
-        r_ref, *_ = scalarized_reward(prio, mean_by(S.v), mean_by(phi_ref), mean_by(S.C_elec), mean_by(S.C_carbon),
-                                      p_ref, A_t * d_ref[:, None], ds, BASE,
-                                      carbon_price=model.state0.carbon_price)
+        r_ref, *_ = type_reward(prio, mean_by(S.v), mean_by(phi_ref), mean_by(S.C_elec), mean_by(S.C_carbon),
+                                p_ref, BASE, s_C=model.state0.carbon_price)
         w = p_ref[mk]
         r_err = np.average(np.abs(st.r_tilde[mk] - r_ref[mk]), weights=w)
         g = a[a["m"] == k]

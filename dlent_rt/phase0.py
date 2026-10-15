@@ -31,7 +31,8 @@ import numpy as np
 from .config import Config
 from .data import Dataset, JobArrays
 from .grid import ValuationGrid, build_valuation_grid
-from .lp_oracle import scalarize, solve_lp_rs, LPResult
+from .lp_oracle import solve_lp_rs, LPResult
+from .reward import type_reward, type_mean, weighted_quantile, electricity_cost, carbon_kg
 from .models.core.error_params import ErrorParams
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
 from .bid import (
@@ -141,30 +142,6 @@ def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndar
     return L, ts.priorities[qi].astype(float), ts.hw_profiles[ai]
 
 
-def scalarized_reward(
-    priority_of_type: np.ndarray, v_bar: np.ndarray, phi_bar: np.ndarray,
-    C_elec_bar: np.ndarray, C_carbon_bar: np.ndarray, p: np.ndarray,
-    v: np.ndarray, ds, cfg: Config, carbon_price: Optional[float] = None,
-):
-    """
-    Steps 9-11 of run_phase0 factored out so EndPhaseAndReinitialize reuses the
-    exact same reward construction. `carbon_price` freezes the quantile_linear
-    carbon price s_C (ReInit passes Phase 0's s_C; it is never recomputed on the
-    stream). Returns (r_tilde, r_nocarbon, norm_info).
-    """
-    lam = cfg.objective
-    raw_cv  = priority_of_type * v_bar
-    raw_prof = phi_bar - C_elec_bar
-    raw_carb = C_carbon_bar
-    V_cv, V_prof, V_carb, norm_info = _normalize_objectives(
-        raw_cv, raw_prof, raw_carb, p, cfg, carbon_price=carbon_price,
-    )
-    f = np.column_stack([lam.lambda1 * V_cv, lam.lambda2 * V_prof, -lam.lambda3 * V_carb])
-    r_nocarbon = lam.lambda1 * V_cv + lam.lambda2 * V_prof
-    r_tilde = np.asarray(scalarize(f, cfg.scalarization.method, np.ones(3), cfg.scalarization.rho))
-    return r_tilde, r_nocarbon, norm_info
-
-
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
     priorities = np.array(sorted(cfg.grid.priority_classes), dtype=float)
     profiles = ds.hw_catalogue.centroids
@@ -266,25 +243,20 @@ def _per_type_stats(
     n_ir_rejected = int((~valid).sum())
     type_ids = assign_type_ids(ts, k_arr, jobs.priority, jobs.hw_idx)
 
-    # Vectorised per-type sample means (bincount). Numerically equivalent to
-    # the previous per-type mask loop (O(n * n_types)); see tests/test_phase0_refactor.py.
+    # per-type sample means over the assigned jobs (reward.type_mean, bincount)
     tid = type_ids[valid]
     N = np.bincount(tid, minlength=n_types).astype(np.int64)
 
     def _mean(x: np.ndarray) -> np.ndarray:
-        s = np.bincount(tid, weights=np.asarray(x, float)[valid], minlength=n_types)
-        return np.divide(s, N, out=np.zeros(n_types), where=N > 0)
+        return type_mean(tid, N, np.asarray(x, float)[valid])
 
     d_bar        = _mean(jobs.duration_steps)
     v_bar        = _mean(bids.v_rate)            # mean bid per type
     phi_bar      = _mean(phi_job)                # mean phi(v) per type
     energy_bar   = _mean(energy_kwh)
     power_bar    = _mean(power_kw)
-    C_elec_bar   = _mean(energy_kwh * elec_price)
-    # FIX (week 28): emissions per job = E [kWh] * CI [kgCO2/kWh] -> kgCO2.
-    # Previously this averaged carbon_intensity alone (the energy factor was
-    # commented out), so C_carbon did not scale with job size or duration.
-    C_carbon_bar = _mean(energy_kwh * carbon_intensity)
+    C_elec_bar   = _mean(electricity_cost(energy_kwh, elec_price))
+    C_carbon_bar = _mean(carbon_kg(energy_kwh, carbon_intensity))     # E * CI [kgCO2]
 
     p = N / max(n_total_for_p, 1)
     return dict(N=N, p=p, d_bar=d_bar, v_bar=v_bar, phi_bar=phi_bar,
@@ -293,70 +265,6 @@ def _per_type_stats(
                 type_ids=type_ids, n_ir_rejected=n_ir_rejected,
                 n_assigned=int(valid.sum()))
 
-
-
-# Normalization
-def _weighted_quantile(x: np.ndarray, w: np.ndarray, q: float) -> float:
-    """Weighted quantile: atoms sorted by x, each placed at the midpoint of its
-    cumulative weight, (cumsum(w) - w/2) / sum(w), then linear interpolation."""
-    x = np.asarray(x, float)
-    w = np.asarray(w, float)
-    order = np.argsort(x, kind="stable")
-    x, w = x[order], w[order]
-    cw = (np.cumsum(w) - 0.5 * w) / w.sum()
-    return float(np.interp(q, cw, x))
-
-
-def carbon_scale_from_quantile(
-    raw_cv: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
-    p: np.ndarray, q: float,
-) -> dict:
-    """
-    quantile_linear carbon price, over populated types (p > 0) weighted by p:
-      D_q = (Q_q(CV) + Q_q(|Pi|)) / 2,  K_q = Q_q(K),  s_C = D_q / K_q  [$/kgCO2],
-    so the linear map through the origin K -> s_C * K sends [0, K_q] onto [0, D_q].
-    """
-    m = np.asarray(p) > 0
-    w = np.asarray(p, float)[m]
-    Q_cv     = _weighted_quantile(np.asarray(raw_cv)[m], w, q)
-    Q_abs_pi = _weighted_quantile(np.abs(np.asarray(raw_prof)[m]), w, q)
-    K_q      = _weighted_quantile(np.asarray(raw_carb)[m], w, q)
-    D_q = 0.5 * (Q_cv + Q_abs_pi)
-    if K_q <= 0 or D_q <= 0:
-        import warnings
-        warnings.warn(
-            f"quantile_linear: degenerate scale (D_q={D_q:.4g}, K_q={K_q:.4g}); "
-            f"setting s_C = 0 (no carbon term).",
-            RuntimeWarning,
-        )
-        s_C = 0.0
-    else:
-        s_C = D_q / K_q
-    return dict(q=float(q), Q_cv=Q_cv, Q_abs_pi=Q_abs_pi, D_q=D_q, K_q=K_q, s_C=float(s_C))
-
-
-def _normalize_objectives(
-    raw_cv: np.ndarray, raw_prof: np.ndarray, raw_carb: np.ndarray,
-    p: np.ndarray, cfg: Config, carbon_price: Optional[float] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """
-    quantile_linear (the only normalization): carbon is mapped to dollars
-    linearly through the origin, C$ = s_C * K, with s_C = D_q / K_q chosen so
-    the q-quantile of K lands on the mean of the q-quantiles of CV (customer value q*v) and |Pi|
-    (carbon_scale_from_quantile). No divisor: the reward stays in dollars.
-    s_C is computed once on Phase 0's H; `carbon_price` freezes it (ReInit
-    passes Phase 0's, it is never recomputed on the stream).
-    Returns (V_cv, V_prof, V_carb, norm_info).
-    """
-    if carbon_price is None:
-        norm_info = carbon_scale_from_quantile(
-            raw_cv, raw_prof, raw_carb, p, cfg.normalization.quantile)
-        s_C = norm_info["s_C"]
-    else:
-        s_C = float(carbon_price)
-        norm_info = dict(q=cfg.normalization.quantile, s_C=s_C, frozen=True)
-    norm_info = dict(strategy="quantile_linear", **norm_info)
-    return raw_cv, raw_prof, raw_carb * s_C, norm_info
 
 
 # Phase 0 entry point
@@ -425,9 +333,8 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
             "enumeration notebooks.",
             RuntimeWarning,
         )
-    r_tilde, r_nocarbon, norm_info = scalarized_reward(
-        priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar,
-        p, v, ds, cfg,
+    r_tilde, r_nocarbon, norm_info = type_reward(
+        priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar, p, cfg,
     )
     carbon_price = norm_info["s_C"]
 
@@ -440,7 +347,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         q_r = cfg.constants.r_max_quantile
         abs_r = np.abs(r_tilde[p > 0])
         r_max = (float(np.max(abs_r)) if q_r >= 1.0
-                 else _weighted_quantile(abs_r, p[p > 0], q_r))
+                 else weighted_quantile(abs_r, p[p > 0], q_r))
     else:
         r_max = 1.0
     # gamma's r_max/v_min term must exclude types whose hardware profile is

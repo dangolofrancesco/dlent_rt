@@ -2,7 +2,7 @@
 EndPhaseAndReinitialize (write-up Alg. 3) and the hindsight benchmark LP.
 
 Both build a PhaseState from a window of stream jobs with the SAME reward
-construction as Phase 0 (phase0.scalarized_reward), with three week-28
+construction as Phase 0 (dlent_rt.reward.type_reward), with three week-28
 decisions:
   1. phi from the mechanism's bid model, MyersonModel.phi_job(v, cost_base):
      bid.known_distribution=true (default) -> the known markup distribution of
@@ -33,7 +33,8 @@ import numpy as np
 from ...bid import BidResult, compute_phi_tilde
 from ...grid import build_valuation_grid
 from ...lp_oracle import solve_lp_rs
-from ...phase0 import PhaseState, assign_type_ids, type_arrays, scalarized_reward
+from ...phase0 import PhaseState, assign_type_ids, type_arrays
+from ...reward import type_reward, type_mean
 from .stream import StreamData
 
 
@@ -54,11 +55,7 @@ class ReinitDiag:
 
 def _means(tid: np.ndarray, n_types: int, cols: dict) -> tuple[np.ndarray, dict]:
     N = np.bincount(tid, minlength=n_types)
-    out = {}
-    for k, x in cols.items():
-        s = np.bincount(tid, weights=np.asarray(x, float), minlength=n_types)
-        out[k] = np.divide(s, N, out=np.zeros(n_types), where=N > 0)
-    return N, out
+    return N, {k: type_mean(tid, N, x) for k, x in cols.items()}
 
 
 def build_window_state(
@@ -132,9 +129,9 @@ def build_window_state(
     L, prio, A_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
     v = A_type * md["d_bar"][:, None]
-    r_tilde, r_nocarbon, _ = scalarized_reward(
+    r_tilde, r_nocarbon, _ = type_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
-        p, v, ds, cfg, carbon_price=prev.carbon_price,
+        p, cfg, s_C=prev.carbon_price,
     )
     lp = solve_lp_rs(p=p, r=r_tilde, v=v, c=ds.capacity, presolve=cfg.lp.presolve)
     tau = lp.tau if lp.tau.size == ds.n_resources else np.zeros(ds.n_resources)

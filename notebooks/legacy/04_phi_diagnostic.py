@@ -76,8 +76,9 @@ sys.path.insert(0, str(ROOT / "notebooks" / "legacy"))
 
 from dlent_rt.config import default_config
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import (run_phase0, assign_type_ids, type_arrays, scalarized_reward, _weighted_quantile,
+from dlent_rt.phase0 import (run_phase0, assign_type_ids, type_arrays,
                              _compute_job_energy, _compute_job_power, _lookup_grid)
+from dlent_rt.reward import type_reward, weighted_quantile as _weighted_quantile
 from dlent_rt.bid import MyersonModel, compute_base_utility
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.models.core.stream import build_stream
@@ -491,8 +492,7 @@ for name in ("a pooled", "b bucket", "d residual", "e phi_gen"):
     ph = PHI[name]
     R = L1 * SW + L2 * (ph - Ce) - L3 * s_C * K
     Rnc = L1 * SW + L2 * (ph - Ce)
-    r_t, *_ = scalarized_reward(prio_t, mean_t(v), mean_t(ph), mean_t(Ce), mean_t(K), p_t,
-                                A_t * mean_t(P["d_steps"])[:, None], ds, BASE, common_scale=1.0, carbon_price=s_C)
+    r_t, *_ = type_reward(prio_t, mean_t(v), mean_t(ph), mean_t(Ce), mean_t(K), p_t, BASE, s_C=s_C)
     rows.append({"phi": name, "R<0 %": 100 * (R < 0).mean(), "R<0 no carbon %": 100 * (Rnc < 0).mean(),
                  "mean R $": R.mean(), "type r~<0 % (p-weighted)": 100 * np.average(r_t[pop_t] < 0, weights=p_t[pop_t]),
                  "sign mismatch job vs type %": 100 * (np.sign(R) != np.sign(r_t[tid])).mean()})

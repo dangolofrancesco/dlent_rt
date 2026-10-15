@@ -16,6 +16,7 @@ import numpy as np
 
 from ...config import Config
 from ...data import Dataset
+from ...reward import electricity_cost, carbon_kg
 from ...phase0 import (
     _synthesize_bids, _compute_job_energy, _compute_job_power, _lookup_grid,
 )
@@ -56,5 +57,5 @@ def build_stream(ds: Dataset, cfg: Config) -> StreamData:
         priority=S.priority, hw_idx=S.hw_idx, A=S.A, D=np.asarray(S.duration_steps, np.int64),
         duration_hours=S.duration_hours, energy_kwh=E, power_kw=P,
         price=np.asarray(price, float), ci=np.asarray(ci, float),
-        C_elec=E * price, C_carbon=E * ci,
+        C_elec=electricity_cost(E, price), C_carbon=carbon_kg(E, ci),
     )

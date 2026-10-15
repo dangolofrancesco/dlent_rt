@@ -15,8 +15,9 @@ Per arrival at tick t (paper line order):
   2. physical releases up to t;
   3. type, oracle, thinning, gate, admission, realised reward.
 
-The realised reward uses the phase state's bid model, phi = myerson.phi_job(v, c_j)
-(the same function as Phase 0's and ReInit's type reward). Logged per arrival
+The realised reward is dlent_rt.reward.job_terms under the phase state's bid model
+(phi = myerson.phi_job(v, c_j)): the same terms whose type means give Phase 0's and
+ReInit's type reward (reward.type_reward). Logged per arrival
 (never used in a decision): sigma_used, and threshold_price = the bin floor L_k of
 the smallest bid bin k whose type (k, q, a) the frozen oracle would admit.
 """
@@ -30,6 +31,7 @@ import numpy as np
 from ..config import Config
 from ..data import Dataset
 from ..phase0 import PhaseState, assign_type_ids
+from ..reward import job_terms
 from .core.error_params import ErrorParams, make_error_params
 from .core.monitor import PhaseMonitor
 from .core.occupancy import Occupancy
@@ -76,6 +78,10 @@ class TheoryModel:
         self.ph_adm: list[int] = []
         self.ph = dict(R=0.0, n_phys_reject=0, n_khat=0, n_thinned=0,
                        cv=0.0, prof_phi=0.0, prof_pay=0.0, carb_kg=0.0)
+        # job reward terms of every stream job under this phase's bid model (dlent_rt.reward)
+        S = self.stream
+        self.J = job_terms(S.priority, S.v, S.cost_base, S.C_elec, S.C_carbon,
+                           state.myerson, self.tax, self.cfg.objective)
         # threshold bin per (q, a): smallest k with r~ - tau^T v > 0 (0 = none)
         ts = state.type_space
         shape = (ts.k_star, len(ts.priorities), ts.n_hw)
@@ -147,17 +153,14 @@ class TheoryModel:
         fits = self.occ.fits(S.A[i])
         admit = want and fits
         c_i = float(S.cost_base[i])
-        phi = float(st.myerson.phi_job(S.v[i], c_i))
+        phi = float(self.J.phi[i])
         qi = int(np.searchsorted(st.type_space.priorities, S.priority[i]))
         thr = float(self.L_thr[qi, int(S.hw_idx[i])])
         R = cv = prof = carb = pay = 0.0
         if admit:
             self.occ.add(i, S.A[i], t, int(S.D[i]))
-            l1, l2, l3 = self.lam
-            cv = float(S.priority[i] * S.v[i])
-            prof = phi - float(S.C_elec[i])
-            carb = float(S.C_carbon[i])
-            R = l1 * cv + l2 * prof - l3 * carb * self.tax
+            cv, prof = float(self.J.cv[i]), float(self.J.profit[i])
+            carb, R = float(self.J.carbon_kg[i]), float(self.J.R[i])
             # payment: phi at the type's bin floor L_k (known distribution: given c_j)
             pay = (float(st.myerson.phi_job(st.L[j], c_i)) if st.myerson.known
                    else float(st.phi_tilde[j]))

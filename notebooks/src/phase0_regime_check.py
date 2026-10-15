@@ -21,7 +21,8 @@ sys.path.insert(0, str(ROOT))
 
 from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import run_phase0, assign_type_ids, _weighted_quantile
+from dlent_rt.phase0 import run_phase0, assign_type_ids
+from dlent_rt.reward import weighted_quantile as _weighted_quantile
 from dlent_rt.lp_oracle import solve_lp_rs
 from dlent_rt.models.core.error_params import make_error_params
 

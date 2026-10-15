@@ -205,6 +205,8 @@ SIGMA_CONST = sig_states == sig_arr == sig_ph == [SIGMA]
 
 # %%
 def job_R(A, phi, s_C, carbon=True):
+    """The job reward with an explicitly GIVEN phi (the old run's per-phase pooled phi has no single bid
+    model, so dlent_rt.reward.job_terms cannot be used here); same terms as reward.job_terms."""
     i = A["i"].to_numpy()
     R = L1 * A["q"].to_numpy() * A["v"].to_numpy() + L2 * (phi - S.C_elec[i])
     return R - L3 * s_C * S.C_carbon[i] if carbon else R

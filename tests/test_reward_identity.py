@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dlent_rt import reward
 from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids
@@ -32,10 +33,8 @@ class _Recording(TheoryModel):
 
 
 def job_reward(S, st0, cfg):
-    """The online loop's job reward (theory.py) for every stream job, with the one known phi."""
-    l1, l2, l3 = cfg.objective.lambda1, cfg.objective.lambda2, cfg.objective.lambda3
-    phi = np.asarray(st0.myerson.phi_job(S.v, S.cost_base))
-    return l1 * S.priority * S.v + l2 * (phi - S.C_elec) - l3 * st0.carbon_price * S.C_carbon
+    """R of every stream job from the single reward module (the online loop's terms)."""
+    return reward.job_reward(S, st0, cfg.objective).R
 
 
 def _synthetic():

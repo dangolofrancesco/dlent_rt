@@ -28,7 +28,8 @@ warnings.simplefilter("ignore")
 
 from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays, scalarized_reward
+from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays
+from dlent_rt.reward import type_reward
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.models.core.occupancy import Occupancy
 from dlent_rt.models.core.reinit import build_window_state
@@ -256,8 +257,7 @@ p0 = N0 / N0.sum()
 d0 = mb0(S.D)
 out = {}
 for label, phi in (("notebook phi_ref = phi(v)", phi_nb), ("phi_ref = phi_job(v, c_j)", phi_true)):
-    r_ref0, *_ = scalarized_reward(prio0, mb0(S.v), mb0(phi), mb0(S.C_elec), mb0(S.C_carbon), p0, A0 * d0[:, None],
-                                   ds, cfg, carbon_price=sC)
+    r_ref0, *_ = type_reward(prio0, mb0(S.v), mb0(phi), mb0(S.C_elec), mb0(S.C_carbon), p0, cfg, s_C=sC)
     mm = p0 > 0
     err = np.average(np.abs(st0.r_tilde[mm] - r_ref0[mm]), weights=p0[mm])
     out[label] = dict(mean_abs_err=err, rel_err=err / np.average(np.abs(r_ref0[mm]), weights=p0[mm]),

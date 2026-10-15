@@ -7,9 +7,8 @@ import numpy as np
 import pytest
 
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import (
-    run_phase0, scalarized_reward, type_arrays, carbon_scale_from_quantile, _weighted_quantile,
-)
+from dlent_rt.phase0 import run_phase0, type_arrays
+from dlent_rt.reward import type_reward, carbon_price, weighted_quantile
 from dlent_rt.models.core.reinit import build_window_state
 from dlent_rt.models.core.stream import build_stream
 from tests.synthetic import synthetic_config
@@ -58,8 +57,8 @@ def test_q_changes_only_carbon_price(setup):
     out = {}
     for q in (0.5, 0.75, 0.9, 0.99):
         cfg_q = _with(cfg, quantile=q)
-        r, r_nocarbon, info = scalarized_reward(
-            prio, st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, st.v, ds, cfg_q)
+        r, r_nocarbon, info = type_reward(
+            prio, st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, cfg_q)
         out[q] = (r, r_nocarbon, info)
         lam = cfg.objective
         np.testing.assert_allclose(r_nocarbon, lam.lambda1 * cv + lam.lambda2 * prof, rtol=1e-12)
@@ -92,28 +91,28 @@ def test_reinit_uses_frozen_carbon_price(setup):
         new.r_tilde, lam.lambda1 * cv + lam.lambda2 * prof - lam.lambda3 * st.carbon_price * carb,
         rtol=1e-12, atol=1e-15)
     # a fresh scale on the window would differ: the freeze is not a no-op
-    fresh = carbon_scale_from_quantile(cv, prof, carb, new.p, cfg.normalization.quantile)
+    fresh = carbon_price(cv, prof, carb, new.p, cfg.normalization.quantile)
     assert not np.isclose(fresh["s_C"], st.carbon_price)
 
 
 # (e) weighted quantile on toy examples, hand-computed
-def test_weighted_quantile_toy():
+def testweighted_quantile_toy():
     # equal weights: atoms at cw = .125 .375 .625 .875 -> median = 2.5
-    assert _weighted_quantile([4, 1, 3, 2], [1, 1, 1, 1], 0.5) == pytest.approx(2.5)
+    assert weighted_quantile([4, 1, 3, 2], [1, 1, 1, 1], 0.5) == pytest.approx(2.5)
     # w = (1,1,1,5)/8: cw = .0625 .1875 .3125 .6875
     # q = .5 -> 3 + (.5 - .3125)/(.6875 - .3125) = 3.5
-    assert _weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.5) == pytest.approx(3.5)
+    assert weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.5) == pytest.approx(3.5)
     # q = .25 -> 2 + (.25 - .1875)/(.3125 - .1875) = 2.5 ; q beyond the last atom -> max
-    assert _weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.25) == pytest.approx(2.5)
-    assert _weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.9) == pytest.approx(4.0)
-    # carbon_scale_from_quantile ignores types with p = 0
-    info = carbon_scale_from_quantile(np.array([2.0, 4.0, 999.0]), np.array([-2.0, 6.0, 999.0]),
+    assert weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.25) == pytest.approx(2.5)
+    assert weighted_quantile([1, 2, 3, 4], [1, 1, 1, 5], 0.9) == pytest.approx(4.0)
+    # carbon_price ignores types with p = 0
+    info = carbon_price(np.array([2.0, 4.0, 999.0]), np.array([-2.0, 6.0, 999.0]),
                                       np.array([1.0, 3.0, 999.0]), np.array([0.5, 0.5, 0.0]), 0.5)
     assert info["Q_cv"] == pytest.approx(3.0) and info["Q_abs_pi"] == pytest.approx(4.0)
     assert info["D_q"] == pytest.approx(3.5) and info["K_q"] == pytest.approx(2.0)
     assert info["s_C"] == pytest.approx(1.75)
     with pytest.warns(RuntimeWarning):
-        z = carbon_scale_from_quantile(np.ones(2), np.ones(2), np.zeros(2), np.ones(2), 0.9)
+        z = carbon_price(np.ones(2), np.ones(2), np.zeros(2), np.ones(2), 0.9)
     assert z["s_C"] == 0.0
 
 
@@ -124,7 +123,6 @@ def test_zero_carbon_has_no_carbon_term(setup):
     C0 = st.C_carbon_bar.copy()
     j = int(np.flatnonzero(st.p > 0)[0])
     C0[j] = 0.0
-    r, r_nocarbon, _ = scalarized_reward(
-        prio, st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, st.v, ds, cfg,
-        carbon_price=st.carbon_price)
+    r, r_nocarbon, _ = type_reward(
+        prio, st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, cfg, s_C=st.carbon_price)
     assert r[j] == r_nocarbon[j]
