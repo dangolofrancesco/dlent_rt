@@ -9,11 +9,14 @@ with the exact LP-RS in place of Algorithm 2).
   * physical gate (week-28 decision): an admission that would exceed the
     physical capacity c is rejected and logged as `phys_reject`.
 
-Per arrival at tick t (paper line order):
-  1. all ticks since the previous arrival are scanned (tests / timeout, exact
-     on null ticks); a failure at u ends the phase at u-1 and re-initialises;
-  2. physical releases up to t;
-  3. type, oracle, thinning, gate, admission, realised reward.
+Per arrival at tick t (paper line order), through the shared event-driven loop
+dlent_rt.models.policy.simulate (TheoryModel is one Policy):
+  1. before_arrival: all ticks since the previous arrival are scanned (tests /
+     timeout, exact on null ticks); a failure at u ends the phase at u-1 and
+     re-initialises;
+  2. physical releases up to t (simulate);
+  3. want: type, oracle, thinning; gate and admission (simulate); record: realised
+     reward, monitor, logs.
 
 The realised reward is dlent_rt.reward.job_terms under the phase state's bid model
 (phi = myerson.phi_job(v, c_j)): the same terms whose type means give Phase 0's and
@@ -37,6 +40,7 @@ from .core.monitor import PhaseMonitor
 from .core.occupancy import Occupancy
 from .core.reinit import build_window_state, hindsight_lambda
 from .core.stream import StreamData, build_stream
+from .policy import simulate
 
 
 @dataclass
@@ -136,7 +140,11 @@ class TheoryModel:
             self._end_phase(sr.fail_tick - 1, sr.reason)
 
     # ------------------------------------------------------------------ #
-    def _decide(self, i: int, t: int) -> dict:
+    # Policy hook (dlent_rt.models.policy): before_arrival / want / record
+    def before_arrival(self, i: int, t: int) -> None:
+        self._advance(t)
+
+    def want(self, i: int, t: int) -> bool:
         S, st, ep = self.stream, self.state, self.ep
         k = int(st.grid.assign(S.v[i], st.myerson)[0])
         j = int(assign_type_ids(st.type_space, np.array([k]), S.priority[i:i + 1],
@@ -149,16 +157,21 @@ class TheoryModel:
         k_hat = score > 0
         pU = ep.p_U(self.W_prev, t - self.tau_prev)
         U = bool(self.u_rand[i] < pU)
-        want = k_hat and U
-        fits = self.occ.fits(S.A[i])
-        admit = want and fits
+        self._cur = dict(k=k, j=j, ir_reject=ir_reject, r_j=r_j, shadow=shadow, score=score,
+                         k_hat=k_hat, pU=pU, U=U)
+        return k_hat and U
+
+    def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
+        S, st = self.stream, self.state
+        cur = self._cur
+        k, j, ir_reject, r_j = cur["k"], cur["j"], cur["ir_reject"], cur["r_j"]
+        shadow, score, k_hat, pU, U = cur["shadow"], cur["score"], cur["k_hat"], cur["pU"], cur["U"]
         c_i = float(S.cost_base[i])
         phi = float(self.J.phi[i])
         qi = int(np.searchsorted(st.type_space.priorities, S.priority[i]))
         thr = float(self.L_thr[qi, int(S.hw_idx[i])])
         R = cv = prof = carb = pay = 0.0
-        if admit:
-            self.occ.add(i, S.A[i], t, int(S.D[i]))
+        if admit:                                   # occ.add was done by simulate (physical gate)
             cv, prof = float(self.J.cv[i]), float(self.J.profit[i])
             carb, R = float(self.J.carbon_kg[i]), float(self.J.R[i])
             # payment: phi at the type's bin floor L_k (known distribution: given c_j)
@@ -172,7 +185,7 @@ class TheoryModel:
         ph["n_phys_reject"] += int(want and not fits)
         ph["cv"] += cv; ph["prof_phi"] += prof; ph["carb_kg"] += carb
         ph["prof_pay"] += (pay - float(S.C_elec[i])) if admit else 0.0
-        return dict(
+        self.res.arrivals.append(dict(
             i=i, t=t, m=self.m, type=j, k_bin=k, q=float(S.priority[i]), hw=int(S.hw_idx[i]),
             v=float(S.v[i]), phi_mech=phi, phi_gen=float(S.phi_gen[i]),
             r_tilde=r_j, shadow_cost=shadow, score=score, ir_reject=ir_reject,
@@ -182,7 +195,7 @@ class TheoryModel:
             threshold_markup=thr / c_i, D=int(S.D[i]), U_cpu=float(self.occ.U[0]),
             U_ram=float(self.occ.U[1]) if self.occ.U.size > 1 else np.nan,
             n_active=self.occ.n_active, **{k2: v for k2, v in self._last_diag.items()},
-        )
+        ))
 
     # ------------------------------------------------------------------ #
     def run(self) -> RunResult:
@@ -191,12 +204,7 @@ class TheoryModel:
         self.m = 1
         self._last_diag = {}
         self._new_phase(self.state0, tau_prev=0, W_prev=self.d_max)    # tau^(0)=0, W^(0)=d_max
-        S = self.stream
-        for i in range(S.n):
-            t = int(S.tick[i])
-            self._advance(t)
-            self.occ.release_until(t)
-            self.res.arrivals.append(self._decide(i, t))
+        simulate(self.stream, self.occ, self)
         T = int(self.ds.T)
         self._end_phase(T, "horizon", reinit=False)
         self.res.occupancy_events = self.occ.events
