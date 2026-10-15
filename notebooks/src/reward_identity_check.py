@@ -261,7 +261,7 @@ for label, phi in (("notebook phi_ref = phi(v)", phi_nb), ("phi_ref = phi_job(v,
     mm = p0 > 0
     err = np.average(np.abs(st0.r_tilde[mm] - r_ref0[mm]), weights=p0[mm])
     out[label] = dict(mean_abs_err=err, rel_err=err / np.average(np.abs(r_ref0[mm]), weights=p0[mm]),
-                      sign_mismatch=np.average(np.sign(st0.r_tilde[mm]) != np.sign(r_ref0[mm]), weights=p0[mm]))
+                      decision_errors_discretization=np.average(np.sign(st0.r_tilde[mm]) != np.sign(r_ref0[mm]), weights=p0[mm]))
 print("phase 1 (Phase 0 types) r_tilde (H) vs r_ref (stream jobs on the same types); both are $ per JOB (type means), "
       "weighted by p_ref:")
 print(pd.DataFrame(out).T.to_string())

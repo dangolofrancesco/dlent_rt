@@ -585,7 +585,9 @@ plt.tight_layout(); plt.show()
 # * KS(F̂_k, F_emp): the phase's bid model F̂_k vs the empirical CDF of all stream MARKUPS m = v / c_j. Under the known
 #   distribution F̂_k = LogNormal(−σ²/2, σ) in every phase (never refit), so this measures the fit of the configured
 #   markup distribution, not learning. φ error: mean |φ_k(v) − φ(v)|, 0 by construction with one known φ.
-# * reward error: p_ref-weighted mean |r̃_k − r_ref| ($ and relative to mean |r_ref|) and sign-mismatch rate.
+# * reward error: p_ref-weighted mean |r̃_k − r_ref| ($ and relative to mean |r_ref|), and the share of
+#   **decision errors due to discretization**: types where sign(r̃_k) ≠ sign(r_ref), i.e. the phase's type reward
+#   would admit (reject) a type the full-stream type reward rejects (admits).
 # * ‖τ̂_k − τ*‖ with τ* the dual of the full-stream hindsight LP.
 # * decision agreement: share of phase-k arrivals where k̂ (phase oracle) equals the hindsight oracle
 #   1[r_ref − τ*ᵀv_ref > 0] on the reference types; also vs the offline job-level OPT x*.
@@ -656,7 +658,7 @@ def accuracy_table(run):
             "phi rel err": np.mean(np.abs(phi_k - phi_ref)) / np.mean(np.abs(phi_ref)),
             "r mean abs err $": r_err,
             "r rel err": r_err / np.average(np.abs(r_ref[mk]), weights=w),
-            "r sign mismatch": np.average(np.sign(st.r_tilde[mk]) != np.sign(r_ref[mk]), weights=w),
+            "decision errors (discretization)": np.average(np.sign(st.r_tilde[mk]) != np.sign(r_ref[mk]), weights=w),
             "||tau_k - tau*||": float(np.linalg.norm(st.tau - st_ref.tau)),
             "agree hindsight oracle": (g["k_hat"] == g["k_hat_ref"]).mean(),
             "agree offline x*": (g["k_hat"].to_numpy() == run["opt"]["x"][g["i"].to_numpy()]).mean(),
@@ -674,7 +676,7 @@ display(ACC0.T.style.format(precision=4))
 
 # %%
 METRICS = ["TV(p_hat,p_ref)", "thin mass (N_j<n_type_min)", "d rel err mean", "d CI rel half-width",
-           "KS(F_hat,F_emp)", "phi mean abs err $", "r mean abs err $", "r sign mismatch",
+           "KS(F_hat,F_emp)", "phi mean abs err $", "r mean abs err $", "decision errors (discretization)",
            "||tau_k - tau*||", "agree hindsight oracle", "agree offline x*", "p_U start"]
 fig, axes = plt.subplots(3, 4, figsize=(16, 9))
 for ax, met in zip(axes.ravel(), METRICS):
@@ -719,7 +721,7 @@ def verdict(df, cols, lower_is_better=True):
 
 V0 = pd.concat([
     verdict(ACC0, ["TV(p_hat,p_ref)", "thin mass (N_j<n_type_min)", "d rel err mean", "d rel err median",
-                   "KS(F_hat,F_emp)", "phi mean abs err $", "r mean abs err $", "r rel err", "r sign mismatch",
+                   "KS(F_hat,F_emp)", "phi mean abs err $", "r mean abs err $", "r rel err", "decision errors (discretization)",
                    "||tau_k - tau*||"]),
     verdict(ACC0, ["agree hindsight oracle", "agree offline x*"], lower_is_better=False),
 ])
