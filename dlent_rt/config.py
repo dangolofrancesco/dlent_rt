@@ -138,6 +138,10 @@ class CapacityCfg:
     absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)
     # from_amax only: c_i = a_max,i / xi_target (sizing only; constants.xi_override is separate)
     xi_target: float = 0.5
+    # After the outlier policy and the capacity sizing: drop from H and from the stream every
+    # job with A_ij > c_i on any resource (it can never pass the physical gate). c is NOT
+    # re-sized; the timeline (T, H span), d_max and the hardware catalogue are unchanged.
+    drop_jobs_exceeding_capacity: bool = False
 
 
 @dataclass(frozen=True)
@@ -290,6 +294,7 @@ class Config:
         assert self.capacity.xi_target > 0.0
         assert 0.0 < self.capacity.concurrency_quantile <= 1.0
         assert 0.0 < self.capacity.fraction <= 1.0
+        assert isinstance(self.capacity.drop_jobs_exceeding_capacity, bool)
         assert self.grid.k_star >= 2
         assert 0.0 < self.time.d_max_quantile <= 1.0
         assert 0.0 < self.time.d_max_horizon_fraction <= 1.0

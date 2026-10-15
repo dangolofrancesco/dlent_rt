@@ -58,6 +58,8 @@ class Dataset:
     d_max_diag: dict
     xi: float
     grid_data: object              # GridData from energy.py (or None)
+    # capacity.drop_jobs_exceeding_capacity: {"n_H", "n_stream"} jobs dropped (None = flag off)
+    capacity_drop: Optional[dict] = None
 
     @property
     def n_resources(self) -> int:
@@ -117,6 +119,16 @@ def _convert_durations(
     """Convert duration in hours to steps of time.tick_seconds (real-tick time model)."""
     return _duration_to_steps_real_tick(
         duration_hours, cfg.time.tick_seconds, d_max_steps
+    )
+
+
+def _subset_jobs(J: JobArrays, keep: np.ndarray) -> JobArrays:
+    """The jobs of J where keep is True (arrival steps kept on the same timeline)."""
+    return JobArrays(
+        n=int(keep.sum()), resources=J.resources, priority=J.priority[keep],
+        scheduling_class=J.scheduling_class[keep], duration_hours=J.duration_hours[keep],
+        duration_steps=J.duration_steps[keep], arrival_step=J.arrival_step[keep], A=J.A[keep],
+        hw_idx=J.hw_idx[keep], collection_id=J.collection_id[keep], datetime=J.datetime[keep],
     )
 
 
@@ -415,6 +427,15 @@ def load_dataset(cfg: Config) -> Dataset:
         f"no gaps or reordering."
     )
 
+    capacity_drop = None
+    if cfg.capacity.drop_jobs_exceeding_capacity:
+        # jobs that can never pass the physical gate (A_ij > c_i on some resource) leave H and
+        # the stream; c, the timeline (T, H_span_steps), d_max and the catalogue are kept
+        keep_H = ~np.any(H.A > capacity[None, :], axis=1)
+        keep_S = ~np.any(stream.A > capacity[None, :], axis=1)
+        capacity_drop = dict(n_H=int((~keep_H).sum()), n_stream=int((~keep_S).sum()))
+        H, stream = _subset_jobs(H, keep_H), _subset_jobs(stream, keep_S)
+
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
 
@@ -447,5 +468,6 @@ def load_dataset(cfg: Config) -> Dataset:
         outlier_report=outlier_report,
         d_max_diag=d_max_diag,
         xi=xi,
-        grid_data=grid_data
+        grid_data=grid_data,
+        capacity_drop=capacity_drop,
     )
