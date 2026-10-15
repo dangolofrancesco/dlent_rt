@@ -26,8 +26,6 @@ import os, sys, time, warnings, dataclasses
 from pathlib import Path
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
-import scipy.sparse as sp
-from scipy.optimize import milp, linprog, LinearConstraint, Bounds
 from scipy.stats import lognorm
 from IPython.display import display
 warnings.simplefilter("ignore")
@@ -38,10 +36,10 @@ sys.path.insert(0, str(ROOT))
 from dlent_rt.config import default_config
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays
-from dlent_rt.reward import job_reward, type_reward, weighted_quantile as _weighted_quantile
+from dlent_rt.reward import type_reward, weighted_quantile as _weighted_quantile
 from dlent_rt.models.theory import TheoryModel
-from dlent_rt.models.core.occupancy import Occupancy
-from dlent_rt.models.core.reinit import build_window_state
+from dlent_rt.benchmarks import Benchmarks, regret
+from dlent_rt.models.policy import run_static
 from dlent_rt.models.core.error_params import make_error_params
 
 plt.rcParams["figure.figsize"] = (13, 3.6)
@@ -184,17 +182,21 @@ for s in CAPACITY_SCALES:
 # %% [markdown]
 # ### 0.3 Shared analysis helpers
 #
-# **Reference (ORACLE, not available online).** The full stream with true labels: every arrival, true D, F̂ refit on
-# the whole stream, no fallback — the same construction as the code's hindsight benchmark
-# (`reinit.hindsight_lambda`). It yields τ*, r_ref and λ̂_ref; R_OPT (fluid) = λ̂_ref · T is `summary["bench_global"]`.
+# All benchmarks come from `dlent_rt.benchmarks.Benchmarks` and the static policies from `dlent_rt.models.policy`
+# (the same event-driven loop and physical gate as the online model); nothing is re-implemented here.
+#
+# **Reference (ORACLE, not available online).** `Benchmarks.reference_state`: the full stream with true labels,
+# every arrival, true D, no fallback (the code's hindsight benchmark). It yields τ*, r_ref and λ̂_ref;
+# R_OPT (fluid) = `Benchmarks.fluid_opt()` = λ̂_ref · T = `summary["bench_global"]`.
 #
 # **One job-level reward.** The bid distribution is known (`bid.known_distribution`), so there is a single virtual
 # value φ_j = `phi_job(v_j, c_j)` = c_j · φ_m(v_j / c_j) and a single job reward
 # R_job = λ1·q·v + λ2·(φ_j − C_elec) − λ3·s_C·K (s_C frozen in Phase 0). It is the online loop's formula: the logged R
 # of every admitted job equals R_job (asserted below), so every algorithm and benchmark is scored with R_job.
 #
-# **Offline job-level OPT (ORACLE).** max Σ R_job,j x_j s.t. at every arrival tick the occupancy of the chosen jobs
-# is ≤ c, x ∈ {0,1} (HiGHS MILP; LP relaxation reported as an upper bound). Only jobs with R_job > 0 can be chosen.
+# **Offline job-level OPT (ORACLE).** `Benchmarks.job_level_opt()`: max Σ R_job,j x_j s.t. at every arrival tick the
+# occupancy of the chosen jobs is ≤ c, x ∈ {0,1} (HiGHS MILP; LP relaxation reported as an upper bound). Only jobs
+# with R_job > 0 can be chosen.
 
 # %%
 def types_under(st, S, idx=None):
@@ -202,16 +204,9 @@ def types_under(st, S, idx=None):
     k = st.grid.assign(S.v[idx], st.myerson)
     return assign_type_ids(st.type_space, k, S.priority[idx], S.hw_idx[idx])
 
-def reference_state(model):
-    S, ds = model.stream, model.ds
-    cfg_h = dataclasses.replace(BASE, phase_transition=dataclasses.replace(BASE.phase_transition, n_min=2))
-    idx = np.arange(S.n)
-    st, _ = build_window_state(S, idx, idx, int(ds.T), model.state0, ds, cfg_h, fallback=False)
-    return st
-
-def job_terms(model):
-    """THE job-level reward of every stream job: dlent_rt.reward.job_reward (the online loop's terms)."""
-    t = job_reward(model.stream, model.state0, BASE.objective)
+def job_terms(B):
+    """THE job-level reward of every stream job: Benchmarks.terms = dlent_rt.reward.job_reward."""
+    t = B.terms
     return dict(phi=t.phi, CV=t.cv, PI=t.profit, K=t.carbon_kg, Cusd=t.carbon_usd,
                 R_nocarb=t.R_nocarbon, R=t.R)
 
@@ -236,46 +231,6 @@ def arrivals_frame(model, res, st_ref, J):
     assert (a["decision"] != "?").all()
     return a
 
-def offline_opt(model, R, time_limit=300):
-    S, c = model.stream, model.c
-    cand = np.flatnonzero(R > 0)
-    t, D, A = S.tick[cand], S.D[cand], S.A[cand]
-    last = np.searchsorted(t, t + D, side="left") - 1              # last row with t_k < t_j + D_j
-    cols = np.repeat(np.arange(cand.size), last - np.arange(cand.size) + 1)
-    rows = np.concatenate([np.arange(j, last[j] + 1) for j in range(cand.size)])
-    M = sp.vstack([sp.csr_matrix((A[cols, r], (rows, cols)), shape=(cand.size, cand.size))
-                   for r in range(A.shape[1])]).tocsr()
-    ub = np.repeat(c, cand.size)
-    lp = linprog(-R[cand], A_ub=M, b_ub=ub, bounds=(0, 1), method="highs")
-    ip = milp(-R[cand], constraints=LinearConstraint(M, -np.inf, ub), integrality=np.ones(cand.size),
-              bounds=Bounds(0, 1), options=dict(time_limit=time_limit))
-    x = np.zeros(S.n)
-    x[cand] = np.round(ip.x)
-    return dict(x=x.astype(bool), R_ip=float(R @ np.round(x)), R_lp=-float(lp.fun),
-                R_nocap=float(R[cand].sum()), gap=getattr(ip, "mip_gap", np.nan), msg=ip.message)
-
-def run_static(model, st, thin_p=None):
-    """Same event-driven loop (heap Occupancy, physical gate) with the FIXED (r~, tau, v) of `st`:
-    no learning, no tests, no restarts. thin_p = None -> no thinning; else U = u_rand < thin_p
-    (same common random numbers as the online run)."""
-    S = model.stream
-    j = types_under(st, S)
-    score = np.where(j >= 0, st.r_tilde[np.maximum(j, 0)] - st.v[np.maximum(j, 0)] @ st.tau, -np.inf)
-    khat = score > 0
-    U = np.ones(S.n, bool) if thin_p is None else model.u_rand < thin_p
-    occ = Occupancy(model.c, record=False)
-    adm, phys = np.zeros(S.n, bool), np.zeros(S.n, bool)
-    for i in range(S.n):
-        t = int(S.tick[i])
-        occ.release_until(t)
-        if khat[i] and U[i]:
-            if occ.fits(S.A[i]):
-                occ.add(i, S.A[i], t, int(S.D[i]))
-                adm[i] = True
-            else:
-                phys[i] = True
-    return dict(admit=adm, khat=khat, phys=phys)
-
 def occ_series(res, T):
     ev = np.array([(e[0], *e[3:]) for e in res.occupancy_events], float)
     if ev.size == 0:
@@ -297,22 +252,25 @@ def occ_stats(te, Ue, a, b):
 def analyse(run):
     model, res = run["model"], run["res"]
     S = model.stream
-    st_ref = reference_state(model)
-    J = job_terms(model)
+    B = Benchmarks.from_model(model)
+    st_ref = B.reference_state
+    J = job_terms(B)
     R_job = J["R"]
     a = arrivals_frame(model, res, st_ref, J)
-    opt = offline_opt(model, R_job)
+    opt = B.job_level_opt()
     ep = model.ep
     p_cap = (1 - ep.xi) / (1 + ep.eps_D)
-    base = {
-        "static tau* (full stream, ORACLE)": run_static(model, st_ref),
-        "static Phase 0 (H)": run_static(model, model.state0),
-        "static Phase 0 (H) + thinning at cap": run_static(model, model.state0, thin_p=p_cap),
-    }
+    static = {"static tau* (full stream, ORACLE)": (st_ref, None),
+              "static Phase 0 (H)": (model.state0, None),
+              "static Phase 0 (H) + thinning at cap": (model.state0, p_cap)}
+    base = {}
+    for name, (st, thin) in static.items():
+        r = run_static(S, model.c, st, thin_p=thin, u_rand=model.u_rand)
+        base[name] = dict(admit=r.admit, phys=r.phys_reject)
     te, Ue = occ_series(res, int(model.ds.T))
-    run.update(st_ref=st_ref, J=J, R_job=R_job, A=a, opt=opt, base=base, te=te, Ue=Ue,
+    run.update(B=B, st_ref=st_ref, J=J, R_job=R_job, A=a, opt=opt, base=base, te=te, Ue=Ue,
                ph=pd.DataFrame(res.phases), p_cap=p_cap)
-    assert np.isclose(st_ref.lam_star * model.ds.T, res.summary["bench_global"], rtol=1e-9)
+    assert np.isclose(B.fluid_opt(), res.summary["bench_global"], rtol=1e-12)
     return run
 
 for s in CAPACITY_SCALES:
@@ -320,7 +278,7 @@ for s in CAPACITY_SCALES:
     analyse(RUNS[s])
     o = RUNS[s]["opt"]
     print(f"scale={s:<4} reference + offline OPT + static baselines in {time.time() - t1:.0f} s   "
-          f"MILP: {o['msg']} (gap {o['gap']:.2e})")
+          f"MILP: {o['status']} (gap {o['gap']:.2e})")
 
 R0 = RUNS[BASELINE_SCALE]
 A0, PH0, M0 = R0["A"], R0["ph"], R0["model"]
@@ -734,36 +692,38 @@ print(f"metrics monotone over all phases: {(V0['monotone (all phases)'] == 'yes'
 # ## Section 5: Baselines and regret (C.5, theoretical setting: true duration known at arrival)
 #
 # * **DLENT-RT (online)**: the run above. R = Σ R_job over its admitted set (= the logged reward, asserted).
-# * **R_OPT fluid (existing benchmark code)**: λ̂_ref · T, the full-stream LP-RS (`summary["bench_global"]`). It is a
-#   per-tick fluid quantity on TYPE means, not a feasible schedule.
-# * **R_OPT offline job-level (ORACLE)**: MILP above (LP relaxation and no-capacity sum shown as upper bounds).
-# * **static τ* (full stream, ORACLE)**: (r_ref, τ*, v_ref) of the full stream, computed once; same event-driven
-#   loop, oracle and physical gate; no thinning, no learning, no restarts.
+# Scores, benchmarks and regrets come from `dlent_rt.benchmarks` (`score`, `fluid_opt`, `job_level_opt`, `regret`),
+# in $ over the whole stream.
+# * **R_OPT fluid**: `fluid_opt()` = λ̂_ref · T, the full-stream LP-RS (`summary["bench_global"]`). It is a per-tick
+#   fluid quantity on TYPE means, not a feasible schedule.
+# * **R_OPT offline job-level (ORACLE)**: `job_level_opt()` (LP relaxation and no-capacity sum shown as upper bounds).
+# * **static τ* (full stream, ORACLE)**: `StaticPolicy` of (r_ref, τ*, v_ref), computed once; same event-driven loop
+#   (`policy.simulate`), oracle and physical gate as DLENT-RT; no thinning, no learning, no restarts.
 # * **static Phase 0 (H)**: (r̃, τ, v) of Phase 0 (from H), never updated; no thinning.
 # * **static Phase 0 (H) + thinning at cap**: same, with U(t) ~ Bern((1 − ξ)/(1 + ε_D)), same random numbers as the
 #   online run (isolates the thinning effect from learning).
 
 # %%
 def baseline_table(run):
-    model, a, opt = run["model"], run["A"], run["opt"]
+    model, a, opt, B = run["model"], run["A"], run["opt"], run["B"]
     S = model.stream; R_job = run["R_job"]
-    R_fluid = run["res"].summary["bench_global"]
+    R_fluid = B.fluid_opt()
     alg_adm = np.zeros(S.n, bool); alg_adm[a.loc[a["admit"], "i"].to_numpy()] = True
-    assert np.isclose(float(R_job[alg_adm].sum()), run["res"].summary["R_total"], rtol=1e-10)   # logged == re-scored
+    assert np.isclose(B.score(alg_adm), run["res"].summary["R_total"], rtol=1e-10)   # logged == re-scored
     algs = {"DLENT-RT (online)": dict(admit=alg_adm, phys=np.isin(np.arange(S.n), a.loc[a["phys_reject"], "i"]))}
     for name, b in run["base"].items():
         algs[name] = dict(admit=b["admit"], phys=b["phys"])
     algs["offline job-level OPT (ORACLE)"] = dict(admit=opt["x"], phys=np.zeros(S.n, bool))
-    R_alg = float(R_job[alg_adm].sum())
+    R_alg = B.score(alg_adm)
     rows = []
     for name, d in algs.items():
-        adm = d["admit"]; Ry = float(R_job[adm].sum())
+        adm = d["admit"]; Ry = B.score(adm)
         rows.append({"algorithm": name, "admitted": int(adm.sum()), "adm rate %": 100 * adm.mean(),
                      "phys rejects": int(d["phys"].sum()),
                      "R $": Ry, "adm with R_job<0 %": 100 * (R_job[adm] < 0).mean() if adm.any() else 0,
                      "R / R_OPT fluid": Ry / R_fluid, "R / R_OPT job": Ry / opt["R_ip"],
                      "R_ALG / R": R_alg / Ry if Ry else np.nan,
-                     "regret vs fluid $": R_fluid - Ry, "regret vs job OPT $": opt["R_ip"] - Ry})
+                     "regret vs fluid $": regret(Ry, R_fluid), "regret vs job OPT $": regret(Ry, opt["R_ip"])})
     df = pd.DataFrame(rows).set_index("algorithm")
     bounds = {"R_OPT fluid (bench_global)": R_fluid, "R_OPT job MILP": opt["R_ip"],
               "R_OPT job LP relaxation": opt["R_lp"], "sum of R_job>0 (no capacity)": opt["R_nocap"],
@@ -814,7 +774,7 @@ def per_phase_regret(run, algs):
         for name, d in algs.items():
             if name.startswith("offline"):
                 continue
-            row[f"regret {name} $"] = opt_m - float(R_job[ii][d["admit"][ii]].sum())
+            row[f"regret {name} $"] = regret(float(R_job[ii][d["admit"][ii]].sum()), opt_m)
         rows.append(row)
     df = pd.DataFrame(rows).set_index("phase")
     df.loc["total"] = df.sum()
