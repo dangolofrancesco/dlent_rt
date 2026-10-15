@@ -224,7 +224,8 @@ print(f"power kW:   min={power.min():.8f}  max={power.max():.6f}  mean={power.me
 # %%
 # grid_data is loaded inside load_dataset() from cfg.data.grid_csv; re-load it
 # here explicitly to confirm the path is not hardcoded anywhere downstream.
-grid_data_check = load_grid_data(cfg.data.grid_csv)
+from dlent_rt.config import resolve_path
+grid_data_check = load_grid_data(str(resolve_path(cfg.data.grid_csv)))   # repo-relative path
 assert grid_data_check.timestamps.shape == ds.grid_data.timestamps.shape
 
 elec_price, carbon_int = _lookup_grid(ds.H, ds)
