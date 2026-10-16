@@ -59,3 +59,32 @@ Criterion (a): the smallest f with post-filter profitable load ≥ c/0.6 (166.7%
   needed for (a) is 166.7%; the largest observed is 49.4% (H) and 61.5% (stream).
 
 Item 3 is run at **f = 0.2** (from (b), on both populations).
+
+## Online runs at f = 0.2 (item 3)
+
+**Source:** `notebooks/src/capacity_scan_online.py 0.2`, with output in `tables/capacity_scan_online_f0.2.json`.
+Seed 42; the same stream, R_job and physical gate for every policy.
+
+**Config:** the scan config at f = 0.2 (q = 0.7, filter on, default grid).
+* c = 34.25 cores, 89.30 GB.
+* The filter removed 1,423 H jobs and 977 stream jobs, leaving |H| = 8,577 and |stream| = 14,331.
+* s_C = 533.50 $/kgCO2.
+* Job OPT (MILP, 600 s limit) = **112,304.68 $**. HiGHS reports it optimal (gap 4.9e-5) in 2.7 s. The LP relaxation
+  is 114,957.98 $, and the no-capacity Σ R_job⁺ is 123,757.69 $.
+* Fluid OPT = 119,169.15 $, so job OPT − fluid OPT = −6,864.47 $. The per-tick capacity of the MILP binds harder than
+  the fluid LP's average-occupancy constraint.
+
+**DLENT-RT:**
+* 6 phases: 5 ended by timeout, 1 by the horizon. Test 1, Test 2 and Test 3 never fired.
+* τ per phase: (0, 0) in all 6 phases, so 0 phases have τ > 0. τ₀ = (0, 0) and τ* = (0, 0).
+* 6,507 admitted, 189 physical rejects, 3,413 thinning rejects.
+
+| policy | R ($) | % of job OPT | % of fluid OPT | admitted | physical rejects |
+|---|---|---|---|---|---|
+| DLENT-RT | 38,222.30 | 34.03% | 32.07% | 6,507 | 189 |
+| StaticPolicy (Phase 0) | 44,733.34 | 39.83% | 37.54% | 9,304 | 257 |
+| G1 | 65,408.71 | 58.24% | 54.89% | 10,468 | 445 |
+| G2 | 102,752.91 | 91.49% | 86.22% | 10,765 | 996 |
+| job OPT (MILP) | 112,304.68 | 100% | 94.24% | – | – |
+
+G1 also rejects 2,376 arrivals for r̃ ≤ 0 and 1,042 for unseen types.
