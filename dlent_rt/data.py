@@ -60,6 +60,8 @@ class Dataset:
     grid_data: object              # GridData from energy.py (or None)
     # capacity.drop_jobs_exceeding_capacity: {"n_H", "n_stream"} jobs dropped (None = flag off)
     capacity_drop: Optional[dict] = None
+    # time.arrival_time_scale: {"k", "n_nudged", "max_nudge"} (None = off)
+    arrival_compression: Optional[dict] = None
 
     @property
     def n_resources(self) -> int:
@@ -95,6 +97,22 @@ def _assign_real_tick_steps(
         out[i] = cur
         prev = cur
     return out
+
+
+def _compress_arrival_steps(steps: np.ndarray, k: float) -> tuple[np.ndarray, dict]:
+    """
+    time.arrival_time_scale: step -> floor(step / k), then the same one-arrival-per-tick rule as
+    _assign_real_tick_steps (a collision moves to the next free tick). Keeps the order.
+    """
+    s = np.floor(steps / k).astype(np.int64)
+    out = np.empty_like(s)
+    prev = -1
+    for i, x in enumerate(s):
+        cur = x if x > prev else prev + 1
+        out[i] = cur
+        prev = cur
+    nudge = out - s
+    return out, dict(k=float(k), n_nudged=int((nudge > 0).sum()), max_nudge=int(nudge.max()))
 
 
 def _duration_to_steps_real_tick(
@@ -352,6 +370,11 @@ def load_dataset(cfg: Config) -> Dataset:
 
     # real-tick time model: one step = time.tick_seconds of wall clock
     all_steps = _assign_real_tick_steps(dts, dts[0], cfg.time.tick_seconds)
+    # capacity is sized on the original ticks; time.arrival_time_scale compresses the arrivals only
+    cap_steps = all_steps
+    arrival_compression = None
+    if cfg.time.arrival_time_scale != 1.0:
+        all_steps, arrival_compression = _compress_arrival_steps(all_steps, cfg.time.arrival_time_scale)
 
     # H = first n0 rows chronologically, stream = the rest. df is sorted by
     # datetime (_read_csv) and all_steps is row-aligned to df, so this is a
@@ -389,8 +412,11 @@ def load_dataset(cfg: Config) -> Dataset:
         A_fit = df_H[a_cols].to_numpy(dtype=float)
     catalogue = fit_hardware_catalogue(A_fit, cfg)
 
+    # under time.arrival_time_scale, d_max (its horizon ceiling) uses the ORIGINAL horizon, so that
+    # the durations are unchanged; d_max / T on the compressed T is reported by the experiment
+    T_dmax = T if arrival_compression is None else int(cap_steps[-1] - cap_steps[n0]) + 1
     d_max_steps, d_max_diag = _compute_d_max_steps(
-        df[col.duration_hours].to_numpy(dtype=float), T, cfg,
+        df[col.duration_hours].to_numpy(dtype=float), T_dmax, cfg,
     )
 
     H = _build_job_arrays(df_H, cfg, resources,
@@ -403,7 +429,7 @@ def load_dataset(cfg: Config) -> Dataset:
     # which is re-based to 0 and would misalign with steps_H. See
     # _size_capacity's docstring for why stream alone is not used.
     capacity_basis = _OccupancyBasis(
-        arrival_step=np.concatenate([steps_H, steps_stream_abs]),
+        arrival_step=cap_steps,
         duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
         A=np.concatenate([H.A, stream.A], axis=0),
     )
@@ -413,7 +439,7 @@ def load_dataset(cfg: Config) -> Dataset:
     # gaps (positional split, no stratified pool), so capacity computed from
     # the H+stream basis must equal capacity computed directly on the WHOLE
     # filtered dataset's timeline in one shot.
-    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
+    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, cap_steps)
     full_basis = _OccupancyBasis(
         arrival_step=full_jobs.arrival_step,
         duration_steps=full_jobs.duration_steps,
@@ -470,4 +496,5 @@ def load_dataset(cfg: Config) -> Dataset:
         xi=xi,
         grid_data=grid_data,
         capacity_drop=capacity_drop,
+        arrival_compression=arrival_compression,
     )

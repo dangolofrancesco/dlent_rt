@@ -97,6 +97,10 @@ class TimeCfg:
     # (GCP/AWS bill 1 min minimum) and preventing near-zero resource
     # volumes from inflating gamma.
     duration_floor_hours: float = 0.016667    # ~1 minute (the YAML value in use, not exactly 1/60)
+    # Experiment option (default 1.0 = off): arrival tick of every H and stream job -> floor(tick / k),
+    # then the one-arrival-per-tick rule (a collision moves to the next free tick). Order, durations
+    # and the job set are unchanged; capacity is sized on the ORIGINAL ticks (same cluster for all k).
+    arrival_time_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -284,6 +288,7 @@ class Config:
     #  validation 
     def validate(self) -> "Config":
         assert self.time.tick_seconds > 0
+        assert self.time.arrival_time_scale > 0
         assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
         assert self.scalarization.method in ("chebyshev", "linear")
         assert self.oracle.kind == "frozen", "oracle.kind: only 'frozen' is implemented"
