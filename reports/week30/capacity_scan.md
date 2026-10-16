@@ -45,3 +45,17 @@
 * The filter removes the same jobs at f = 0.075 and 0.1, and again at f = 0.2 and 0.3. Every A is a snapped hardware
   profile (32 values), so the set of jobs with A > c changes only when c crosses a profile value.
 * Within such a pair, the profitable load % scales as 1/c and the fluid objective is unchanged.
+
+## Selection (item 2; reported, not chosen)
+
+Criterion (a): the smallest f with post-filter profitable load ≥ c/0.6 (166.7% of c) on at least one resource, and
+Σ R_job⁺ removed ≤ 10%.
+
+* **H (Phase 0 state; primary):** no f satisfies (a), because the profitable load is at most 49.4% of c.
+  (b) The maximum is **49.4% of c (RAM) at f = 0.2**, with **5.66%** of H's Σ R_job⁺ removed (CPU: 39.3%).
+* **Stream (reference state):** no f satisfies (a) either. (b) The maximum is 61.5% of c (RAM) at f = 0.2, with
+  3.85% of the stream's Σ R_job⁺ removed (CPU: 56.2%).
+* Profitable load is not monotone in f, because each step of the filter removes a block of large jobs. The load
+  needed for (a) is 166.7%; the largest observed is 49.4% (H) and 61.5% (stream).
+
+Item 3 is run at **f = 0.2** (from (b), on both populations).
