@@ -50,6 +50,18 @@
 | 1.0 / default | 171.27 | 446.50 | 0 | (0, 0) | 11 (9/0/1/0/1) | 0 | 48,242 | 54,122 | 82,311 | 153,582 | 149,478 | 154,637 | 32.3% | 36.2% | 55.1% | 102.7% | 5,159 | 12.5% | 12.1% | 3.74 |
 | 1.0 / reduced | 170.17 | 435.63 | 0 | (0, 0) | 12 (9/1/1/0/1) | 0 | 68,419 | 85,655 | 111,975 | 155,002 | 148,856 | 156,438 | 46.0% | 57.5% | 75.2% | 104.1% | 7,583 | 12.0% | 11.1% | 8.68 |
 
+**R as % of the job OPT (MILP) of the same configuration** (added by `notebooks/src/table08_jobopt_pct.py` from the
+columns above; also in `tables/table08_capacity_grid_sweep*.csv`):
+
+| fraction / grid | DLENT-RT | StaticPolicy (P0) | G1 | G2 |
+|---|---|---|---|---|
+| 0.3 / default | 34.31% | 39.18% | 57.97% | 95.59% |
+| 0.3 / reduced | 43.24% | 54.93% | 70.60% | 95.42% |
+| 0.5 / default | 32.32% | 33.97% | 55.32% | 97.40% |
+| 0.5 / reduced | 39.63% | 53.04% | 72.45% | 97.06% |
+| 1.0 / default | 31.20% | 35.00% | 53.23% | 99.32% |
+| 1.0 / reduced | 43.74% | 54.75% | 71.58% | 99.08% |
+
 All rewards are in $ over the stream. Discretization loss = job OPT − fluid OPT. Regrets against the fluid OPT and
 the job OPT for every policy, and the τ per phase, physical rejects, thinning rejects and G1's rejection counts, are in
 `capacity_grid_sweep_tables.md`.
