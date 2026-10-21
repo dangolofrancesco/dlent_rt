@@ -63,6 +63,10 @@ Capacity `fraction_of_concurrency_quantile`, q = 0.7; `drop_jobs_exceeding_capac
 | decision errors P0 types % | 11.55 | 13.31 |
 | decision errors G1 % | 11.60 | 12.41 |
 | decision errors DLENT % | 23.68 | 17.22 |
+| DLENT-RT % of job OPT | 34.31 | 43.24 |
+| StaticPolicy (P0) % of job OPT | 39.18 | 54.93 |
+| G1 % of job OPT | 57.97 | 70.60 |
+| G2 % of job OPT | 95.59 | 95.42 |
 
 
 ## Fraction 0.5 (rows = grid)
@@ -125,6 +129,10 @@ Capacity `fraction_of_concurrency_quantile`, q = 0.7; `drop_jobs_exceeding_capac
 | decision errors P0 types % | 12.21 | 11.17 |
 | decision errors G1 % | 11.57 | 11.09 |
 | decision errors DLENT % | 26.07 | 17.02 |
+| DLENT-RT % of job OPT | 32.32 | 39.63 |
+| StaticPolicy (P0) % of job OPT | 33.97 | 53.04 |
+| G1 % of job OPT | 55.32 | 72.45 |
+| G2 % of job OPT | 97.40 | 97.06 |
 
 
 ## Fraction 1.0 (rows = grid)
@@ -187,6 +195,10 @@ Capacity `fraction_of_concurrency_quantile`, q = 0.7; `drop_jobs_exceeding_capac
 | decision errors P0 types % | 12.48 | 11.99 |
 | decision errors G1 % | 12.08 | 11.08 |
 | decision errors DLENT % | 22.49 | 15.61 |
+| DLENT-RT % of job OPT | 31.20 | 43.74 |
+| StaticPolicy (P0) % of job OPT | 35.00 | 54.75 |
+| G1 % of job OPT | 53.23 | 71.58 |
+| G2 % of job OPT | 99.32 | 99.08 |
 
 
 ## Summary across the six runs
@@ -215,6 +227,10 @@ Capacity `fraction_of_concurrency_quantile`, q = 0.7; `drop_jobs_exceeding_capac
 | StaticPolicy (P0) % of fluid | 39.04 | 56.32 | 34.57 | 54.90 | 36.21 | 57.54 |
 | G1 % of fluid | 57.77 | 72.39 | 56.29 | 75.00 | 55.07 | 75.22 |
 | G2 % of fluid | 95.25 | 97.84 | 99.11 | 100.47 | 102.75 | 104.13 |
+| DLENT-RT % of job OPT | 34.31 | 43.24 | 32.32 | 39.63 | 31.20 | 43.74 |
+| StaticPolicy (P0) % of job OPT | 39.18 | 54.93 | 33.97 | 53.04 | 35.00 | 54.75 |
+| G1 % of job OPT | 57.97 | 70.60 | 55.32 | 72.45 | 53.23 | 71.58 |
+| G2 % of job OPT | 95.59 | 95.42 | 97.40 | 97.06 | 99.32 | 99.08 |
 | discretization loss (job OPT - fluid) $ | -423.93 | 3,002.84 | 2,227.49 | 4,576.20 | 5,158.91 | 7,582.79 |
 | decision errors P0 types % | 11.55 | 13.31 | 12.21 | 11.17 | 12.48 | 11.99 |
 | decision errors G1 % | 11.60 | 12.41 | 11.57 | 11.09 | 12.08 | 11.08 |
