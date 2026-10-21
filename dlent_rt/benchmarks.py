@@ -15,6 +15,17 @@ outlier-filtered jobs after H), with Phase 0's bid model and frozen s_C.
                               (HiGHS MILP). Kept as the reference for the discretization loss
                               (fluid on types vs per-job decisions); also returns the LP
                               relaxation and the no-capacity bound sum_j R_job,j^+.          [$ per run]
+    b.job_opt_bucketed(source, duration)
+                              the same per-tick-capacity MILP on BUCKETED jobs: the solver sees
+                              each job's TYPE reward r~_k(j) instead of R_job (the professor's
+                              benchmark between job OPT and fluid OPT, week 30). source =
+                              "phase0" (Phase 0's types and r~ from H, the estimate the static /
+                              online policies use) or "reference" (the full-stream reference
+                              state of fluid_opt: its refit grid and stream means). duration =
+                              "true" (variant A: true D in the occupancy) or "type" (variant B:
+                              the type's d_bar). Reports the REALISED sum_j R_job,j x_j of the
+                              chosen set (comparable with every other number here) and the
+                              BELIEVED sum_j r~_k(j) x_j (the MILP's own objective).         [$ per run]
     regret(alg_total, benchmark_total) = benchmark_total - alg_total                        [$ per run]
 
 Units: R_job is in dollars per job; totals are dollars over the whole stream (T ticks). A
@@ -22,6 +33,7 @@ per-tick quantity (lambda) times T gives the same unit.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from functools import cached_property
 
@@ -32,11 +44,49 @@ from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 from . import reward
 from .models.core.reinit import build_window_state
 from .models.core.stream import StreamData, build_stream
+from .phase0 import assign_type_ids
 
 
 def regret(alg_total: float, benchmark_total: float) -> float:
     """Regret of an algorithm against a benchmark, both in $ over the same stream."""
     return float(benchmark_total) - float(alg_total)
+
+
+def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0) -> dict:
+    """
+    max obj^T x, x in {0,1}^n, s.t. at the arrival tick of every job k the occupancy of the chosen
+    jobs is <= c: job j occupies the arrival rows k = j .. last[j] (arrivals with t_k < t_j + D_j).
+    t must be sorted ascending (stream order). Returns x (bool), the MILP and LP-relaxation
+    objective values, gap, status and the MILP runtime [s].
+    """
+    t, D, A, obj = (np.asarray(a) for a in (t, D, A, obj))
+    n = t.size
+    last = np.searchsorted(t, t + D, side="left") - 1
+    lengths = last - np.arange(n) + 1
+    cols = np.repeat(np.arange(n), lengths)
+    start = np.repeat(np.cumsum(lengths) - lengths, lengths)
+    rows = cols + (np.arange(cols.size) - start)
+    M = sp.vstack([sp.csr_matrix((A[cols, r], (rows, cols)), shape=(n, n))
+                   for r in range(A.shape[1])]).tocsr()                     # one block per resource
+    ub = np.repeat(np.asarray(c, float), n)
+    lp = linprog(-obj, A_ub=M, b_ub=ub, bounds=(0, 1), method="highs")
+    t0 = time.perf_counter()
+    ip = milp(-obj, constraints=LinearConstraint(M, -np.inf, ub), integrality=np.ones(n),
+              bounds=Bounds(0, 1), options=dict(time_limit=time_limit))
+    runtime = time.perf_counter() - t0
+    return dict(x=np.round(ip.x).astype(bool), ip_obj=-float(ip.fun), lp_obj=-float(lp.fun),
+                gap=float(getattr(ip, "mip_gap", np.nan)), status=ip.message, runtime_s=runtime)
+
+
+def peak_occupancy(t, D, A) -> np.ndarray:
+    """Peak over time of the occupancy of jobs [t, t + D) (releases before admissions at a tick)."""
+    t, D, A = np.asarray(t), np.asarray(D), np.asarray(A, float)
+    if t.size == 0:
+        return np.zeros(A.shape[1] if A.ndim == 2 else 0)
+    times = np.r_[t, t + D]
+    d = np.vstack([A, -A])
+    order = np.lexsort((np.r_[np.ones(t.size), np.zeros(t.size)], times))   # -A (0) before +A (1)
+    return np.cumsum(d[order], axis=0).max(axis=0)
 
 
 class Benchmarks:
@@ -86,21 +136,52 @@ class Benchmarks:
         """Offline job-level OPT (MILP) over the jobs with R_job > 0 (others are never chosen)."""
         S, R = self.S, self.R
         cand = np.flatnonzero(R > 0)
-        n = cand.size
-        t, D, A = S.tick[cand], S.D[cand], S.A[cand]
-        # job j occupies the arrival rows k = j .. last[j] (arrivals with t_k < t_j + D_j)
-        last = np.searchsorted(t, t + D, side="left") - 1
-        lengths = last - np.arange(n) + 1
-        cols = np.repeat(np.arange(n), lengths)
-        start = np.repeat(np.cumsum(lengths) - lengths, lengths)
-        rows = cols + (np.arange(cols.size) - start)
-        M = sp.vstack([sp.csr_matrix((A[cols, r], (rows, cols)), shape=(n, n))
-                       for r in range(A.shape[1])]).tocsr()                     # one block per resource
-        ub = np.repeat(self.c, n)
-        lp = linprog(-R[cand], A_ub=M, b_ub=ub, bounds=(0, 1), method="highs")
-        ip = milp(-R[cand], constraints=LinearConstraint(M, -np.inf, ub), integrality=np.ones(n),
-                  bounds=Bounds(0, 1), options=dict(time_limit=time_limit))
+        o = occupancy_milp(S.tick[cand], S.D[cand], S.A[cand], R[cand], self.c, time_limit)
         x = np.zeros(S.n, bool)
-        x[cand] = np.round(ip.x).astype(bool)
-        return dict(x=x, R_ip=float(R[x].sum()), R_lp=-float(lp.fun), R_nocap=float(R[cand].sum()),
-                    gap=float(getattr(ip, "mip_gap", np.nan)), status=ip.message)
+        x[cand] = o["x"]
+        return dict(x=x, R_ip=float(R[x].sum()), R_lp=o["lp_obj"], R_nocap=float(R[cand].sum()),
+                    gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"])
+
+    # ------------------------------------------------------------------ #
+    def bucket_types(self, source: str = "phase0") -> dict:
+        """
+        Type of every stream job under `source` ("phase0": Phase 0's grid / types / r~ from H;
+        "reference": the reference state's refit grid and stream means) and its bucket reward
+        r~_k(j) and type-average duration d_bar_k(j). A job whose type has no observation in that
+        state (p = 0; or no type) gets r~ = 0 and is never chosen ("unseen").
+        """
+        st = {"phase0": self.state0, "reference": self.reference_state}[source]
+        S = self.S
+        k = st.grid.assign(S.v, st.myerson)
+        j = assign_type_ids(st.type_space, np.asarray(k), S.priority, S.hw_idx)
+        jj = np.maximum(j, 0)
+        seen = (j >= 0) & (np.asarray(st.p)[jj] > 0)
+        return dict(type=j, seen=seen, r=np.where(seen, st.r_tilde[jj], 0.0),
+                    d_bar=np.where(seen, st.d_bar[jj], 0.0))
+
+    def job_opt_bucketed(self, source: str = "phase0", duration: str = "true",
+                         time_limit: float = 300.0) -> dict:
+        """
+        Job-level MILP on BUCKETED jobs: max sum_j r~_k(j) x_j over the jobs with r~ > 0, same
+        per-tick capacity, stream, snapped A and drop filter as job_level_opt. duration "true"
+        (variant A) uses each job's true D in the occupancy, "type" (variant B) the type's d_bar
+        (rounded, >= 1 tick); B's set may then exceed c under the TRUE durations, reported as
+        peak_true_occ / c. R_real = sum_j R_job,j x_j (realised), R_believed = sum_j r~ x_j.
+        """
+        S, R = self.S, self.R
+        b = self.bucket_types(source)
+        r = b["r"]
+        cand = np.flatnonzero(r > 0)
+        D_occ = S.D[cand] if duration == "true" else np.maximum(np.rint(b["d_bar"][cand]), 1).astype(np.int64)
+        o = occupancy_milp(S.tick[cand], D_occ, S.A[cand], r[cand], self.c, time_limit)
+        x = np.zeros(S.n, bool)
+        x[cand] = o["x"]
+        peak = peak_occupancy(S.tick[x], S.D[x], S.A[x]) / self.c
+        unseen = ~b["seen"]
+        return dict(x=x, source=source, duration=duration, R_real=float(R[x].sum()),
+                    R_believed=float(r[x].sum()), R_lp_believed=o["lp_obj"],
+                    n_candidates=int(cand.size), n_unseen_jobs=int(unseen.sum()),
+                    n_unseen_types=int(np.unique(b["type"][unseen & (b["type"] >= 0)]).size),
+                    n_chosen_R_neg=int((R[x] < 0).sum()), peak_true_occ_over_c=peak.tolist(),
+                    feasible_true=bool(np.all(peak <= 1 + 1e-9)),
+                    gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"])
