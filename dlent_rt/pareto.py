@@ -159,9 +159,68 @@ def ideal_nadir_fluid(p, comp: Components, v, c):
     return pay.diagonal().copy(), pay.min(axis=0)
 
 
-def chebyshev_fluid(p, comp: Components, v, c, w, ideal, nadir):
+def _fluid_parts(p, comp: Components, v):
+    p = np.asarray(p, float)
+    sup = np.flatnonzero(p > 0)
+    ps, vs = p[sup], np.asarray(v, float)[sup]
+    return p, sup, ps, vs, comp.stack()[sup] * ps[:, None]       # Fk[:, k] = p_j f_kj
+
+
+def chebyshev_fluid(p, comp: Components, v, c, w, ideal, nadir, rho: float = 1e-3):
     """
-    Chebyshev epigraph LP on the fluid problem:
+    STANDARD augmented Chebyshev LP on the fluid problem (larger weight = more important):
+        max  t + rho * sum_k g_k(x)
+        s.t. t <= g_k(x) / w_k   for every k with w_k > 0,
+             g_k(x) = (f_k(x) - nadir_k) / (ideal_k - nadir_k),
+             sum_j p_j v_ij x_j <= c_i,  0 <= x <= 1,
+    f = (CV, PR, -CO) per tick; i.e. the point where the ray from the nadir in direction w meets the front.
+    Objectives with w_k = 0 carry no t-constraint but stay in the augmentation term, so ties are broken towards
+    them and the solution is Pareto-optimal (not only weakly); objectives with ideal_k = nadir_k are dropped.
+    The augmentation trades objectives at a rate of at most rho / (1 + rho). (NOT equivalent to
+    min max_k w_k (ideal_k - f_k) / range_k, which follows the ray from the ideal in direction 1 / w.)
+    Returns x, the per-tick totals, t and the solver message.
+    """
+    p, sup, ps, vs, Fk = _fluid_parts(p, comp, v)
+    n = sup.size
+    rng = np.asarray(ideal, float) - np.asarray(nadir, float)
+    use = rng > 0
+    A, b = [], []
+    for k in range(3):
+        if w[k] <= 0 or not use[k]:
+            continue
+        # w_k t - Fk^T x / rng_k <= -nadir_k / rng_k
+        A.append(np.r_[-Fk[:, k] / rng[k], w[k]])
+        b.append(-nadir[k] / rng[k])
+    for i in range(vs.shape[1]):
+        A.append(np.r_[ps * vs[:, i], 0.0])
+        b.append(float(c[i]))
+    aug = sum(Fk[:, k] / rng[k] for k in range(3) if use[k])
+    res = _linprog(np.r_[-rho * aug, -1.0], A_ub=np.array(A), b_ub=np.array(b),
+                   bounds=[(0, 1)] * n + [(None, None)], method="highs")
+    x = np.zeros(len(p))
+    x[sup] = res.x[:n]
+    return x, fluid_totals(p, comp, x), float(res.x[n]), res.message
+
+
+def fluid_dominance_slack(p, comp: Components, v, c, x, ideal, nadir) -> float:
+    """
+    max sum_k (f_k(y) - f_k(x)) / range_k over feasible fluid y with f_k(y) >= f_k(x) for every k.
+    0 (up to solver tolerance) iff x is Pareto-optimal; > 0 means some y dominates x.
+    """
+    p, sup, ps, vs, Fk = _fluid_parts(p, comp, v)
+    fx = Fk.T @ np.asarray(x, float)[sup]
+    rng = np.where(np.asarray(ideal) - np.asarray(nadir) > 0, np.asarray(ideal) - np.asarray(nadir), 1.0)
+    A = np.vstack([-Fk.T, (ps[:, None] * vs).T])
+    b = np.r_[-fx, np.asarray(c, float)]
+    res = _linprog(-(Fk / rng).sum(axis=1), A_ub=A, b_ub=b, bounds=(0, 1), method="highs")
+    return float(-res.fun - (fx / rng).sum())
+
+
+def chebyshev_fluid_legacy(p, comp: Components, v, c, w, ideal, nadir):
+    """
+    LEGACY (inverted weight orientation, kept for reference only): a larger w_k makes objective k's
+    constraint LOOSER, i.e. objective k matters LESS; not augmented, so the optimum is degenerate (t is set by
+    the smallest positive weight) and only weakly Pareto.
         max t  s.t.  t <= w_k (f_k(x) - nadir_k) / (ideal_k - nadir_k)   for every k with w_k > 0,
                      sum_j p_j v_ij x_j <= c_i,  0 <= x <= 1,
     f = (CV, PR, -CO) per tick. Objectives with w_k = 0 (or ideal_k = nadir_k) carry no constraint.
@@ -190,11 +249,26 @@ def chebyshev_fluid(p, comp: Components, v, c, w, ideal, nadir):
     return x, fluid_totals(p, comp, x), float(res.x[n]), res.message
 
 
-def chebyshev_discrete(F: np.ndarray, w, ideal, nadir) -> int:
-    """Index of the row of F (maximised) that maximises min_k w_k (F_k - nadir_k) / (ideal_k - nadir_k)
-    over the objectives with w_k > 0 (discrete candidate set, e.g. a non-convex front)."""
+def chebyshev_discrete(F: np.ndarray, w, ideal, nadir, rho: float = 1e-3) -> int:
+    """Index of the row of F (maximised) that maximises the STANDARD augmented Chebyshev value
+    min_{k: w_k > 0} g_k / w_k + rho * sum_k g_k, g_k = (F_k - nadir_k) / (ideal_k - nadir_k), over a discrete
+    candidate set (e.g. a non-convex front). Larger weight = more important."""
     F = np.asarray(F, float)
     w, ideal, nadir = (np.asarray(a, float) for a in (w, ideal, nadir))
-    keep = (w > 0) & (ideal > nadir)
-    s = (w[keep] * (F[:, keep] - nadir[keep]) / (ideal[keep] - nadir[keep])).min(axis=1)
+    use = ideal > nadir
+    g = (F[:, use] - nadir[use]) / (ideal[use] - nadir[use])
+    wk = w[use]
+    s = (g[:, wk > 0] / wk[wk > 0]).min(axis=1) + rho * g.sum(axis=1)
     return int(np.argmax(s))
+
+
+def perturbations(factors=(2.0, 0.5), centre=CENTRE) -> list:
+    """The centre and, for each k, lambda_k scaled by every factor with the other weights at the centre:
+    [(label, k or None, factor or None, lambda), ...] (Kash: "does every lambda matter?")."""
+    out = [("centre", None, None, tuple(centre))]
+    for k in range(3):
+        for f in factors:
+            lam = list(centre)
+            lam[k] = centre[k] * f
+            out.append((f"lambda{k + 1} x{f:g}", k, f, tuple(float(x) for x in lam)))
+    return out

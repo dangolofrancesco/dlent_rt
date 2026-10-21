@@ -1,0 +1,14 @@
+l1,l2,l3,s_C,"s_C same as (1,1,1)",grid edges same,hardware profiles same,job components same,tau_0,DLENT end reasons,DLENT runtime s
+3.0,0.0,0.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 2, 'test2': 0, 'test3': 2, 'timeout': 6, 'horizon': 1}",461.90546798706055
+0.0,3.0,0.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 1, 'test2': 0, 'test3': 0, 'timeout': 6, 'horizon': 1}",476.8734452724457
+0.0,0.0,3.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",258.6886327266693
+1.0,1.0,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",430.894159078598
+1.5,1.5,0.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 2, 'test2': 0, 'test3': 1, 'timeout': 6, 'horizon': 1}",369.5793151855469
+1.5,0.0,1.5,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",492.1971561908722
+0.0,1.5,1.5,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",259.5613441467285
+2.0,1.0,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 1, 'test2': 0, 'test3': 0, 'timeout': 4, 'horizon': 1}",560.6211078166962
+0.5,1.0,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",370.9449141025543
+1.0,2.0,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",417.13260102272034
+1.0,0.5,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",444.04669284820557
+1.0,1.0,2.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",314.36448097229004
+1.0,1.0,0.5,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 1, 'test2': 0, 'test3': 0, 'timeout': 4, 'horizon': 1}",391.49371790885925

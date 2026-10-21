@@ -1,0 +1,17 @@
+,value
+commit,08e9627e09c29a50a6c24ba8bdef4a31d07c3f27
+configs/default.yaml blob,68e7bd76b57c376cae6d74139f11cc456559520b
+config,git show HEAD:configs/default.yaml -> temporary <tmpdir>/default_committed.yaml (deleted after loading); the working-copy configs/default.yaml is not read
+seed,42
+T,1432910
+n_stream,15308
+s_C,228.18428294842903
+c_cpu,3.945451813796988
+c_ram,2.55509827483352
+chebyshev rho,0.001
+"fluid ideal (CV, PR, -CO) per tick","[0.10905402166044786, 0.03409764352296922, -0.0]"
+"fluid nadir (CV, PR, -CO) per tick","[0.0, 0.0, -0.06429014554889798]"
+"hypervolume reference point (CV, PR, -CO) $","[-1562.6459817747236, -525.7968424060596, -93043.21238305612]"
+StaticPolicy/DLENT-RT runs (parallel) wall s,1438.5918850898743
+"DLENT-RT perturbation runs, sum of run times s",2498.6035146713257
+total runtime s,1439.0317718982697

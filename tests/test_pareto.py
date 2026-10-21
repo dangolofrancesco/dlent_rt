@@ -66,9 +66,48 @@ def test_fluid_corners_are_single_objective_optima():
     ideal, nadir = pareto.ideal_nadir_fluid(p, comp, v, c)
     assert np.all(ideal >= nadir)
     for k, w in enumerate(np.eye(3)):                       # Chebyshev with one weight = that objective's optimum
-        _, tot, t, _ = pareto.chebyshev_fluid(p, comp, v, c, w, ideal, nadir)
+        _, tot, t, _ = pareto.chebyshev_fluid(p, comp, v, c, w, ideal, nadir, rho=0.0)
         f = (tot["CV"], tot["PR"], -tot["CO"])[k]
         assert f == pytest.approx(ideal[k], rel=1e-7, abs=1e-9) and t == pytest.approx(1.0, rel=1e-7)
+        x, tot, t, _ = pareto.chebyshev_fluid(p, comp, v, c, w, ideal, nadir, rho=1e-3)   # augmented
+        f = (tot["CV"], tot["PR"], -tot["CO"])[k]
+        assert f >= ideal[k] - 1e-2 * (ideal[k] - nadir[k])
+        assert pareto.fluid_dominance_slack(p, comp, v, c, x, ideal, nadir) < 1e-7      # not dominated
+        _, tot, t, _ = pareto.chebyshev_fluid_legacy(p, comp, v, c, w, ideal, nadir)
+        f = (tot["CV"], tot["PR"], -tot["CO"])[k]
+        assert f == pytest.approx(ideal[k], rel=1e-7, abs=1e-9)
+
+
+def _f(tot):
+    return np.array([tot["CV"], tot["PR"], -tot["CO"]])
+
+
+def test_chebyshev_standard_larger_weight_means_more_important():
+    p, comp, v, c = _toy_fluid()
+    ideal, nadir = pareto.ideal_nadir_fluid(p, comp, v, c)
+    base = np.full(3, 1 / 3)
+    x0, t0, _, _ = pareto.chebyshev_fluid(p, comp, v, c, base, ideal, nadir)
+    assert pareto.fluid_dominance_slack(p, comp, v, c, x0, ideal, nadir) < 1e-7
+    for k in range(3):
+        for f in (2.0, 4.0):
+            w = base.copy()
+            w[k] *= f
+            x, tot, _, _ = pareto.chebyshev_fluid(p, comp, v, c, w, ideal, nadir)
+            assert _f(tot)[k] >= _f(t0)[k] - 1e-9 * (ideal[k] - nadir[k] + 1)    # not lower
+            assert pareto.fluid_dominance_slack(p, comp, v, c, x, ideal, nadir) < 1e-7
+
+
+def test_chebyshev_legacy_orientation_is_inverted():
+    p, comp, v, c = _toy_fluid()
+    ideal, nadir = pareto.ideal_nadir_fluid(p, comp, v, c)
+    lower = []
+    for k in range(3):
+        w = np.full(3, 1 / 3)
+        _, t0, _, _ = pareto.chebyshev_fluid_legacy(p, comp, v, c, w, ideal, nadir)
+        w[k] *= 2
+        _, t1, _, _ = pareto.chebyshev_fluid_legacy(p, comp, v, c, w, ideal, nadir)
+        lower.append(_f(t1)[k] < _f(t0)[k] - 1e-9)
+    assert any(lower)                                       # raising a weight lowers that objective
 
 
 def test_nondominated_and_hypervolume():
@@ -88,3 +127,15 @@ def test_chebyshev_finds_the_unsupported_point():
     assert 2 not in picked_ws                               # the weighted sum never selects it
     ideal, nadir = F.max(axis=0), F.min(axis=0)
     assert pareto.chebyshev_discrete(F, (0.5, 0.5, 0.0), ideal, nadir) == 2
+    # corners: only that objective counts (augmentation breaks ties); a positive weight on the other objective
+    # makes the nadir-ray Chebyshev prefer the compromise (0.4, 0.4) over the extreme with a 0 in it
+    assert pareto.chebyshev_discrete(F, (1.0, 0.0, 0.0), ideal, nadir) == 0
+    assert pareto.chebyshev_discrete(F, (0.0, 1.0, 0.0), ideal, nadir) == 1
+    assert pareto.chebyshev_discrete(F, (0.9, 0.1, 0.0), ideal, nadir) == 2
+
+
+def test_perturbations():
+    pts = pareto.perturbations()
+    assert pts[0] == ("centre", None, None, (1.0, 1.0, 1.0)) and len(pts) == 7
+    assert {lam for *_, lam in pts[1:]} == {(2.0, 1.0, 1.0), (0.5, 1.0, 1.0), (1.0, 2.0, 1.0), (1.0, 0.5, 1.0),
+                                            (1.0, 1.0, 2.0), (1.0, 1.0, 0.5)}
