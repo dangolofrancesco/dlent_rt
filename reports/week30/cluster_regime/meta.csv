@@ -1,0 +1,4 @@
+,value
+commit,a13c15984d4e9d3fe13fd0f86e5963bd2fd099e3
+configs/default.yaml blob,68e7bd76b57c376cae6d74139f11cc456559520b
+config,git show HEAD:configs/default.yaml -> temporary file (deleted)

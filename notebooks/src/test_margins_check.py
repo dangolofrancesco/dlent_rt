@@ -2,7 +2,7 @@
 Test margins (week 30, read-only): for every phase of a DLENT-RT run and every test, the maximum
 over the checked ticks of (statistic / threshold) and the tick where it is reached.
 
-    dlent_venv/bin/python notebooks/src/test_margins_check.py [default|binding|both]
+    dlent_venv/bin/python notebooks/src/test_margins_check.py [default|binding|f0.2|both]
 
 The tests are the monitor's (dlent_rt/models/core/monitor.py). RecordingMonitor.scan is a
 VERBATIM copy of PhaseMonitor.scan plus logging, so the run must reproduce the plain run exactly;
@@ -197,7 +197,10 @@ def configs():
     binding = replace(base, capacity=replace(base.capacity, mode="fraction_of_concurrency_quantile",
                                              fraction=0.3, concurrency_quantile=0.7,
                                              drop_jobs_exceeding_capacity=True)).validate()
-    return {"default": base, "binding": binding}
+    f02 = replace(base, capacity=replace(base.capacity, mode="fraction_of_concurrency_quantile",
+                                         fraction=0.2, concurrency_quantile=0.7,
+                                         drop_jobs_exceeding_capacity=True)).validate()
+    return {"default": base, "binding": binding, "f0.2": f02}
 
 
 def thresholds(ep, ds, n_list):
@@ -266,6 +269,11 @@ def check_against_cache(name, res):
         same = np.isclose(res.summary["R_total"], snap["on_R_total"][0], rtol=0, atol=0) and \
             len(res.phases) == len(snap["on_phases"])
         return f"vs tests/data/snapshot_real.npz: R_total and phase count {'IDENTICAL' if same else 'DIFFER'}"
+    if name == "f0.2":
+        import json
+        o = json.loads((OUT / "capacity_scan_online_f0.2.json").read_text())
+        same = np.isclose(res.summary["R_total"], o["R_DLENT"], rtol=1e-12) and len(res.phases) == int(o["n_phases"])
+        return f"vs capacity_scan_online_f0.2.json: R_total and phase count {'IDENTICAL' if same else 'DIFFER'}"
     sw = pd.read_csv(OUT / "table08_capacity_grid_sweep_full.csv", index_col=[0, 1])
     row = sw.loc[(0.3, "default (k*=128, hw=32)")]
     same = np.isclose(res.summary["R_total"], row["R DLENT-RT $"], rtol=1e-12) and \
