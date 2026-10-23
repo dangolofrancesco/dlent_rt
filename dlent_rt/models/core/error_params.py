@@ -10,10 +10,14 @@ from the paper are explicit and switchable:
   * eps_E (A.8) and eps_F (A.9) are 0 in the Exact-LP variant
     (cfg.tests.drop_dual_learning_terms, week 17): they bound the error of the
     stochastic dual-learning Algorithm 2, which we replace by the exact LP-RS.
+Ablations (cfg.ablation, default off; week 30) act on the THINNING only:
+  * thin_off       -> p_U = 1;
+  * eps_D_thin     -> the eps_D used inside eps_U / p_U (eps_D itself, used by Test 2, is unchanged).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -30,6 +34,9 @@ class ErrorParams:
     # provenance (logged)
     gamma_data: float = float("nan")
     xi_data: float = float("nan")
+    # thinning ablations (cfg.ablation; None / False = the theory model)
+    thin_off: bool = False
+    eps_D_thin: Optional[float] = None
 
     # log terms
     @property
@@ -86,11 +93,18 @@ class ErrorParams:
         raise NotImplementedError("see eps_E")
 
     # thinning (Algorithm 1, line 16) with eps~_U from Appendix A
+    @property
+    def eps_D_thinning(self) -> float:
+        """The eps_D used by the thinning (= eps_D unless an A1b / A1c ablation is on)."""
+        return self.eps_D if self.eps_D_thin is None else float(self.eps_D_thin)
+
     def eps_U(self, W_prev: int, t_minus_tau: int) -> float:
-        return float(self.eps_D + self.eps_E(W_prev, 0)
+        return float(self.eps_D_thinning + self.eps_E(W_prev, 0)
                      + self.eta(W_prev) + self.eta(t_minus_tau))
 
     def p_U(self, W_prev: int, t_minus_tau: int) -> float:
+        if self.thin_off:                                   # ablation A1a
+            return 1.0
         return float((1.0 - self.xi) / (1.0 + self.eps_U(W_prev, t_minus_tau)))
 
     # Test 2 (A.12): eps~_Test2^(m)(t) with CI^(1)(tau_{m-1}+1 : t), n = t - tau_{m-1}
@@ -118,7 +132,7 @@ class ErrorParams:
         return dict(gamma=self.gamma, xi=self.xi, gamma_data=self.gamma_data,
                     xi_data=self.xi_data, c_min=self.c_min, n_res=self.n_res,
                     T=self.T, delta=self.delta, eps_D=self.eps_D,
-                    drop_EF=self.drop_EF)
+                    drop_EF=self.drop_EF, thin_off=self.thin_off, eps_D_thinning=self.eps_D_thinning)
 
 
 def make_error_params(state, ds, cfg) -> ErrorParams:
@@ -129,9 +143,18 @@ def make_error_params(state, ds, cfg) -> ErrorParams:
         delta = 1.0 / (T ** cfg.confidence.delta_power)
     gamma = cfg.constants.gamma_override if cfg.constants.gamma_override is not None else state.gamma
     xi = cfg.constants.xi_override if cfg.constants.xi_override is not None else state.xi
+    ab = getattr(cfg, "ablation", None)
+    eps_D_thin = None
+    if ab is not None and ab.thinning_eps_D_zero:                       # A1c
+        eps_D_thin = 0.0
+    elif ab is not None and ab.thinning_delta_power is not None:        # A1b: (A.7) with delta = 1/T^k
+        log_I = float(np.log(int(ds.n_resources) * float(T) ** int(ab.thinning_delta_power)))
+        eps_D_thin = 2.0 * np.sqrt(float(xi) * log_I) + 2.0 * float(xi) * log_I
     return ErrorParams(
         gamma=float(gamma), xi=float(xi), c_min=float(np.min(ds.capacity)),
         n_res=int(ds.n_resources), T=T, delta=float(delta),
         drop_EF=cfg.tests.drop_dual_learning_terms,
         gamma_data=float(state.gamma), xi_data=float(state.xi),
+        thin_off=bool(ab.thinning_off) if ab is not None else False,
+        eps_D_thin=None if eps_D_thin is None else float(eps_D_thin),
     )

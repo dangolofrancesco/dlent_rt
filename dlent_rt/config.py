@@ -252,6 +252,24 @@ class OnlineCfg:
 
 
 @dataclass(frozen=True)
+class AblationCfg:
+    """
+    Ablations of the theory model (week 30, round 1). Every default is OFF: with all of them off the model is the
+    theory run, bit-identical. They change only the quantity named here.
+      thinning_off           A1a: p_U(t) = 1 (no Bernoulli thinning); the oracle and the physical gate stay.
+      thinning_delta_power   A1b: eps_D INSIDE p_U is computed with delta = 1/T^k (None = the run's delta);
+                             the tests keep the run's delta (confidence.*).
+      thinning_eps_D_zero    A1c: eps_D = 0 INSIDE p_U only (cap (1 - xi)); Test 2 keeps 1 - eps_D - xi.
+      fixed_grid             A3: ReInit never refits the valuation grid; every phase keeps the previous phase's
+                             grid, i.e. Phase 0's (the per-type statistics are still re-estimated).
+    """
+    thinning_off: bool = False
+    thinning_delta_power: Optional[int] = None
+    thinning_eps_D_zero: bool = False
+    fixed_grid: bool = False
+
+
+@dataclass(frozen=True)
 class LoggingCfg:
     per_step: bool = True
     per_phase: bool = True
@@ -284,6 +302,7 @@ class Config:
     constants: ConstantsCfg = field(default_factory=ConstantsCfg)
     tests: TestsCfg = field(default_factory=TestsCfg)
     online: OnlineCfg = field(default_factory=OnlineCfg)
+    ablation: AblationCfg = field(default_factory=AblationCfg)
 
     #  validation 
     def validate(self) -> "Config":
@@ -300,6 +319,10 @@ class Config:
         assert 0.0 < self.capacity.concurrency_quantile <= 1.0
         assert 0.0 < self.capacity.fraction <= 1.0
         assert isinstance(self.capacity.drop_jobs_exceeding_capacity, bool)
+        ab = self.ablation
+        assert ab.thinning_delta_power is None or int(ab.thinning_delta_power) >= 1
+        assert not (ab.thinning_eps_D_zero and ab.thinning_delta_power is not None), \
+            "ablation: thinning_eps_D_zero and thinning_delta_power both set the thinning eps_D"
         assert self.grid.k_star >= 2
         assert 0.0 < self.time.d_max_quantile <= 1.0
         assert 0.0 < self.time.d_max_horizon_fraction <= 1.0
@@ -379,6 +402,7 @@ _DATACLASS_REGISTRY = {
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
     "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
+    "AblationCfg": AblationCfg,
 }
 
 

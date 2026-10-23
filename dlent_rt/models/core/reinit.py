@@ -60,7 +60,7 @@ def _means(tid: np.ndarray, n_types: int, cols: dict) -> tuple[np.ndarray, dict]
 
 def build_window_state(
     stream: StreamData, idx_arr: np.ndarray, idx_obs: np.ndarray, W: int,
-    prev: PhaseState, ds, cfg, fallback: bool = True,
+    prev: PhaseState, ds, cfg, fallback: bool = True, refit_grid: bool = True,
 ) -> tuple[PhaseState, ReinitDiag]:
     ts = prev.type_space
     n_types = ts.n_types
@@ -69,7 +69,8 @@ def build_window_state(
     v_arr = stream.v[idx_arr]
 
     # grid / F_hat refit (write-up Alg. 3 lines 2-6; reuse if too few arrivals)
-    refit = idx_arr.size >= cfg.phase_transition.n_min and idx_arr.size >= 2
+    # refit_grid=False (ablation A3, cfg.ablation.fixed_grid): keep the previous phase's grid
+    refit = refit_grid and idx_arr.size >= cfg.phase_transition.n_min and idx_arr.size >= 2
     if refit:
         if prev.myerson.known:
             myerson = prev.myerson

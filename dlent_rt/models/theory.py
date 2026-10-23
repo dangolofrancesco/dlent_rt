@@ -120,7 +120,8 @@ class TheoryModel:
             short=bool(arr.size < self.cfg.phase_transition.n_min),
         )
         if reinit:
-            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg)
+            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg,
+                                         refit_grid=not self.cfg.ablation.fixed_grid)    # ablation A3
             rec.update(reinit_grid_refit=dg.grid_refit, reinit_types_seen=dg.n_types_seen,
                        reinit_value_fallback=dg.n_value_fallback,
                        reinit_dur_fallback=dg.n_dur_fallback,

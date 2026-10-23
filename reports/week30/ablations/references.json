@@ -1,0 +1,16 @@
+{
+ "job MILP $": 120742.01580197633,
+ "job MILP gap": 9.913961929749156e-05,
+ "job MILP status": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+ "feasible ceiling $": 141126.61504960162,
+ "static Phase 0 $": 44716.9377275735,
+ "commit": "eba0c633ca91d6734edee66910deffb108cfa85c",
+ "default_blob": "68e7bd76b57c376cae6d74139f11cc456559520b",
+ "regime": "configs/regime_small_cluster.yaml",
+ "regime_blob": "a0d29b5313ea41184961aa085366bc988c5dd7d0",
+ "static + thinning $ (offset 2)": 31285.946279129654,
+ "static + thinning $ (offset 3)": 29834.03319494576,
+ "static + thinning $ (offset 4)": 30025.445834379243,
+ "static + thinning $ (offset 5)": 31872.125399284625,
+ "static + thinning $ (offset 6)": 32225.42817128745
+}
