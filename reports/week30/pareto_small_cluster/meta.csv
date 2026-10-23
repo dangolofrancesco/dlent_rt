@@ -1,0 +1,20 @@
+,value
+commit,3549fc97caa8d93b2d86262bc166391a07aad322
+configs/default.yaml blob,68e7bd76b57c376cae6d74139f11cc456559520b
+regime,configs/regime_small_cluster.yaml
+regime blob,a0d29b5313ea41184961aa085366bc988c5dd7d0
+config,git show HEAD:configs/default.yaml + capacity of git show HEAD:configs/regime_small_cluster.yaml -> temporary file (deleted after loading); the working-copy configs/default.yaml is not read
+"capacity (norm) cpu, ram","[0.4014237441083392, 0.2616208305922613]"
+seed,42
+T,1432910
+n_stream,15308
+s_C,228.18428294842903
+c_cpu,0.4014237441083392
+c_ram,0.2616208305922613
+chebyshev rho,0.001
+"fluid ideal (CV, PR, -CO) per tick","[0.09104116882249508, 0.027970794977086374, -0.0]"
+"fluid nadir (CV, PR, -CO) per tick","[0.0, 0.0, -0.012384105755543353]"
+"hypervolume reference point (CV, PR, -CO) $","[-1304.5380121744142, -400.79631830616836, -17922.81388072532]"
+StaticPolicy/DLENT-RT runs (parallel) wall s,1025.0418429374695
+"DLENT-RT perturbation runs, sum of run times s",1501.840488910675
+total runtime s,1025.3519079685211

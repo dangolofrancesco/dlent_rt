@@ -26,6 +26,7 @@ Totals are $ over the stream (fluid: per tick * T). One row per (model, lambda) 
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from dlent_rt import pareto
 from dlent_rt.benchmarks import Benchmarks, occupancy_milp
@@ -50,20 +52,21 @@ from dlent_rt.models.policy import JobGreedyPolicy, StaticPolicy, run_policy
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.phase0 import run_phase0
 
-OUT = ROOT / "reports" / "week30" / "pareto"
+# named regime (optional): DLENT_REGIME=configs/regime_<name>.yaml overrides ONLY the committed capacity
+# (scripts/regime_config.py, both files from git HEAD); results then go to reports/week30/pareto_<name>/
+REGIME = os.environ.get("DLENT_REGIME") or None
+REGIME_TAG = Path(REGIME).stem.replace("regime_", "") if REGIME else None
+OUT = ROOT / "reports" / "week30" / (f"pareto_{REGIME_TAG}" if REGIME else "pareto")
 MILP_TL = 600.0
 MAX_WORKERS = 4                                       # ~1 GB per DLENT-RT run: 13 at once swap a 16 GB machine
 RHO = 1e-3                                            # augmentation of the standard Chebyshev LP
 
 
 def committed_config():
-    txt = subprocess.check_output(["git", "-C", str(ROOT), "show", "HEAD:configs/default.yaml"], text=True)
-    commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "default_committed.yaml"
-        p.write_text(txt)
-        cfg = load_config(p)
-    return cfg, commit
+    """The committed default (+ the named regime's capacity when DLENT_REGIME is set)."""
+    from regime_config import committed_with_regime
+    cfg, info = committed_with_regime(REGIME)
+    return cfg, info["commit"]
 
 
 def with_lambda(cfg, lam):
@@ -237,9 +240,13 @@ def main():
                          "d sum_PR": r.sum_PR - r0.sum_PR, "d sum_CO": r.sum_CO - r0.sum_CO})
     pdf = pd.DataFrame(prow)
 
+    regime_blob = (subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", f"HEAD:{REGIME}"], text=True).strip()
+                   if REGIME else "-")
     meta = pd.Series({"commit": commit, "configs/default.yaml blob": blob,
-                      "config": "git show HEAD:configs/default.yaml -> temporary <tmpdir>/default_committed.yaml "
-                                "(deleted after loading); the working-copy configs/default.yaml is not read",
+                      "regime": REGIME or "none (committed default)", "regime blob": regime_blob,
+                      "config": "git show HEAD:configs/default.yaml" + (f" + capacity of git show HEAD:{REGIME}" if REGIME else "")
+                                + " -> temporary file (deleted after loading); the working-copy configs/default.yaml is not read",
+                      "capacity (norm) cpu, ram": str(np.asarray(ds.capacity, float).tolist()),
                       "seed": cfg.run.seed, "T": T, "n_stream": S.n, "s_C": st.carbon_price, "c_cpu": c[0],
                       "c_ram": c[1], "chebyshev rho": RHO,
                       "fluid ideal (CV, PR, -CO) per tick": str(ideal.tolist()),

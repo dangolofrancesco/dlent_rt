@@ -1,0 +1,14 @@
+l1,l2,l3,s_C,"s_C same as (1,1,1)",grid edges same,hardware profiles same,job components same,tau_0,DLENT end reasons,DLENT runtime s
+3.0,0.0,0.0,228.18428294842903,True,True,True,True,[0.049146 0.077135],"{'test1': 2, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",449.2971441745758
+0.0,3.0,0.0,228.18428294842903,True,True,True,True,[0.018266 0.024516],"{'test1': 1, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",416.75789499282837
+0.0,0.0,3.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 0, 'test2': 0, 'test3': 0, 'timeout': 5, 'horizon': 1}",126.17174315452576
+1.0,1.0,1.0,228.18428294842903,True,True,True,True,[0.       0.020386],"{'test1': 1, 'test2': 1, 'test3': 0, 'timeout': 6, 'horizon': 1}",370.9512679576874
+1.5,1.5,0.0,228.18428294842903,True,True,True,True,[0.034636 0.044358],"{'test1': 2, 'test2': 1, 'test3': 0, 'timeout': 6, 'horizon': 1}",380.544086933136
+1.5,0.0,1.5,228.18428294842903,True,True,True,True,[0.       0.010304],"{'test1': 2, 'test2': 0, 'test3': 0, 'timeout': 8, 'horizon': 1}",254.33468580245972
+0.0,1.5,1.5,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 2, 'test2': 1, 'test3': 0, 'timeout': 7, 'horizon': 1}",215.30476212501526
+2.0,1.0,1.0,228.18428294842903,True,True,True,True,[0.00746  0.059903],"{'test1': 2, 'test2': 1, 'test3': 0, 'timeout': 6, 'horizon': 1}",299.1775460243225
+0.5,1.0,1.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 3, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",213.27990794181824
+1.0,2.0,1.0,228.18428294842903,True,True,True,True,[0.       0.033903],"{'test1': 1, 'test2': 1, 'test3': 0, 'timeout': 6, 'horizon': 1}",283.1986448764801
+1.0,0.5,1.0,228.18428294842903,True,True,True,True,[0.       0.013628],"{'test1': 3, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",231.2632110118866
+1.0,1.0,2.0,228.18428294842903,True,True,True,True,[0. 0.],"{'test1': 3, 'test2': 1, 'test3': 0, 'timeout': 9, 'horizon': 1}",206.28602600097656
+1.0,1.0,0.5,228.18428294842903,True,True,True,True,[0.005589 0.033425],"{'test1': 2, 'test2': 1, 'test3': 0, 'timeout': 6, 'horizon': 1}",268.63515305519104

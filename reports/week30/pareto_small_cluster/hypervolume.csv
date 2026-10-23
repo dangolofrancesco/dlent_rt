@@ -1,0 +1,15 @@
+model,points,n_points,hypervolume
+Chebyshev fluid LP,all its grid points,16,53322189447721.11
+Chebyshev fluid LP,7-point subset,7,38125427348724.03
+"Chebyshev fluid LP (legacy, inverted)",all its grid points,16,51396243034506.61
+"Chebyshev fluid LP (legacy, inverted)",7-point subset,7,38092686033959.016
+DLENT-RT theory,all its grid points,7,4653936190420.148
+DLENT-RT theory,7-point subset,7,4653936190420.148
+G2 job greedy,all its grid points,16,41529484675769.93
+G2 job greedy,7-point subset,7,34852093978833.86
+StaticPolicy (Phase 0),all its grid points,7,5783337219158.747
+StaticPolicy (Phase 0),7-point subset,7,5783337219158.747
+fluid LP OPT,all its grid points,16,47052200072704.336
+fluid LP OPT,7-point subset,7,32048468834005.965
+job-level MILP,all its grid points,16,47441454374112.625
+job-level MILP,7-point subset,7,41032450224275.234

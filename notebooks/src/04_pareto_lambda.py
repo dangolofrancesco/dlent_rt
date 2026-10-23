@@ -21,7 +21,7 @@
 # script first. Build: `python notebooks/src/build.py 04_pareto_lambda --execute`.
 
 # %%
-import subprocess, sys
+import os, subprocess, sys
 from pathlib import Path
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
@@ -32,8 +32,12 @@ ROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "dlent_rt").is_
 sys.path.insert(0, str(ROOT))
 from dlent_rt import pareto
 
-PDIR = ROOT / "reports" / "week30" / "pareto"
-FIGS = PDIR / "figs"
+# named regime (optional): DLENT_REGIME=configs/regime_<name>.yaml -> the cache of scripts/pareto_run.py run with the
+# same variable (reports/week30/pareto_<name>/), figures in reports/week30/figs_<name>/
+REGIME = os.environ.get("DLENT_REGIME") or None
+REGIME_TAG = Path(REGIME).stem.replace("regime_", "") if REGIME else None
+PDIR = ROOT / "reports" / "week30" / (f"pareto_{REGIME_TAG}" if REGIME else "pareto")
+FIGS = ROOT / "reports" / "week30" / f"figs_{REGIME_TAG}" if REGIME else PDIR / "figs"
 FIGS.mkdir(parents=True, exist_ok=True)
 for f in ("results.csv", "hypervolume.csv", "perturbations.csv", "lambda_invariance_checks.csv", "meta.csv"):
     if not (PDIR / f).is_file():
@@ -50,6 +54,14 @@ print(f"NB04 RUN MARKER  notebook built at commit {NB_COMMIT}; results cached at
 print(f"configs/default.yaml blob: results {META['configs/default.yaml blob']}, notebook HEAD {NB_BLOB}"
       f" ({'same' if META['configs/default.yaml blob'] == NB_BLOB else 'DIFFERENT'})")
 print(f"config file used: {META['config']}")
+if REGIME:
+    NB_REGIME_BLOB = _git("rev-parse", f"HEAD:{REGIME}")
+    assert META.get("regime") == REGIME, (META.get("regime"), REGIME)
+    print(f"regime {REGIME}: blob results {META['regime blob']}, notebook HEAD {NB_REGIME_BLOB} "
+          f"({'same' if META['regime blob'] == NB_REGIME_BLOB else 'DIFFERENT'}); capacity (norm) {META['capacity (norm) cpu, ram']}")
+    # the job components (CV, PR, CO) and s_C do not depend on the capacity without the drop filter: s_C = 228.18
+    assert abs(float(META["s_C"]) - 228.18428294842903) < 1e-9, META["s_C"]
+    print("s_C unchanged by the regime:", META["s_C"])
 print(f"seed {META['seed']}  |stream| = {int(float(META['n_stream'])):,}  T = {int(float(META['T'])):,}  "
       f"s_C = {float(META['s_C']):.4f} $/kgCO2  Chebyshev rho = {META['chebyshev rho']}")
 ALL["lambda"] = [f"({a:g}, {b:g}, {c:g})" for a, b, c in zip(ALL.l1, ALL.l2, ALL.l3)]
@@ -100,8 +112,9 @@ for m in MODELS:
 # ## 3. Corners and degenerate cases
 #
 # * λ = (3, 0, 0): R = 3·CV = 3·q·v > 0 for every job. The job-level models (MILP, G2) want every job and are limited
-#   by the per-tick capacity only; the fluid LP admits every type (its average capacity is slack); StaticPolicy and
-#   DLENT-RT admit every type seen in H (types unseen in H have r̃ = 0) up to the physical gate (and thinning).
+#   by the per-tick capacity only; the fluid LP admits every type if its average capacity is slack (the default
+#   cluster), otherwise a fraction; StaticPolicy and DLENT-RT admit every type seen in H (types unseen in H have r̃ = 0)
+#   up to the physical gate (and thinning).
 # * λ = (0, 3, 0): R = 3·PR, admit the jobs with φ_job > C_elec (the profitable ones), carbon ignored.
 # * λ = (0, 0, 3): R = −3·CO ≤ 0 for every job: **admit nothing** for every weighted-sum model (a job with K = 0 has
 #   R = 0, not > 0). The frontier point is (0, 0, 0): degenerate.
@@ -116,11 +129,15 @@ def label(r):
         return "admit nothing (degenerate: R <= 0 for every job)"
     if r.l1 > 0:                                           # CV corner: R = 3 q v > 0 for every job
         if r.model in ("fluid LP OPT", "Chebyshev fluid LP"):
-            return "every type admitted (x = 1): the average-occupancy capacity is slack"
+            if r.n_admitted >= float(META["n_stream"]) - 0.5:
+                return "every type admitted (x = 1): the average-occupancy capacity is slack"
+            return "capacity binds on average: the fluid LP admits a fraction of the types"
         if r.model in ("StaticPolicy (Phase 0)", "DLENT-RT theory"):
             return ("every type SEEN in H has r~ > 0 (unseen types have r~ = 0 and stay rejected); "
                     "then the physical gate" + (" and thinning" if r.model.startswith("DLENT") else ""))
         return "every job has R > 0: admit-all up to the per-tick capacity"
+    if r.l3 > 0:                                           # CO corner: only Chebyshev admits anything
+        return "admit only (near-)zero-carbon types: the augmentation term breaks the tie at CO = 0"
     return "admit the profitable jobs / types (PR > 0), carbon ignored"
 corner = corner.assign(corner_solution=corner.apply(label, axis=1))
 display(corner[["model", "lambda", "n_admitted", "sum_CV", "sum_PR", "sum_CO", "corner_solution"]]
@@ -353,3 +370,41 @@ display(st_[["sum_CV", "sum_PR", "sum_CO", "chebyshev_t"]].join(
 # %%
 display(ALL.groupby("model")["runtime_s"].agg(["count", "sum", "max"]).style.format(precision=2))
 print(f"total script runtime: {float(META['total runtime s']):,.0f} s")
+
+# %% [markdown]
+# ## 13. All tables as markdown (`nb04_tables.md` in the results folder)
+
+# %%
+def _fmt(v):
+    if isinstance(v, (bool, np.bool_)):
+        return str(v)
+    if isinstance(v, (int, np.integer)):
+        return f"{v:,}"
+    if isinstance(v, (float, np.floating)):
+        return "nan" if not np.isfinite(v) else (f"{v:,.2f}" if abs(v) >= 1 or v == 0 else f"{v:.3g}")
+    return str(v)
+
+
+def md_table(df, index_name):
+    head = "| " + index_name + " | " + " | ".join(map(str, df.columns)) + " |"
+    sep = "|" + "---|" * (len(df.columns) + 1)
+    body = ["| " + " / ".join(map(str, k if isinstance(k, tuple) else (k,))) + " | "
+            + " | ".join(_fmt(v) for v in row) + " |" for k, row in zip(df.index, df.itertuples(index=False))]
+    return "\n".join([head, sep, *body])
+
+
+main_cols = ["sum_CV", "sum_PR", "sum_CO", "scalarised", "n_admitted", "nondominated"]
+md = [f"# nb04 tables{' — regime ' + REGIME if REGIME else ''} (generated by the notebook; do not edit by hand)\n",
+      f"Results cached at commit `{META['commit']}`, configs/default.yaml blob `{META['configs/default.yaml blob']}`"
+      + (f", regime blob `{META['regime blob']}`" if REGIME else "") + f"; s_C = {float(META['s_C']):.4f}.\n"]
+for m in MODELS:
+    g = RES[RES.model == m].set_index("lambda")[main_cols]
+    md += [f"## {m}\n", md_table(g, "lambda"), ""]
+md += ["## Corners\n", md_table(corner[["model", "lambda", "n_admitted", "sum_CV", "sum_PR", "sum_CO", "corner_solution"]]
+                                  .set_index(["lambda", "model"]).sort_index(), "lambda / model"), "",
+       "## DLENT-RT and StaticPolicy vs the offline frontier\n", md_table(VSF, "model / lambda"), "",
+       "## Does every lambda matter? (jobs changed vs the centre, x2 + x0.5)\n", md_table(LEAST, "model"), "",
+       "## Weighted sum vs Chebyshev (fluid LP)\n", md_table(CMP, "lambda"), "",
+       "## Hypervolume\n", md_table(hvp, "model"), ""]
+(PDIR / "nb04_tables.md").write_text("\n".join(md))
+print("markdown ->", PDIR / "nb04_tables.md")

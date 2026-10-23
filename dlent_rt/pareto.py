@@ -206,14 +206,20 @@ def fluid_dominance_slack(p, comp: Components, v, c, x, ideal, nadir) -> float:
     """
     max sum_k (f_k(y) - f_k(x)) / range_k over feasible fluid y with f_k(y) >= f_k(x) for every k.
     0 (up to solver tolerance) iff x is Pareto-optimal; > 0 means some y dominates x.
+    If x sits on the capacity boundary within the solver's tolerance, the exact LP can be numerically infeasible:
+    it is then re-solved once with the lower bounds f_k(y) >= f_k(x) relaxed by 1e-7 * range_k; NaN if that fails too.
     """
     p, sup, ps, vs, Fk = _fluid_parts(p, comp, v)
     fx = Fk.T @ np.asarray(x, float)[sup]
     rng = np.where(np.asarray(ideal) - np.asarray(nadir) > 0, np.asarray(ideal) - np.asarray(nadir), 1.0)
     A = np.vstack([-Fk.T, (ps[:, None] * vs).T])
-    b = np.r_[-fx, np.asarray(c, float)]
-    res = _linprog(-(Fk / rng).sum(axis=1), A_ub=A, b_ub=b, bounds=(0, 1), method="highs")
-    return float(-res.fun - (fx / rng).sum())
+    obj = -(Fk / rng).sum(axis=1)
+    for relax in (0.0, 1e-7):
+        b = np.r_[-fx + relax * rng, np.asarray(c, float)]
+        res = _linprog(obj, A_ub=A, b_ub=b, bounds=(0, 1), method="highs")
+        if res.status == 0:
+            return float(-res.fun - (fx / rng).sum())
+    return float("nan")
 
 
 def chebyshev_fluid_legacy(p, comp: Components, v, c, w, ideal, nadir):

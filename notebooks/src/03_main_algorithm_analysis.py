@@ -14,9 +14,12 @@
 # 3. Results per phase (C.3) &middot; 4. Accuracy per phase (C.4) &middot; 5. Baselines and regret (C.5) &middot;
 # 6. capacity_scale sweep &middot; 7. Anomalies.
 #
-# **Config: the COMMITTED `configs/default.yaml`** (`git show HEAD:configs/default.yaml`, written to the temporary
-# `configs/_nb03_committed.yaml`, loaded and deleted in Section 0); an uncommitted edit of the working copy is never
-# read. Sections 9–11 (week 30): benchmark ladder with the bucketed job-level MILP, reward split per model, and the
+# **Config: the COMMITTED `configs/default.yaml`** (`git show HEAD:configs/default.yaml` through a temporary file,
+# `scripts/regime_config.py`); an uncommitted edit of the working copy is never read. With `DLENT_REGIME=<path>` the
+# capacity block of that named regime (read from git HEAD too) overrides the committed capacity, and every output goes
+# to the regime's own folders; the run marker prints the commit and both blobs.
+# Sections 9–11 (week 30): benchmark ladder with the bucketed job-level MILP, reward split per model, oversize jobs
+# (10b), and the
 # same ladder at f = 0.2 with `drop_jobs_exceeding_capacity`.
 #
 # Rebuild/execute: `python notebooks/src/build.py 03_main_algorithm_analysis --execute`.
@@ -28,7 +31,7 @@
 
 # %%
 # RUN MARKER: which code and which config produced the numbers of this notebook
-import subprocess
+import os, subprocess
 from pathlib import Path
 _ROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "dlent_rt").is_dir())
 def _git(*a):
@@ -36,9 +39,14 @@ def _git(*a):
 GIT_COMMIT = _git("rev-parse", "HEAD")
 YAML_BLOB = _git("rev-parse", "HEAD:configs/default.yaml")
 YAML_WORKING_COPY_EDITED = bool(_git("status", "--porcelain", "--", "configs/default.yaml"))
-CONFIG_PATH = _ROOT / "configs" / "_nb03_committed.yaml"
-print(f"NB03 RUN MARKER  commit={GIT_COMMIT}  configs/default.yaml blob={YAML_BLOB}")
-print(f"config: {CONFIG_PATH} (= git show HEAD:configs/default.yaml; temporary, deleted after loading)")
+# named regime (optional): DLENT_REGIME=configs/regime_<name>.yaml overrides ONLY the capacity of the committed default
+REGIME = os.environ.get("DLENT_REGIME") or None
+REGIME_BLOB = _git("rev-parse", f"HEAD:{REGIME}") if REGIME else None
+REGIME_TAG = Path(REGIME).stem.replace("regime_", "") if REGIME else None
+print(f"NB03 RUN MARKER  commit={GIT_COMMIT}  configs/default.yaml blob={YAML_BLOB}  "
+      f"regime={REGIME or 'none'}  regime blob={REGIME_BLOB or '-'}")
+print("config: git show HEAD:configs/default.yaml" + (f" + the capacity block of git show HEAD:{REGIME}" if REGIME else "")
+      + " -> temporary file (scripts/regime_config.py), deleted after loading")
 print(f"working-copy configs/default.yaml edited: {YAML_WORKING_COPY_EDITED} (not used)")
 import time as _time
 print(f"run started: {_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -58,6 +66,7 @@ sys.path.insert(0, str(ROOT))
 from dlent_rt.config import load_config
 from dlent_rt.data import load_dataset
 from dlent_rt.phase0 import run_phase0, assign_type_ids, type_arrays
+from dlent_rt.lp_oracle import solve_lp_rs
 from dlent_rt.reward import type_reward, weighted_quantile as _weighted_quantile
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.benchmarks import Benchmarks, regret
@@ -97,12 +106,11 @@ for _p in (BATCH_CSV, GRID_CSV):
     if not _p.is_file():
         raise FileNotFoundError(f"required input not found: {_p}")
 
-# the COMMITTED configs/default.yaml (see the run marker above), through a temporary file deleted after loading
-CONFIG_PATH.write_text(_git("show", "HEAD:configs/default.yaml") + "\n")
-try:
-    cfg_committed = load_config(CONFIG_PATH)
-finally:
-    CONFIG_PATH.unlink()
+# the COMMITTED configs/default.yaml (+ the named regime's capacity, see the run marker), via a temporary file
+sys.path.insert(0, str(ROOT / "scripts"))
+from regime_config import committed_with_regime
+cfg_committed, REG_INFO = committed_with_regime(REGIME)
+assert REG_INFO["commit"] == GIT_COMMIT and REG_INFO["default_blob"] == YAML_BLOB and REG_INFO["regime_blob"] == REGIME_BLOB
 cfg = apply_overrides(cfg_committed, {"data.batch_csv": str(BATCH_CSV), "data.grid_csv": str(GRID_CSV)})
 BASE = apply_overrides(cfg, {"bid.sigma": 0.3})
 # Notebook-only guard: the analysis is run with n0 = 10,000 (|stream| = 15,308), the value configs/default.yaml
@@ -206,6 +214,19 @@ for s in CAPACITY_SCALES:
     print(f"scale={s:<4} seed={BASE.run.seed} |H|={ds_s.H.n:,} |stream|={model.stream.n:,} T={sm['T']:,}  "
           f"phases={sm['n_phases']} {sm['phase_end_reasons']}  admitted={sm['n_admitted']:,}  "
           f"R_total=${sm['R_total']:,.2f}  ({time.time() - t1:.0f} s)")
+
+# %%
+# named regime: the loaded cluster must reproduce the regime file (and its recorded Phase 0 price)
+REGIME_EXPECT = {"configs/regime_small_cluster.yaml": dict(c=(0.4014237441083392, 0.2616208305922613),
+                                                           tau0=(0.0, 0.0204), s_C=228.18)}
+if REGIME:
+    _e, _r = REGIME_EXPECT[REGIME], RUNS[BASELINE_SCALE]
+    assert tuple(_r["ds"].capacity) == _e["c"], _r["ds"].capacity
+    assert np.allclose(_r["st0"].tau, _e["tau0"], atol=5e-5) and abs(_r["st0"].carbon_price - _e["s_C"]) < 5e-3
+    print(f"regime {REGIME}: c = {tuple(_r['ds'].capacity)} (exact), tau_0 = {np.round(_r['st0'].tau, 6)}, "
+          f"s_C = {_r['st0'].carbon_price:.4f}  -> matches the regime file")
+else:
+    print("no named regime: the committed default cluster")
 
 # %% [markdown]
 # ### 0.3 Shared analysis helpers
@@ -930,7 +951,7 @@ with pd.option_context("display.max_colwidth", None):
 
 # %%
 import io, contextlib
-REPORT_DIR = ROOT / "reports" / "week30"
+REPORT_DIR = ROOT / "reports" / "week30" / (f"{REGIME_TAG}_nb" if REGIME else "")   # a named regime writes apart
 FIG_DIR, TAB_DIR = REPORT_DIR / "figures", REPORT_DIR / "tables"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 TAB_DIR.mkdir(parents=True, exist_ok=True)
@@ -1113,7 +1134,7 @@ sweep_cfgs = {
     for f in SWEEP_FRACTIONS for g, (k, h) in SWEEP_GRIDS.items()
 }
 t_sw = time.time()
-with ProcessPoolExecutor(max_workers=len(sweep_cfgs), mp_context=mp.get_context("spawn")) as pool:
+with ProcessPoolExecutor(max_workers=min(4, len(sweep_cfgs)), mp_context=mp.get_context("spawn")) as pool:  # ~1 GB each
     futs = {key: pool.submit(run_one, c, f"fraction={key[0]} {key[1]}", MILP_TIME_LIMIT)
             for key, c in sweep_cfgs.items()}
     SW = {key: fu.result() for key, fu in futs.items()}
@@ -1201,7 +1222,7 @@ print("tables ->", TAB_DIR, "\n  " + "\n  ".join(saved_sw))
 print("markdown ->", REPORT_DIR / "capacity_grid_sweep_tables.md")
 
 # %% [markdown]
-# ## Section 9: Benchmark ladder (committed config, capacity scale 1.0)
+# ## Section 9: Benchmark ladder (the run's config, see the run marker; capacity scale 1.0)
 #
 # Every row is scored with the same job reward R_job on the same stream (realised $ over the stream). Rows:
 # * **job-level, no capacity** = Σ R_job⁺; **job-level MILP** = `Benchmarks.job_level_opt` (per-tick capacity, x ∈ {0,1}).
@@ -1210,6 +1231,16 @@ print("markdown ->", REPORT_DIR / "capacity_grid_sweep_tables.md")
 #   REALISED Σ R_job·x of the chosen set. Two bucket sources: **reference** (the full-stream reference state behind the
 #   fluid OPT: same grid and estimates) and **Phase 0** (the policies' estimate from H; unseen types get r̃ = 0).
 # * **fluid OPT** = λ̂_ref·T; G2, G1, static Phase 0 (± thinning) and DLENT-RT as in Section 5.
+# * **feasible ceiling** = Σ R_job⁺ over the stream jobs with A_ij ≤ c_i on every resource: the most ANY policy can
+#   earn (jobs larger than c never pass the physical gate). Without the drop filter on a small cluster it is below the
+#   no-capacity bound; otherwise the two coincide.
+# * **fluid OPT on feasible types only** = the same LP-RS on the reference state with every type whose hardware profile
+#   A exceeds c on some resource removed (p_j = 0): the fluid benchmark without the load that can never run. Its τ is
+#   printed below.
+# * Columns: realised reward, % of the job-level MILP, % of the feasible ceiling.
+# * **static → static + thinning → DLENT-RT**: cost of thinning = static − static + thinning (same frozen Phase 0 oracle,
+#   thinned with the online run's random numbers); effect of learning / estimation = DLENT-RT − (static + thinning)
+#   (ReInit, Tests 1–3, phase-wise thinning).
 #
 # Decomposition (reports/week30/bucketed_opt.md): discretization cost = job OPT − bucketed OPT, fluid cost =
 # bucketed OPT − fluid OPT (negative = the fluid OPT is above the bucketed MILP); both with the bucketed MILP's own
@@ -1218,7 +1249,7 @@ print("markdown ->", REPORT_DIR / "capacity_grid_sweep_tables.md")
 
 # %%
 import shutil
-FIGS_DIR = REPORT_DIR / "figs"
+FIGS_DIR = ROOT / "reports" / "week30" / f"figs_{REGIME_TAG}" if REGIME else REPORT_DIR / "figs"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 MILP_TL = 600.0
 
@@ -1233,15 +1264,33 @@ def ladder_tables(B, opt, admits):
     admitted masks of the policies ({row: mask}). Returns (ladder, decomposition, milps, admitted sets per row)."""
     buck = {src: B.job_opt_bucketed(src, "true", time_limit=MILP_TL) for src in ("reference", "phase0")}
     fluid, job = B.fluid_opt(), opt["R_ip"]
+    # feasible ceiling: Σ R_job⁺ over the stream jobs that fit (A_ij <= c_i on every resource)
+    fits = ~np.any(B.S.A > B.c[None, :], axis=1)
+    ceiling = float(np.maximum(B.R, 0)[fits].sum())
+    # fluid OPT on feasible types only: the same LP-RS on the reference state, types whose A exceeds c removed
+    ref = B.reference_state
+    _, _, A_ref = type_arrays(ref.type_space, ref.grid)
+    feas_t = ~np.any(A_ref > B.c[None, :], axis=1)
+    lp_feas = solve_lp_rs(p=ref.p * feas_t, r=ref.r_tilde, v=ref.v, c=B.c, presolve=BASE.lp.presolve)
+    fluid_feas = float(lp_feas.optimum) * B.T
     rows = [("job-level, no capacity (Σ R_job⁺)", opt["R_nocap"], None),
+            ("feasible ceiling (Σ R_job⁺ over A ≤ c)", ceiling, None),
             ("job-level MILP", job, opt["x"]),
             ("bucketed MILP A (reference buckets)", buck["reference"]["R_real"], buck["reference"]["x"]),
             ("bucketed MILP A (Phase 0 buckets)", buck["phase0"]["R_real"], buck["phase0"]["x"]),
             ("fluid OPT", fluid, None),
+            ("fluid OPT on feasible types only", fluid_feas, None),
             *[(k, B.score(m), m) for k, m in admits.items()]]
-    lad = pd.DataFrame([{"row": r, "realised $": v, "% of job-level MILP": 100 * v / job} for r, v, _ in rows])
+    lad = pd.DataFrame([{"row": r, "realised $": v, "% of job-level MILP": 100 * v / job,
+                         "% of feasible ceiling": 100 * v / ceiling} for r, v, _ in rows])
     lad = lad.set_index("row")
     lad["gap to row above $"] = -lad["realised $"].diff()
+    info = {"fluid feasible-types tau": np.round(lp_feas.tau, 6).tolist(),
+            "fluid feasible-types tau is 0": bool(np.all(lp_feas.tau <= 1e-12)),
+            "fluid (all types) tau": np.round(ref.tau, 6).tolist(),
+            "types removed (A > c), populated": int((~feas_t & (ref.p > 0)).sum()),
+            "types populated": int((ref.p > 0).sum()), "stream jobs that fit": int(fits.sum()),
+            "stream jobs": int(fits.size)}
     dec = []
     for src in ("reference", "phase0"):
         for kind, key in (("believed Σ r̃·x", "R_believed"), ("realised Σ R·x", "R_real")):
@@ -1260,7 +1309,7 @@ def ladder_tables(B, opt, admits):
                             for s, o in buck.items()]]).set_index("MILP")
     for o in buck.values():      # variant A is feasible for the job MILP: realised <= job OPT (within its gap)
         assert o["feasible_true"] and o["R_real"] <= job * (1 + max(opt["gap"], 0)) + 1e-6
-    return lad, dec, milps, {r: m for r, _, m in rows if m is not None}
+    return lad, dec, milps, {r: m for r, _, m in rows if m is not None}, info
 
 
 def plot_ladder(lad, title, name):
@@ -1314,15 +1363,33 @@ ADMITS0 = {"G2 job greedy": ALGS0["G2 (job greedy, R_job > 0)"]["admit"],
            "static Phase 0 + thinning": ALGS0["static Phase 0 (H) + thinning at cap"]["admit"],
            "DLENT-RT (theory)": ALGS0["DLENT-RT (online)"]["admit"]}
 t_lad = time.time()
-LAD0, DEC0, MILP0, SETS0 = ladder_tables(B0, R0["opt"], ADMITS0)
+LAD0, DEC0, MILP0, SETS0, INFO0 = ladder_tables(B0, R0["opt"], ADMITS0)
 print(f"ladder (scale 1.0) in {time.time() - t_lad:.0f} s")
-display(LAD0.style.format({"realised $": "{:,.2f}", "% of job-level MILP": "{:.2f}", "gap to row above $": "{:,.2f}"}))
+display(LAD0.style.format({"realised $": "{:,.2f}", "% of job-level MILP": "{:.2f}", "% of feasible ceiling": "{:.2f}", "gap to row above $": "{:,.2f}"}))
+print("fluid OPT on feasible types only:", INFO0)
+
+
+def static_thin_dlent(lad):
+    """static -> static + thinning -> DLENT-RT: cost of thinning and effect of learning / estimation."""
+    st_, th, dl = (lad.loc[k, "realised $"] for k in ("static Phase 0", "static Phase 0 + thinning", "DLENT-RT (theory)"))
+    job = lad.loc["job-level MILP", "realised $"]
+    return pd.DataFrame([
+        {"step": "static Phase 0", "$": st_, "% of job MILP": 100 * st_ / job, "change $": np.nan},
+        {"step": "static Phase 0 + thinning", "$": th, "% of job MILP": 100 * th / job,
+          "change $": th - st_, "attributed to": "cost of thinning (same frozen oracle)"},
+        {"step": "DLENT-RT (theory)", "$": dl, "% of job MILP": 100 * dl / job,
+          "change $": dl - th, "attributed to": "learning / estimation (ReInit, tests, phase-wise thinning)"},
+    ]).set_index("step")
+
+
+STD0 = static_thin_dlent(LAD0)
+display(STD0.style.format(precision=2))
 display(DEC0.style.format(precision=2))
 display(MILP0)
-plot_ladder(LAD0, "Benchmark ladder, committed config (from_amax), capacity scale 1.0", "fig09_ladder")
+plot_ladder(LAD0, f"Benchmark ladder, {REGIME or 'committed config (from_amax)'}, capacity scale 1.0", "fig09_ladder")
 
 # %% [markdown]
-# ## Section 10: Reward split per model (committed config, capacity scale 1.0)
+# ## Section 10: Reward split per model (the run's config, capacity scale 1.0)
 #
 # For every admitted / chosen set of the ladder: λ1·Σ customer value (q·v), λ2·Σ profit (φ_job − C_elec) and
 # −λ3·Σ s_C·K, from the same `Benchmarks.terms` that score R_job (their sum is the row's R, asserted). Negative parts are
@@ -1331,7 +1398,52 @@ plot_ladder(LAD0, "Benchmark ladder, committed config (from_amax), capacity scal
 # %%
 SPLIT0 = reward_split(B0, SETS0)
 display(SPLIT0.style.format(precision=2))
-plot_split(SPLIT0, "Reward split per model, committed config, capacity scale 1.0", "fig10_reward_split")
+plot_split(SPLIT0, f"Reward split per model, {REGIME or 'committed config'}, capacity scale 1.0", "fig10_reward_split")
+
+# %% [markdown]
+# ## Section 10b: Oversize jobs (A_ij > c_i on some resource; capacity scale 1.0)
+#
+# Without `drop_jobs_exceeding_capacity`, jobs larger than c stay in H and the stream: the physical gate rejects every
+# one of them that a policy wants, and Phase 0's fluid LP still counts their volume. Counts, their share of Phase 0's
+# profitable load Σ_{r̃ > 0} p_j·v_ij (a job's A is its type's snapped profile, so the share is exact), ρ = profitable
+# load / c with and without them, and the physical rejects per model (with how many of them are oversize jobs).
+
+# %%
+S_o, c_o, ds_o, st_o = B0.S, B0.c, R0["ds"], R0["st0"]
+over_S = np.any(S_o.A > c_o[None, :], axis=1)
+over_H = np.any(ds_o.H.A > c_o[None, :], axis=1)
+k_o = st_o.grid.assign(st_o.bids.v_rate, st_o.myerson)
+tid_o = assign_type_ids(st_o.type_space, np.asarray(k_o), ds_o.H.priority, ds_o.H.hw_idx)
+_, _, A_to = type_arrays(st_o.type_space, st_o.grid)
+jj_o = np.maximum(tid_o, 0)
+prof_o = (tid_o >= 0) & (st_o.r_tilde[jj_o] > 0)
+vol_o = A_to[jj_o] * ds_o.H.duration_steps[:, None] / ds_o.H_span_steps
+load_o = vol_o[prof_o].sum(axis=0)
+assert np.allclose(load_o, (st_o.p * (st_o.r_tilde > 0)) @ st_o.v, rtol=1e-9)    # = the LP's profitable load
+OVER = pd.Series({
+    "c (norm) CPU, RAM": str(np.round(c_o, 6).tolist()),
+    "oversize stream jobs": f"{int(over_S.sum()):,} ({100 * over_S.mean():.2f}%)",
+    "oversize H jobs": f"{int(over_H.sum()):,} ({100 * over_H.mean():.2f}%)",
+    "share of P0 profitable load from oversize, CPU %": 100 * vol_o[prof_o & over_H, 0].sum() / load_o[0],
+    "share of P0 profitable load from oversize, RAM %": 100 * vol_o[prof_o & over_H, 1].sum() / load_o[1],
+    "rho = P0 profitable load / c, CPU": load_o[0] / c_o[0], "rho, RAM": load_o[1] / c_o[1],
+    "rho without oversize, CPU": vol_o[prof_o & ~over_H, 0].sum() / c_o[0],
+    "rho without oversize, RAM": vol_o[prof_o & ~over_H, 1].sum() / c_o[1],
+    "stream Σ R_job⁺ of oversize jobs $": float(np.maximum(B0.R, 0)[over_S].sum()),
+}, name="value")
+display(OVER.to_frame())
+prow = []
+for name, d in ALGS0.items():
+    if name.startswith("offline"):
+        continue
+    adm, phys = d["admit"], d["phys"]
+    assert not np.any(adm & over_S)                      # nothing larger than c is ever admitted
+    prow.append({"model": name, "admitted": int(adm.sum()), "physical rejects": int(phys.sum()),
+                 "physical rejects % of arrivals": 100 * phys.mean(),
+                 "of which oversize jobs": int((phys & over_S).sum()),
+                 "oversize share of its physical rejects %": 100 * (phys & over_S).sum() / max(int(phys.sum()), 1)})
+OVER_PHYS = pd.DataFrame(prow).set_index("model")
+display(OVER_PHYS.style.format(precision=2))
 
 # %% [markdown]
 # ## Section 11: Part 2 — the same ladder at f = 0.2 with `drop_jobs_exceeding_capacity`
@@ -1362,13 +1474,16 @@ ADMITS_F = {"G2 job greedy": run_policy(S_F, M_F.c, JobGreedyPolicy(R_F)).admit,
             "static Phase 0": run_static(S_F, M_F.c, ST_F, thin_p=None, u_rand=M_F.u_rand).admit,
             "static Phase 0 + thinning": run_static(S_F, M_F.c, ST_F, thin_p=p_cap_f, u_rand=M_F.u_rand).admit,
             "DLENT-RT (theory)": adm_f}
-LAD_F, DEC_F, MILP_F, SETS_F = ladder_tables(B_F, OPT_F, ADMITS_F)
+LAD_F, DEC_F, MILP_F, SETS_F, INFO_F = ladder_tables(B_F, OPT_F, ADMITS_F)
 sm_f = RES_F.summary
 print(f"f = 0.2: c = {np.round(DS_F.capacity, 5)}  dropped {DS_F.capacity_drop}  |H| = {DS_F.H.n:,}  "
       f"|stream| = {S_F.n:,}  s_C = {ST_F.carbon_price:.4f}  tau_0 = {ST_F.tau}")
 print(f"DLENT-RT: phases {sm_f['n_phases']} {sm_f['phase_end_reasons']}  R = {sm_f['R_total']:,.2f}  "
       f"({time.time() - t_f:.0f} s)")
-display(LAD_F.style.format({"realised $": "{:,.2f}", "% of job-level MILP": "{:.2f}", "gap to row above $": "{:,.2f}"}))
+display(LAD_F.style.format({"realised $": "{:,.2f}", "% of job-level MILP": "{:.2f}", "% of feasible ceiling": "{:.2f}", "gap to row above $": "{:,.2f}"}))
+print("fluid OPT on feasible types only:", INFO_F)
+STD_F = static_thin_dlent(LAD_F)
+display(STD_F.style.format(precision=2))
 display(DEC_F.style.format(precision=2))
 display(MILP_F)
 plot_ladder(LAD_F, "Benchmark ladder, PART 2: f = 0.2, q = 0.7, drop_jobs_exceeding_capacity", "fig11_ladder_f02")
@@ -1377,15 +1492,23 @@ display(SPLIT_F.style.format(precision=2))
 plot_split(SPLIT_F, "Reward split per model, PART 2: f = 0.2 with drop_jobs_exceeding_capacity", "fig11b_reward_split_f02")
 
 # %% [markdown]
-# ## Check against the reference numbers, figures and `reports/week30/nb03_numbers.md`
+# ## Check against the reference numbers, figures and `nb03_numbers.md`
 #
-# Reference values (week-30 reports, committed config, scale 1.0) compared to the cent with this run; every PNG of the
-# notebook is copied to `reports/week30/figs/`; every table is written to `reports/week30/nb03_numbers.md`.
+# Reference values of the run's config (default: week-30 reports; small cluster: `small_cluster_nofilter.md`, f = 0.15),
+# compared to the cent with this run; every PNG of the notebook is copied to `reports/week30/figs/` (a named regime:
+# `reports/week30/figs_<regime>/`); every table is written to `nb03_numbers.md` in the run's report folder.
 
 # %%
-EXPECTED = {"job-level MILP": 155_397.61, "fluid OPT": 149_478.42, "G2 job greedy": 155_011.00,
-            "G1 type greedy": 82_626.18, "static Phase 0": 54_216.40, "DLENT-RT (theory)": 48_391.61,
-            "static Phase 0 + thinning": 35_473.28}
+EXPECTED_BY_REGIME = {
+    None: {"job-level MILP": 155_397.61, "fluid OPT": 149_478.42, "G2 job greedy": 155_011.00,
+           "G1 type greedy": 82_626.18, "static Phase 0": 54_216.40, "DLENT-RT (theory)": 48_391.61,
+           "static Phase 0 + thinning": 35_473.28},
+    # reports/week30/small_cluster_nofilter.md, f = 0.15 (the cluster frozen in configs/regime_small_cluster.yaml)
+    "configs/regime_small_cluster.yaml": {"job-level MILP": 120_742.02, "DLENT-RT (theory)": 40_892.14,
+                                          "G2 job greedy": 107_551.45, "G1 type greedy": 64_503.43,
+                                          "static Phase 0": 44_716.94, "fluid OPT": 146_395.19,
+                                          "feasible ceiling (Σ R_job⁺ over A ≤ c)": 141_126.62}}
+EXPECTED = EXPECTED_BY_REGIME[REGIME]
 CHECK = pd.DataFrame([{"row": k, "expected $": v, "this run $": LAD0.loc[k, "realised $"],
                        "this run (cents)": round(LAD0.loc[k, "realised $"], 2)} for k, v in EXPECTED.items()]).set_index("row")
 CHECK["matches to the cent"] = CHECK["this run (cents)"] == CHECK["expected $"]
@@ -1398,20 +1521,26 @@ print(f"figures -> {FIGS_DIR} ({len(list(FIGS_DIR.glob('*.png')))} PNG)")
 def _md_csv(name):
     return md_table(pd.read_csv(TAB_DIR / f"{name}.csv", index_col=0), "")
 
-md = ["# nb03 numbers (generated by notebooks/03_main_algorithm_analysis.ipynb; do not edit by hand)\n",
-      f"Commit `{GIT_COMMIT}`, configs/default.yaml blob `{YAML_BLOB}` (the COMMITTED config, through the temporary "
-      f"`{CONFIG_PATH.relative_to(ROOT)}`); working-copy default.yaml edited: {YAML_WORKING_COPY_EDITED} (not used). "
+md = [f"# nb03 numbers{' — regime ' + REGIME if REGIME else ''} (generated by the notebook; do not edit by hand)\n",
+      f"Commit `{GIT_COMMIT}`, configs/default.yaml blob `{YAML_BLOB}` (the COMMITTED config"
+      + (f" + the capacity block of `{REGIME}`, blob `{REGIME_BLOB}`" if REGIME else "")
+      + f", via a temporary file); working-copy default.yaml edited: {YAML_WORKING_COPY_EDITED} (not used). "
       f"Seed {BASE.run.seed}, σ = {BASE.bid.sigma}, n0 = {BASE.data.n0:,}. Generated {time.strftime('%Y-%m-%d %H:%M')}.\n",
       "## Check against the reference numbers\n", md_table(CHECK, "row"), "",
-      "## Section 9: benchmark ladder (committed config, scale 1.0)\n", md_table(LAD0, "row"), "",
+      "## Section 9: benchmark ladder (scale 1.0)\n", md_table(LAD0, "row"), "",
+      f"fluid OPT on feasible types only: {INFO0}\n",
+      "### static → static + thinning → DLENT-RT\n", md_table(STD0, "step"), "",
       "### Decomposition\n", md_table(DEC0, "buckets / bucketed value"), "",
       "### MILPs\n", md_table(MILP0, "MILP"), "",
-      "## Section 10: reward split per model (committed config, scale 1.0)\n", md_table(SPLIT0, "row"), "",
+      "## Section 10: reward split per model (scale 1.0)\n", md_table(SPLIT0, "row"), "",
+      "## Section 10b: oversize jobs\n", md_table(OVER.to_frame(), "quantity"), "", md_table(OVER_PHYS, "model"), "",
       "## Section 11: PART 2, f = 0.2, q = 0.7, drop_jobs_exceeding_capacity\n",
       f"c = {np.round(DS_F.capacity, 5).tolist()}, dropped {DS_F.capacity_drop}, |H| = {DS_F.H.n:,}, "
       f"|stream| = {S_F.n:,}, s_C = {ST_F.carbon_price:.4f}, τ₀ = {ST_F.tau.tolist()}, DLENT-RT phases "
       f"{sm_f['n_phases']} {sm_f['phase_end_reasons']}.\n",
-      md_table(LAD_F, "row"), "", "### Decomposition\n", md_table(DEC_F, "buckets / bucketed value"), "",
+      md_table(LAD_F, "row"), "", f"fluid OPT on feasible types only: {INFO_F}\n",
+      "### static → static + thinning → DLENT-RT\n", md_table(STD_F, "step"), "",
+      "### Decomposition\n", md_table(DEC_F, "buckets / bucketed value"), "",
       "### MILPs\n", md_table(MILP_F, "MILP"), "", "### Reward split\n", md_table(SPLIT_F, "row"), "",
       "## Section 8: capacity × type-grid sweep (summary)\n", md_table(SW_SUM.T, "quantity"), ""]
 for name in saved_tabs:

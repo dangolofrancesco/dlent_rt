@@ -3,6 +3,8 @@ Build notebooks from percent-format sources in notebooks/src/.
 
     python notebooks/src/build.py                      # build every notebooks/src/NN_*.py
     python notebooks/src/build.py 03_main_algorithm_analysis --execute
+    DLENT_REGIME=configs/regime_small_cluster.yaml python notebooks/src/build.py 03_main_algorithm_analysis \
+        --execute --out 03_main_algorithm_analysis_small_cluster      # same source, named regime, own output
 
 Cell markers: a line `# %%` starts a code cell, `# %% [markdown]` a markdown
 cell whose lines are written as `# text` (the leading `# ` is stripped).
@@ -47,13 +49,13 @@ def parse(text: str) -> list:
     return cells
 
 
-def build(name: str, execute: bool, timeout: int) -> Path:
+def build(name: str, execute: bool, timeout: int, out_name: str | None = None) -> Path:
     src = SRC / f"{name}.py"
     nb = nbformat.v4.new_notebook()
     nb.cells = parse(src.read_text())
     nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
     nb.metadata["language_info"] = {"name": "python"}
-    out = NB_DIR / f"{name}.ipynb"
+    out = NB_DIR / f"{out_name or name}.ipynb"
     if execute:
         from nbclient import NotebookClient
         NotebookClient(nb, timeout=timeout, kernel_name="python3",
@@ -67,7 +69,10 @@ if __name__ == "__main__":
     ap.add_argument("names", nargs="*", help="source stems (default: every NN_*.py)")
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--timeout", type=int, default=7200, help="per-cell timeout [s]")
+    ap.add_argument("--out", default=None, help="output notebook stem (one source only; default: the source stem)")
     a = ap.parse_args()
     names = a.names or sorted(p.stem for p in SRC.glob("[0-9][0-9]_*.py"))
+    if a.out and len(names) != 1:
+        raise SystemExit("--out needs exactly one source")
     for n in names:
-        print(build(n, a.execute, a.timeout))
+        print(build(n, a.execute, a.timeout, a.out))
