@@ -1,0 +1,13 @@
+# Named regime (week 30): the small cluster selected in reports/week30/small_cluster_nofilter.md.
+# Overrides ONLY the capacity of the committed configs/default.yaml; every other key falls back to the
+# dataclass defaults, which equal the committed default.yaml (tests/test_config_defaults.py).
+# Frozen from capacity mode fraction_of_concurrency_quantile, q = 0.7, f = 0.15 (30k trace), in the trace's
+# normalised units of A: 1.0 CPU = 64 cores, 1.0 RAM = 256 GB  ->  c = 25.69 cores, 66.97 GB.
+# drop_jobs_exceeding_capacity is OFF: 10.97% of stream jobs and 21.58% of H jobs are larger than c (oversize)
+# and stay in H / the stream; they carry 43.9% (CPU) / 37.4% (RAM) of Phase 0's profitable load.
+capacity:
+  mode: "absolute"
+  absolute:
+    cpu: 0.4014237441083392
+    ram: 0.2616208305922613
+  drop_jobs_exceeding_capacity: false
