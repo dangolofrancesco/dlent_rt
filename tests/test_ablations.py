@@ -91,3 +91,35 @@ def test_A3_fixed_grid_keeps_the_phase0_grid(world):
     for s_ in m1.states:
         assert s_.grid is st.grid                                                     # the same grid object
     assert not any(p.get("reinit_grid_refit") for p in r1.phases)
+
+
+# ---------------------------------------------------------------- cumulative (stacked) flags
+def test_stacked_flags_off_are_bit_identical(world):
+    cfg, ds, st = world
+    a = TheoryModel(ds, st, cfg).run()
+    b = TheoryModel(ds, st, with_ab(cfg, thinning_off=False, thinning_delta_power=None,
+                                    thinning_eps_D_zero=False, fixed_grid=False)).run()
+    assert a.summary["R_total"] == b.summary["R_total"]
+    assert [x["admit"] for x in a.arrivals] == [x["admit"] for x in b.arrivals]
+    assert [p["reason"] for p in a.phases] == [p["reason"] for p in b.phases]
+
+
+def test_C1_cap_is_one_minus_xi(world):
+    cfg, ds, st = world
+    ep = make_error_params(st, ds, with_ab(cfg, thinning_eps_D_zero=True))
+    assert (1 - ep.xi) / (1 + ep.eps_D_thinning) == 1 - ep.xi                 # the cap without the eta terms
+    W, t = int(ds.d_max_steps), 10 ** 6                                          # p_U = cap / (1 + eta(W) + eta(t))
+    assert ep.p_U(W, t) == pytest.approx((1 - ep.xi) / (1 + ep.eta(W) + ep.eta(t)), rel=1e-12)
+    assert ep.p_U(W, t) <= 1 - ep.xi
+
+
+def test_C2_keeps_phase0_edges_in_every_phase(world):
+    cfg, ds, st = world
+    c2 = with_ab(cfg, thinning_eps_D_zero=True, fixed_grid=True)
+    m = StateLog(ds, st, c2)
+    res = m.run()
+    assert len(m.states) >= 2
+    for s_ in m.states:
+        assert np.array_equal(s_.grid.edges, st.grid.edges) and s_.grid is st.grid
+    ep = make_error_params(st, ds, c2)
+    assert all(a["p_U"] <= 1 - ep.xi + 1e-15 for a in res.arrivals)
