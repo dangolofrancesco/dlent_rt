@@ -290,6 +290,8 @@ def cumulative_summary():
         vs0 = _paired(seriesR[n], seriesR["C0"], det) if n != "C0" else None
         prev = CUM_PREV.get(n)
         vsp = _paired(seriesR[n], seriesR[prev], det) if prev else None
+        if vsp and det and prev in DETERMINISTIC:      # both single deterministic runs: one exact difference, no CI
+            vsp = {**vsp, "lo": np.nan, "hi": np.nan, "beyond noise": False}
         r = {"config": n, "description": CUMULATIVE[n][1], "runs": len(g),
              "seed note": ("deterministic: thinning off, no online randomness; 1 run, seed std = 0; its CI comes "
                            "only from the other configuration's seed noise, NOT a replication") if det else "5 thinning seeds",
@@ -303,7 +305,9 @@ def cumulative_summary():
             r[f"{key}: delta mean $"] = d["mean"] if d else np.nan
             r[f"{key}: 95% lo $"] = d["lo"] if d else np.nan
             r[f"{key}: 95% hi $"] = d["hi"] if d else np.nan
-            r[f"{key}: beyond seed noise"] = d["beyond noise"] if d else False
+            r[f"{key}: beyond seed noise"] = (("n/a: both deterministic, one exact difference" if det and
+                                                (key == "vs previous step" and prev in DETERMINISTIC) else
+                                                d["beyond noise"]) if d else False)
         r.update({f"{k} (mean)": g[k].mean() for k in num})
         rows.append(r)
     sdf = pd.DataFrame(rows).set_index("config")

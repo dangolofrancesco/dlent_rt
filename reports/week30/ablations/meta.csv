@@ -13,5 +13,9 @@ static + thinning $ (offset 3),29834.03319494576
 static + thinning $ (offset 4),30025.445834379243
 static + thinning $ (offset 5),31872.125399284625
 static + thinning $ (offset 6),32225.42817128745
-runner commit,eba0c633ca91d6734edee66910deffb108cfa85c
+runner commit (HEAD at summary),e6e9bee7ec63195e45f28fd54c7d6afb9993dc6e
+summary git dirty,True
+summary diff sha1,3784ae42b1a07edcca158a0f82d5f3accf4ca65d
+runs' git HEAD (distinct),not recorded (round-1 runs; HEAD eba0c63 with a dirty tree)
+runs' dirty flag (distinct),not recorded
 seeds,"(2, 3, 4, 5, 6)"

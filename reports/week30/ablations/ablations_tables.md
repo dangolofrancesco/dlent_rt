@@ -1,6 +1,6 @@
 # Ablations round 1: generated tables (notebooks/05_ablations_small_cluster.ipynb; do not edit by hand)
 
-Notebook commit `eba0c633ca91d6734edee66910deffb108cfa85c`; runs at commit(s) ['eba0c633ca91d6734edee66910deffb108cfa85c']; regime `configs/regime_small_cluster.yaml`.
+Notebook commit `e6e9bee7ec63195e45f28fd54c7d6afb9993dc6e`; runs at commit(s) ['eba0c633ca91d6734edee66910deffb108cfa85c']; regime `configs/regime_small_cluster.yaml`.
 
 ## References
 
