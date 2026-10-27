@@ -102,6 +102,7 @@ def handle_outliers(
     drop: rows exceeding any resource cutoff OR the duration cutoff are removed.
     clip: those values are clamped to the cutoff (values distorted, count kept).
     none: no filter; every row is kept (thresholds reported as NaN).
+    r_max: rows with any request > outliers.r_max_machines are removed; durations are not filtered.
     """
     o = cfg.outliers
     n_before = len(df)
@@ -112,6 +113,14 @@ def handle_outliers(
             n_before=n_before, n_after=n_before, policy="none",
         )
         return df.reset_index(drop=True), report
+    if o.policy == "r_max":
+        over = (df[a_cols].to_numpy(dtype=float) > o.r_max_machines).any(axis=1)
+        report = OutlierReport(
+            a_max_thresholds=np.full(len(a_cols), float(o.r_max_machines)), d_max_hours_threshold=float("nan"),
+            n_dropped_resource=int(over.sum()), n_dropped_duration=0, n_dropped_total=int(over.sum()),
+            n_before=n_before, n_after=int((~over).sum()), policy="r_max",
+        )
+        return df.loc[~over].reset_index(drop=True), report
 
     a_thresh = np.array([df[c].quantile(o.a_max_quantile) for c in a_cols])
     d_thresh = float(df[d_col].quantile(o.d_max_quantile))

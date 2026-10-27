@@ -33,7 +33,7 @@ import numpy as np
 from ...bid import BidResult, compute_phi_tilde
 from ...grid import build_valuation_grid
 from ...lp_oracle import solve_lp_rs
-from ...phase0 import PhaseState, assign_type_ids, type_arrays
+from ...phase0 import PhaseState, assign_type_ids, type_arrays, type_request
 from ...reward import type_reward, type_mean
 from .stream import StreamData
 
@@ -129,7 +129,8 @@ def build_window_state(
     p = N / max(W, 1)
     L, prio, A_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
-    v = A_type * md["d_bar"][:, None]
+    A_vol = type_request(tid_arr[ok], stream.A[idx_arr][ok], A_type, cfg.hardware.type_volume)
+    v = A_vol * md["d_bar"][:, None]
     r_tilde, r_nocarbon, _ = type_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
         p, cfg, s_C=prev.carbon_price,

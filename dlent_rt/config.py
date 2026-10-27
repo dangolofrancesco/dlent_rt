@@ -27,6 +27,7 @@ class ColumnsCfg:
     requested_cpu: str = "CPU"
     requested_ram: str = "RAM"
     duration_hours: str = "duration"
+    cpu_hours_real: str = "CPU_hours_real"   # used only by time.duration_mode = "effective"
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,10 @@ class TimeCfg:
     # true -> one duration everywhere: duration_hours = min(duration, d_max), so the bids, the energy and the time
     # in the cluster use the same capped duration. false (old) -> only duration_steps is capped.
     cap_duration_everywhere: bool = False
+    # "span" (old) -> duration = the file's duration column (first start to last end of the job).
+    # "effective"  -> duration = columns.cpu_hours_real / requested_cpu (the job's real CPU-hours spread over its
+    #                 SUM request); jobs with a zero CPU request keep the span. Read once, used everywhere.
+    duration_mode: str = "span"
 
 
 @dataclass(frozen=True)
@@ -136,11 +141,15 @@ class HardwareCfg:
     # (hw_idx); A = the real request for the gate, the capacity, the bids and the energy. Phase 0's type volume
     # v = A_type * d_bar still uses the profile (phase0.build_type_space).
     snap_requests: bool = True
+    # Phase 0 / ReInit type volume v = A_type * d_bar. "profile" (old): A_type = the hardware profile.
+    # "real_mean": A_type = the mean REAL request (JobArrays.A) of the type's jobs; the profile where a type has no job.
+    type_volume: str = "profile"
 
 
 @dataclass(frozen=True)
 class OutliersCfg:
-    policy: str = "drop"            # "drop" | "clip" | "none" (no outlier filter)
+    policy: str = "drop"            # "drop" | "clip" | "none" (no outlier filter) | "r_max" (fixed limit below)
+    r_max_machines: Optional[float] = None   # policy "r_max": jobs with a CPU or RAM request > this are removed
     a_max_quantile: float = 0.90
     d_max_quantile: float = 0.95
     xi_warn_threshold: float = 0.10
@@ -345,6 +354,10 @@ class Config:
         assert isinstance(self.time.cap_duration_everywhere, bool)
         assert self.time.d_max_hours is None or self.time.d_max_hours > 0
         assert isinstance(self.hardware.snap_requests, bool)
+        assert self.time.duration_mode in ("span", "effective")
+        assert self.hardware.type_volume in ("profile", "real_mean")
+        if self.outliers.policy == "r_max":
+            assert self.outliers.r_max_machines is not None and self.outliers.r_max_machines > 0
         ab = self.ablation
         assert ab.thinning_delta_power is None or int(ab.thinning_delta_power) >= 1
         assert not (ab.thinning_eps_D_zero and ab.thinning_delta_power is not None), \
@@ -355,7 +368,7 @@ class Config:
         assert self.hardware.fit_on in ("full", "H")
         assert self.hardware.n_profiles >= 1
         assert self.grid.space in ("v", "phi", "phi_shifted")
-        assert self.outliers.policy in ("drop", "clip", "none")
+        assert self.outliers.policy in ("drop", "clip", "none", "r_max")
         assert 0.0 < self.outliers.a_max_quantile <= 1.0
         assert 0.0 < self.outliers.d_max_quantile <= 1.0
         if self.bid.known_distribution:

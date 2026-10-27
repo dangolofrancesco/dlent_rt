@@ -142,6 +142,19 @@ def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndar
     return L, ts.priorities[qi].astype(float), ts.hw_profiles[ai]
 
 
+def type_request(tid: np.ndarray, A: np.ndarray, A_of_type: np.ndarray, mode: str) -> np.ndarray:
+    """
+    (n_types, |I|) request entering the type volume v = A_type * d_bar. mode "profile": the hardware profile.
+    mode "real_mean" (hardware.type_volume): the mean real request of the jobs with type id tid (rows of A),
+    the profile for types without jobs.
+    """
+    if mode == "profile":
+        return A_of_type
+    N = np.bincount(tid, minlength=len(A_of_type))
+    mean = np.column_stack([type_mean(tid, N, A[:, i]) for i in range(A.shape[1])])
+    return np.where(N[:, None] > 0, mean, A_of_type)
+
+
 def build_type_space(H: JobArrays, ds, cfg: Config) -> TypeSpace:
     priorities = np.array(sorted(cfg.grid.priority_classes), dtype=float)
     profiles = ds.hw_catalogue.centroids
@@ -320,8 +333,10 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     L, priority_of_type, A_of_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
 
-    # 8. Expected resource volume
-    v = A_of_type * d_bar[:, None]
+    # 8. Expected resource volume (hardware.type_volume: profile or the mean real request of the type's jobs)
+    tid_ok = stats["type_ids"] >= 0
+    A_vol = type_request(stats["type_ids"][tid_ok], H.A[tid_ok], A_of_type, cfg.hardware.type_volume)
+    v = A_vol * d_bar[:, None]
 
     # 9-11. Raw objectives (per-type SAMPLE MEANS), normalization, scalarization
     if cfg.scalarization.method == "chebyshev":

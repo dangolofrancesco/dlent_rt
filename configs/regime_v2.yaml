@@ -13,6 +13,7 @@ data:
 time:
   d_max_hours: 23.0                       # cap on the job duration; the code also needs d_max <= 0.05 T
   cap_duration_everywhere: true           # one duration: time in the cluster, bids and energy
+  duration_mode: "effective"              # step 3: duration = CPU_hours_real / CPU request (not the job span)
 
 hardware:
   snap_requests: false                    # profiles only build the type id; A = the real request

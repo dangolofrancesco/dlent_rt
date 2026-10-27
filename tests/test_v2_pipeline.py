@@ -107,3 +107,37 @@ def test_old_energy_keys_still_load(tmp_path):
     p.write_text("energy_model:\n  spec_cpu_core: 32\n  machine_cores: 32\n")
     with pytest.raises(ValueError, match="old name"):
         load_config(p)
+
+
+def test_effective_duration_used_everywhere(tmp_path):
+    cfg = _v2(tmp_path)
+    df = pd.read_csv(cfg.data.batch_csv)
+    df["CPU_hours_real"] = df["CPU"] * df["duration"] * np.linspace(0.2, 1.0, len(df))   # <= request x span
+    df.to_csv(cfg.data.batch_csv, index=False)
+    cfg = replace(cfg, time=replace(cfg.time, duration_mode="effective", d_max_hours=50.0,
+                                    d_max_horizon_fraction=1.0, d_max_ratio_abort=1.0)).validate()
+    ds = load_dataset(cfg)
+    want = df.set_index("collection_id").eval("CPU_hours_real / CPU").clip(lower=cfg.time.duration_floor_hours)
+    for J in (ds.H, ds.stream):
+        np.testing.assert_allclose(J.duration_hours, want.loc[J.collection_id].to_numpy(), rtol=1e-12)
+    S = build_stream(ds, cfg)
+    assert np.array_equal(S.duration_hours, ds.stream.duration_hours)
+
+
+def test_r_max_removes_large_jobs_only(tmp_path):
+    cfg = _v2(tmp_path)
+    df = pd.read_csv(cfg.data.batch_csv)
+    r = float(df["CPU"].quantile(0.9))
+    ds = load_dataset(replace(cfg, outliers=replace(cfg.outliers, policy="r_max", r_max_machines=r)).validate())
+    keep = (df[["CPU", "RAM"]] <= r).all(axis=1)
+    assert ds.H.n + ds.stream.n == int(keep.sum())
+    assert np.concatenate([ds.H.A, ds.stream.A]).max() <= r
+
+
+def test_type_request_real_mean():
+    from dlent_rt.phase0 import type_request
+    prof = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+    tid = np.array([0, 0, 2])
+    A = np.array([[0.5, 0.1], [1.5, 0.3], [9.0, 6.0]])
+    assert type_request(tid, A, prof, "profile") is prof
+    np.testing.assert_array_equal(type_request(tid, A, prof, "real_mean"), [[1.0, 0.2], [2.0, 2.0], [9.0, 6.0]])

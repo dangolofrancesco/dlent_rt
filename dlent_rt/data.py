@@ -78,6 +78,13 @@ def _read_csv(cfg: Config) -> pd.DataFrame:
             raise ValueError(f"data.time_base = 'utc' needs time-zone-aware timestamps in '{col.datetime}' "
                              f"(e.g. 2019-05-01 07:05:00+00:00); {cfg.data.batch_csv} has none")
         df[col.datetime] = df[col.datetime].dt.tz_convert("UTC").dt.tz_localize(None)
+    if cfg.time.duration_mode == "effective":
+        # one duration per job: real CPU-hours / SUM request (<= the span); a zero CPU request keeps the span
+        cpu = df[col.requested_cpu].to_numpy(dtype=float)
+        eff = np.divide(df[col.cpu_hours_real].to_numpy(dtype=float), cpu, out=df[col.duration_hours].to_numpy(dtype=float).copy(),
+                        where=cpu > 0)
+        assert np.all(eff <= df[col.duration_hours].to_numpy(dtype=float) * (1 + 1e-9)), "effective duration > span"
+        df[col.duration_hours] = eff
     df = df.sort_values(col.datetime).reset_index(drop=True)
     return df
 
