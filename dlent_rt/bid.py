@@ -118,8 +118,8 @@ class LognormalBidParams:
     base_utility_mode: str = "log"  # "linear" | "log"
     gamma1: float = 0.01
     gamma2: float = 0.002
-    spec_cpu_core: float = 64  # cores per 1.0 normalized CPU
-    spec_ram_gb: float = 256   # GB per 1.0 normalized RAM
+    machine_cores: float = 64     # DECLARED ASSUMPTION (not from Google): cores of the largest machine (1.0 CPU)
+    machine_ram_gb: float = 256   # DECLARED ASSUMPTION (not from Google): GB of the largest machine (1.0 RAM)
 
 
 @dataclass
@@ -136,8 +136,8 @@ def synthesize_lognormal(
     duration_hours: np.ndarray, priority: np.ndarray,
     params: LognormalBidParams, rng: np.random.Generator,
 ) -> BidResult:
-    cpu_cores = cpu_norm * params.spec_cpu_core
-    ram_gb = ram_norm * params.spec_ram_gb
+    cpu_cores = cpu_norm * params.machine_cores
+    ram_gb = ram_norm * params.machine_ram_gb
     base_utility = compute_base_utility(
         priority, params.base_utility_u0, params.base_utility_mode,
     )

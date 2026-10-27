@@ -72,6 +72,12 @@ def _read_csv(cfg: Config) -> pd.DataFrame:
     col = cfg.data.columns
     df = pd.read_csv(resolve_path(cfg.data.batch_csv))
     df[col.datetime] = pd.to_datetime(df[col.datetime])
+    if cfg.data.time_base == "utc":
+        # the file must say its time zone; the model keeps naive UTC, the time base of the grid (timestamp_utc)
+        if getattr(df[col.datetime].dt, "tz", None) is None:
+            raise ValueError(f"data.time_base = 'utc' needs time-zone-aware timestamps in '{col.datetime}' "
+                             f"(e.g. 2019-05-01 07:05:00+00:00); {cfg.data.batch_csv} has none")
+        df[col.datetime] = df[col.datetime].dt.tz_convert("UTC").dt.tz_localize(None)
     df = df.sort_values(col.datetime).reset_index(drop=True)
     return df
 
@@ -160,13 +166,17 @@ def _build_job_arrays(
         df[col.requested_ram].to_numpy(dtype=float),
     ])
     hw_idx = catalogue.assign(A_raw)
-    A = catalogue.centroids[hw_idx]
+    # hardware.snap_requests = false: the profile gives only the type id (hw_idx); A stays the real request
+    A = catalogue.centroids[hw_idx] if cfg.hardware.snap_requests else A_raw
     dur_hours = df[col.duration_hours].to_numpy(dtype=float)
     # Duration floor: treat sub-minute jobs as 1-minute for allocation.
     # Cloud providers bill on a 1-minute minimum (GCP/AWS), and without
     # this floor near-zero durations produce near-zero resource volumes
     # that inflate gamma's r_max/v_min term by orders of magnitude.
     dur_hours = np.maximum(dur_hours, cfg.time.duration_floor_hours)
+    if cfg.time.cap_duration_everywhere and d_max_steps is not None:
+        # one duration everywhere: bids and energy (duration_hours) use the same cap as the cluster time
+        dur_hours = np.minimum(dur_hours, d_max_steps * cfg.time.tick_seconds / 3600.0)
     dur_steps = _convert_durations(dur_hours, cfg, d_max_steps)
     return JobArrays(
         n=n, resources=resources,
@@ -292,7 +302,13 @@ def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
     timeline (see load_dataset), not `stream` by itself -- passing `stream`
     alone silently reproduces the old, biased sizing.
     """
-    if cfg.capacity.mode == "fraction_of_volume":
+    if cfg.capacity.mode == "exceeded_share":
+        # the concurrent-request level exceeded `exceeded_share` of the time when every job is admitted
+        stats = _occupancy_stats(basis)
+        if stats.get("weights") is None:
+            return stats["peak"]
+        return _time_weighted_quantile(stats["levels"], stats["weights"], 1.0 - cfg.capacity.exceeded_share)
+    elif cfg.capacity.mode == "fraction_of_volume":
         volume = (basis.A * basis.duration_steps[:, None]).sum(axis=0)
         return cfg.capacity.fraction * volume
     elif cfg.capacity.mode == "fraction_of_peak":
@@ -324,7 +340,11 @@ def _compute_d_max_steps(
         duration_hours_all, cfg, d_max_steps=None
     )
     q = cfg.time.d_max_quantile
-    candidate = int(np.quantile(steps, q))
+    if cfg.time.d_max_hours is not None:
+        # explicit cap (time.d_max_hours); the horizon ceiling and the abort check below still apply
+        candidate = int(np.rint(cfg.time.d_max_hours * 3600.0 / cfg.time.tick_seconds))
+    else:
+        candidate = int(np.quantile(steps, q))
     candidate = max(candidate, 1)
 
     ceiling = max(int(cfg.time.d_max_horizon_fraction * T), 1)
@@ -333,6 +353,7 @@ def _compute_d_max_steps(
     ratio = d_max / max(T, 1)
     diag = dict(
         quantile=q,
+        d_max_hours=cfg.time.d_max_hours,
         candidate_from_quantile=candidate,
         horizon_ceiling=ceiling,
         chosen=d_max,

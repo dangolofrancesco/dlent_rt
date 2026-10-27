@@ -84,7 +84,7 @@ def run_one(cfg, label: str = "", milp_time_limit: float = 600.0) -> dict:
     lp_use, prof = phase0_load(ds, st, cfg)
     tid_H = _h_types(ds, st)
     n_pop = int((st.p > 0).sum())
-    out.update(c_cpu=c[0], c_ram=c[1], c_cores=c[0] * em.spec_cpu_core, c_GB=c[1] * em.spec_ram_gb,
+    out.update(c_cpu=c[0], c_ram=c[1], c_cores=c[0] * em.machine_cores, c_GB=c[1] * em.machine_ram_gb,
                dropped_H=(ds.capacity_drop or {}).get("n_H", 0),
                dropped_stream=(ds.capacity_drop or {}).get("n_stream", 0),
                n_H=ds.H.n, n_stream=ds.stream.n, s_C=st.carbon_price,

@@ -90,7 +90,7 @@ def one(f: float) -> dict:
     em = cfg.energy_model
     lH, lS = prof_load(st, c), prof_load(ref, c)
     return {
-        "fraction": f, "c CPU (cores)": c[0] * em.spec_cpu_core, "c RAM (GB)": c[1] * em.spec_ram_gb,
+        "fraction": f, "c CPU (cores)": c[0] * em.machine_cores, "c RAM (GB)": c[1] * em.machine_ram_gb,
         "H removed": int(big_H.sum()), "H removed %": 100 * big_H.mean(),
         "stream removed": int(big_S.sum()), "stream removed %": 100 * big_S.mean(),
         "H R_job+ removed %": 100 * pos_H[big_H].sum() / pos_H.sum(),

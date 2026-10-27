@@ -43,8 +43,8 @@ from .bid import (
 # Bid and energy helpers
 def _make_energy_params(cfg: Config) -> EnergyParams:
     return EnergyParams(
-        spec_cpu_core=cfg.energy_model.spec_cpu_core,
-        spec_ram_gb=cfg.energy_model.spec_ram_gb,
+        machine_cores=cfg.energy_model.machine_cores,
+        machine_ram_gb=cfg.energy_model.machine_ram_gb,
         p_core=cfg.energy_model.p_core,
         p_gb=cfg.energy_model.p_gb,
         pue=cfg.energy_model.pue,
@@ -60,8 +60,8 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
         base_utility_mode=cfg.bid.base_utility_mode,
         gamma1=cfg.bid.gamma1,
         gamma2=cfg.bid.gamma2,
-        spec_cpu_core=cfg.energy_model.spec_cpu_core,
-        spec_ram_gb=cfg.energy_model.spec_ram_gb,
+        machine_cores=cfg.energy_model.machine_cores,
+        machine_ram_gb=cfg.energy_model.machine_ram_gb,
     )
     return synthesize_lognormal(
         jobs.A[:, 0], jobs.A[:, 1],

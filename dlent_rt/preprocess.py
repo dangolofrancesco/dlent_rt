@@ -101,9 +101,17 @@ def handle_outliers(
 
     drop: rows exceeding any resource cutoff OR the duration cutoff are removed.
     clip: those values are clamped to the cutoff (values distorted, count kept).
+    none: no filter; every row is kept (thresholds reported as NaN).
     """
     o = cfg.outliers
     n_before = len(df)
+    if o.policy == "none":
+        report = OutlierReport(
+            a_max_thresholds=np.full(len(a_cols), np.nan), d_max_hours_threshold=float("nan"),
+            n_dropped_resource=0, n_dropped_duration=0, n_dropped_total=0,
+            n_before=n_before, n_after=n_before, policy="none",
+        )
+        return df.reset_index(drop=True), report
 
     a_thresh = np.array([df[c].quantile(o.a_max_quantile) for c in a_cols])
     d_thresh = float(df[d_col].quantile(o.d_max_quantile))

@@ -53,7 +53,7 @@ if os.environ.get("DLENT_SYNTHETIC") == "1" or not resolve_path(cfg.data.batch_c
                                 "time.d_max_horizon_fraction": 0.10, "time.d_max_ratio_abort": 0.2})
     print("USING SYNTHETIC FALLBACK DATA: numbers are NOT meaningful")
 cfg = cfg.validate()
-CORES, GB = cfg.energy_model.spec_cpu_core, cfg.energy_model.spec_ram_gb
+CORES, GB = cfg.energy_model.machine_cores, cfg.energy_model.machine_ram_gb
 UNIT = np.array([CORES, GB])
 
 with warnings.catch_warnings(record=True) as W:

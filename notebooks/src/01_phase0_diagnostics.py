@@ -104,14 +104,14 @@ levels_q = _time_weighted_quantile(occ_U[:-1], hold, cfg.capacity.concurrency_qu
 print("=== initial cluster size c (Phase 0, before any online decision) ===")
 print(f"sizing: mode={cfg.capacity.mode}  fraction={cfg.capacity.fraction}  "
       f"concurrency_quantile={cfg.capacity.concurrency_quantile}")
-for i, (name, unit, k) in enumerate((("CPU", "cores", spec.spec_cpu_core), ("RAM", "GB", spec.spec_ram_gb))):
+for i, (name, unit, k) in enumerate((("CPU", "cores", spec.machine_cores), ("RAM", "GB", spec.machine_ram_gb))):
     print(f"  {name}: c = {c0[i]:.5f} normalized  = {c0[i] * k:,.1f} {unit}   "
           f"(q{cfg.capacity.concurrency_quantile:g} of the occupancy = {levels_q[i]:.5f}; "
           f"peak = {occ_U[:, i].max():.5f} = {100 * occ_U[:, i].max() / c0[i]:.0f}% of c)")
-print(f"  ({spec.spec_cpu_core:g} cores per 1.0 normalized CPU, {spec.spec_ram_gb:g} GB per 1.0 normalized RAM)")
+print(f"  ({spec.machine_cores:g} cores per 1.0 normalized CPU, {spec.machine_ram_gb:g} GB per 1.0 normalized RAM)")
 
 occ_summary = pd.DataFrame({
-    "c (normalized)": c0, "c (physical)": [f"{c0[0] * spec.spec_cpu_core:,.1f} cores", f"{c0[1] * spec.spec_ram_gb:,.1f} GB"],
+    "c (normalized)": c0, "c (physical)": [f"{c0[0] * spec.machine_cores:,.1f} cores", f"{c0[1] * spec.machine_ram_gb:,.1f} GB"],
     "mean occupancy %": [100 * np.average(occ_U[:-1, i], weights=hold) / c0[i] for i in range(2)],
     "median occupancy %": [100 * _time_weighted_quantile(occ_U[:-1, [i]], hold, 0.5)[0] / c0[i] for i in range(2)],
     "peak occupancy %": pct.max(axis=0),
@@ -152,8 +152,8 @@ for lc in LOGNORMAL_CONFIGS:
         sigma=lc["sigma"], base_utility_u0=lc["base_utility_u0"],
         base_utility_mode=cfg.bid.base_utility_mode,
         gamma1=cfg.bid.gamma1, gamma2=cfg.bid.gamma2,
-        spec_cpu_core=cfg.energy_model.spec_cpu_core,
-        spec_ram_gb=cfg.energy_model.spec_ram_gb,
+        machine_cores=cfg.energy_model.machine_cores,
+        machine_ram_gb=cfg.energy_model.machine_ram_gb,
     )
     b = synthesize_lognormal(
         ds.H.A[:, 0], ds.H.A[:, 1], ds.H.duration_hours, ds.H.priority,
@@ -772,13 +772,13 @@ from dlent_rt.phase0 import type_arrays
 from dlent_rt.lp_oracle import solve_lp_rs
 
 spec = cfg.energy_model
-unit = np.array([spec.spec_cpu_core, spec.spec_ram_gb], float)       # cores / GB per 1.0 normalized
+unit = np.array([spec.machine_cores, spec.machine_ram_gb], float)       # cores / GB per 1.0 normalized
 res_names = ["CPU (cores)", "RAM (GB)"]
 c0 = np.asarray(ds.capacity, float)
 lam1, lam2, lam3 = cfg.objective.lambda1, cfg.objective.lambda2, cfg.objective.lambda3
 
 cap = pd.DataFrame({"normalized": c0, "physical": c0 * unit}, index=res_names)
-print(f"Cluster capacity (1.0 normalized = {spec.spec_cpu_core:g} cores / {spec.spec_ram_gb:g} GB):")
+print(f"Cluster capacity (1.0 normalized = {spec.machine_cores:g} cores / {spec.machine_ram_gb:g} GB):")
 display(cap.round(3))
 
 pop = st.p > 0
@@ -871,7 +871,7 @@ from dlent_rt.data import _read_csv
 
 col = cfg.data.columns
 spec = cfg.energy_model
-k_cpu, k_ram = spec.spec_cpu_core, spec.spec_ram_gb
+k_cpu, k_ram = spec.machine_cores, spec.machine_ram_gb
 raw = _read_csv(cfg)
 orr = ds.outlier_report
 print(f"outlier policy = {orr.policy} | a_max_quantile = {cfg.outliers.a_max_quantile} | d_max_quantile = {cfg.outliers.d_max_quantile}")
@@ -915,7 +915,7 @@ from dlent_rt.data import _read_csv
 
 col = cfg.data.columns
 spec = cfg.energy_model
-unit = np.array([spec.spec_cpu_core, spec.spec_ram_gb], float)
+unit = np.array([spec.machine_cores, spec.machine_ram_gb], float)
 raw = _read_csv(cfg)
 A_n = raw[[col.requested_cpu, col.requested_ram]].to_numpy(float)          # normalized
 A = A_n * unit                                                              # cores, GB
@@ -959,7 +959,7 @@ from dlent_rt.data import _read_csv
 
 col = cfg.data.columns
 spec = cfg.energy_model
-unit = np.array([spec.spec_cpu_core, spec.spec_ram_gb], float)
+unit = np.array([spec.machine_cores, spec.machine_ram_gb], float)
 raw = _read_csv(cfg)
 A_n = raw[[col.requested_cpu, col.requested_ram]].to_numpy(float)
 A = A_n * unit                                                   # cores, GB

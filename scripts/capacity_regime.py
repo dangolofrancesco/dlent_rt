@@ -115,7 +115,7 @@ def run_regime(label, cfg, cached, base_cfg):
     B = Benchmarks(ds, st, cfg, stream=S)
     R, c, T = B.R, np.asarray(ds.capacity, float), int(ds.T)
     em = cfg.energy_model
-    o = {"regime": label, "c CPU (cores)": c[0] * em.spec_cpu_core, "c RAM (GB)": c[1] * em.spec_ram_gb,
+    o = {"regime": label, "c CPU (cores)": c[0] * em.machine_cores, "c RAM (GB)": c[1] * em.machine_ram_gb,
          "c CPU (norm)": c[0], "c RAM (norm)": c[1], "|H|": ds.H.n, "|stream|": S.n, "T (ticks)": T,
          "s_C": st.carbon_price}
     # filter: what it removes (flag OFF on the same c)

@@ -26,8 +26,8 @@ import pandas as pd
 @dataclass
 class EnergyParams:
     """Hardware and conversion constants."""
-    spec_cpu_core: float = 64       # cores per 1.0 normalized CPU in the trace
-    spec_ram_gb: float = 256        # GB per 1.0 normalized RAM in the trace
+    machine_cores: float = 64       # DECLARED ASSUMPTION (not from Google): cores of the largest machine (1.0 CPU)
+    machine_ram_gb: float = 256     # DECLARED ASSUMPTION (not from Google): GB of the largest machine (1.0 RAM)
     p_core: float = 15.0            # watts per physical core under load
     p_gb: float = 0.35              # watts per GB of RAM
     pue: float = 1.10               # power usage effectiveness (facility overhead)
@@ -40,7 +40,7 @@ def compute_power_kw(
     """
     Instantaneous power draw in kW per job.
 
-    Maps normalized Google trace units to physical resources, then applies the
+    Maps the trace units (1.0 = the largest machine) to cores / GB with the declared machine size, then applies the
     scheduling-class efficiency factor kappa(sc).
 
     kappa models that latency-sensitive workloads (sc=3) disable CPU power-saving
@@ -54,8 +54,8 @@ def compute_power_kw(
     Ref: Lo et al. (2015), "Heracles: improving resource efficiency at scale",
     documents the 20-35% power overhead of latency-critical vs batch workloads.
     """
-    cpu_cores = cpu_norm * params.spec_cpu_core
-    ram_gb = ram_norm * params.spec_ram_gb
+    cpu_cores = cpu_norm * params.machine_cores
+    ram_gb = ram_norm * params.machine_ram_gb
     kappa = 1.0 + scheduling_class * 0.116
     power_w = (params.p_core * cpu_cores * kappa) + (params.p_gb * ram_gb)
     return params.pue * power_w / 1000.0  # W -> kW

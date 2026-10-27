@@ -82,7 +82,7 @@ def fast(label, q, f):
     a_max_H = ds.H.A.max(axis=0)
     o = {"regime": label, "q": q, "f": f,
          "capacity.absolute.cpu (norm)": c[0], "capacity.absolute.ram (norm)": c[1],
-         "c CPU (cores)": c[0] * em.spec_cpu_core, "c RAM (GB)": c[1] * em.spec_ram_gb,
+         "c CPU (cores)": c[0] * em.machine_cores, "c RAM (GB)": c[1] * em.machine_ram_gb,
          "a_max stream CPU / c": float(ds.a_max[0] / c[0]), "a_max stream RAM / c": float(ds.a_max[1] / c[1]),
          "a_max H CPU / c": float(a_max_H[0] / c[0]), "a_max H RAM / c": float(a_max_H[1] / c[1]),
          "oversize stream jobs": int(big_S.sum()), "oversize stream %": 100 * big_S.mean(),
