@@ -195,18 +195,25 @@ class FractionPolicy:
     under `state`'s grid (u_i uniform, fixed seed). x_j in [0, 1] is the LP-RS solution of that state; a type with
     no observation (p = 0) or no type gets x = 0. No learning, no tests; the physical gate is applied by simulate."""
 
-    def __init__(self, state: PhaseState, stream, x: np.ndarray, seed: int = 0):
+    def __init__(self, state: PhaseState, stream, x: np.ndarray, seed: int = 0,
+                 admit_unseen: Optional[np.ndarray] = None):
+        """admit_unseen (policy.unseen_types = dual_rule): per-type bool, used for the arrivals whose type has no
+        job in the state (p = 0); None = reject them."""
         k = state.grid.assign(stream.v, state.myerson)
         j = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
         jj = np.maximum(j, 0)
-        self.x_job = np.where((j >= 0) & (np.asarray(state.p)[jj] > 0), np.asarray(x, float)[jj], 0.0)
+        seen = (j >= 0) & (np.asarray(state.p)[jj] > 0)
+        self.x_job = np.where(seen, np.asarray(x, float)[jj], 0.0)
+        self.unseen = (j >= 0) & ~seen
+        self.dual = (np.zeros(stream.n, bool) if admit_unseen is None
+                     else self.unseen & np.asarray(admit_unseen, bool)[jj])
         self.u = np.random.default_rng(seed).random(stream.n)
 
     def before_arrival(self, i: int, t: int) -> None:
         pass
 
     def want(self, i: int, t: int) -> bool:
-        return bool(self.u[i] < self.x_job[i])
+        return bool(self.dual[i] or self.u[i] < self.x_job[i])
 
     def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
         pass

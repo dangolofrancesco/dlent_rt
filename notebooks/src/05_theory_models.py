@@ -105,3 +105,35 @@ plt.tight_layout(); plt.show()
 fig, axs = plt.subplots(2, 1, figsize=(11, 5.6), sharex=True)
 te.fig_tau_windows(rs, axs, 24)
 plt.tight_layout(); plt.show()
+
+# %% [markdown]
+# ## 4. Unseen types, H vs stream, bucketed MILP on one week
+#
+# Read from the cache of `scripts/week32/theory_models_2.py` (`reports/week32/theory_models_2_cache.pkl`): the
+# bucketed MILP alone takes about 15 minutes per f. Run that script first.
+
+# %%
+import pickle
+with open(ROOT / "reports" / "week32" / "theory_models_2_cache.pkl", "rb") as fh:
+    C2 = pickle.load(fh)
+print("static Phase 0 policy: unseen types rejected vs dual rule")
+display(C2["n1"])
+print("f selected by the fixed rule (closest to 20-30%, ties to 25%):", C2["sel"])
+
+# %%
+print("H vs stream (types seen in both, weighted by H's rate):",
+      {k: round(C2["hv"][k], 4) for k in ("lambda_ratio", "rd_ratio", "r_tilde_ratio", "load_H", "load_stream",
+                                          "load_stream_unseen")})
+display(C2["top"])
+display(C2["n4"])
+display(C2["n5"])
+if "n6" in C2:
+    print("one day (end-of-window effect: the MILP can exceed the fluid LP, see theory_models_2.md)")
+    display(C2["n6"])
+
+# %%
+rs = C2["selected"]
+fig, axs = plt.subplots(4, 1, figsize=(11, 10.5), sharex=True)
+te.fig_occupancy(rs, axs[:2], cfg.time.tick_seconds, option="reject")
+te.fig_occupancy(rs, axs[2:], cfg.time.tick_seconds, option="dual_rule")
+plt.tight_layout(); plt.show()

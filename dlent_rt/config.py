@@ -291,6 +291,15 @@ class AblationCfg:
 
 
 @dataclass(frozen=True)
+class PolicyCfg:
+    # Static policies of dlent_rt.theory_eval (week 32). Arrivals of a type with no job in H:
+    #   "reject"    -> never admitted (x = 0)
+    #   "dual_rule" -> admitted iff r~_u - tau . v_u > 0 (Phase 0 tau), r~_u and v_u from fallback estimates
+    #                  (theory_eval.unseen_type_estimates); then the capacity gate
+    unseen_types: str = "reject"
+
+
+@dataclass(frozen=True)
 class LoggingCfg:
     per_step: bool = True
     per_phase: bool = True
@@ -324,6 +333,7 @@ class Config:
     tests: TestsCfg = field(default_factory=TestsCfg)
     online: OnlineCfg = field(default_factory=OnlineCfg)
     ablation: AblationCfg = field(default_factory=AblationCfg)
+    policy: PolicyCfg = field(default_factory=PolicyCfg)
 
     #  validation 
     def validate(self) -> "Config":
@@ -359,6 +369,7 @@ class Config:
             assert self.bid.sigma > 0
         assert self.bid.base_utility_mode in ("linear", "log")
         assert self.bid.mode in ("base_utility", "size")
+        assert self.policy.unseen_types in ("reject", "dual_rule")
         assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.machine_cores > 0
         assert self.energy_model.machine_ram_gb > 0
@@ -424,7 +435,7 @@ _DATACLASS_REGISTRY = {
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
     "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
-    "AblationCfg": AblationCfg,
+    "AblationCfg": AblationCfg, "PolicyCfg": PolicyCfg,
 }
 
 
