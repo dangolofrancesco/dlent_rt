@@ -61,7 +61,10 @@ class NormalizationCfg:
 
 @dataclass(frozen=True)
 class BidCfg:
-    # bid model (the only one): ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1)
+    # bid model: ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1). The cost base (bid.mode):
+    #   "base_utility" (default): (u0 * g(q) + gamma1 * cores + gamma2 * GB) * duration, g = base_utility_mode
+    #   "size":                   (1 + ln q) * (gamma1 * cores + gamma2 * GB) * duration   (u0 not used)
+    mode: str = "base_utility"
     # Base utility rate ($/hour): minimum hourly value a user derives from
     # job completion, independent of resource footprint. Multiplied by
     # duration. Ref: reinterpretation suggested by advisor — demand-side
@@ -351,6 +354,7 @@ class Config:
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
             assert self.bid.sigma > 0
         assert self.bid.base_utility_mode in ("linear", "log")
+        assert self.bid.mode in ("base_utility", "size")
         assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.machine_cores > 0
         assert self.energy_model.machine_ram_gb > 0

@@ -58,6 +58,7 @@ def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
         sigma=cfg.bid.sigma,
         base_utility_u0=cfg.bid.base_utility_u0,
         base_utility_mode=cfg.bid.base_utility_mode,
+        mode=cfg.bid.mode,
         gamma1=cfg.bid.gamma1,
         gamma2=cfg.bid.gamma2,
         machine_cores=cfg.energy_model.machine_cores,

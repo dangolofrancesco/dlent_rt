@@ -116,6 +116,7 @@ class LognormalBidParams:
     sigma: float = 1.5
     base_utility_u0: float = 50.0   # U_0, the free parameter of base_utility_mode
     base_utility_mode: str = "log"  # "linear" | "log"
+    mode: str = "base_utility"      # "base_utility" | "size" (cost base, see synthesize_lognormal)
     gamma1: float = 0.01
     gamma2: float = 0.002
     machine_cores: float = 64     # DECLARED ASSUMPTION (not from Google): cores of the largest machine (1.0 CPU)
@@ -138,12 +139,18 @@ def synthesize_lognormal(
 ) -> BidResult:
     cpu_cores = cpu_norm * params.machine_cores
     ram_gb = ram_norm * params.machine_ram_gb
-    base_utility = compute_base_utility(
-        priority, params.base_utility_u0, params.base_utility_mode,
-    )
-    cost_base = (
-        base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
-    ) * duration_hours
+    if params.mode == "size":
+        # size-based bid: the reserve price of the requested resources, scaled by priority (1 + ln q); no u0
+        cost_base = (1.0 + np.log(priority)) * (
+            params.gamma1 * cpu_cores + params.gamma2 * ram_gb
+        ) * duration_hours
+    else:
+        base_utility = compute_base_utility(
+            priority, params.base_utility_u0, params.base_utility_mode,
+        )
+        cost_base = (
+            base_utility + params.gamma1 * cpu_cores + params.gamma2 * ram_gb
+        ) * duration_hours
     cost_base = np.maximum(cost_base, 1e-9)
     mu = np.log(cost_base) - (params.sigma ** 2) / 2.0
 
