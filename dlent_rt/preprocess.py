@@ -82,17 +82,29 @@ def fit_hardware_catalogue(A_fit: np.ndarray, cfg: Config) -> HardwareCatalogue:
 # --------------------------------------------------------------------------- #
 @dataclass
 class LimitReport:
-    """What the size limit did, for logging and diagnostics."""
+    """What the size limit R_max and the job quota did, for logging and diagnostics."""
     r_max_machines: Optional[float]     # None = no limit
-    n_removed: int
+    n_removed: int                      # removed by R_max
     n_before: int
     n_after: int
+    n_quota_rejected: int = 0           # rejected by the job quota (after R_max)
+    quota: Optional[tuple] = None       # (job_quota_machines, job_quota_mem)
 
 
 def apply_r_max(df: pd.DataFrame, cfg: Config, a_cols: list[str]) -> tuple[pd.DataFrame, LimitReport]:
-    """Remove the jobs with any request (CPU or RAM, machines) larger than limits.r_max_machines."""
-    r = cfg.limits.r_max_machines
-    over = (np.zeros(len(df), bool) if r is None
-            else (df[a_cols].to_numpy(dtype=float) > r).any(axis=1))
-    report = LimitReport(r_max_machines=r, n_removed=int(over.sum()), n_before=len(df), n_after=int((~over).sum()))
-    return df.loc[~over].reset_index(drop=True), report
+    """Remove the jobs with any request (CPU or RAM, machines) larger than limits.r_max_machines, then reject the
+    jobs over the job quota (CPU > job_quota_machines or RAM > job_quota_mem)."""
+    lim = cfg.limits
+    A = df[a_cols].to_numpy(dtype=float)
+    over = np.zeros(len(df), bool) if lim.r_max_machines is None else (A > lim.r_max_machines).any(axis=1)
+    quota = np.zeros(len(df), bool)
+    if lim.job_quota_machines is not None:
+        quota |= A[:, 0] > lim.job_quota_machines
+    if lim.job_quota_mem is not None:
+        quota |= A[:, 1] > lim.job_quota_mem
+    quota &= ~over
+    keep = ~(over | quota)
+    report = LimitReport(r_max_machines=lim.r_max_machines, n_removed=int(over.sum()), n_before=len(df),
+                         n_after=int(keep.sum()), n_quota_rejected=int(quota.sum()),
+                         quota=(lim.job_quota_machines, lim.job_quota_mem))
+    return df.loc[keep].reset_index(drop=True), report

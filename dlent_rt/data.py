@@ -56,6 +56,8 @@ class Dataset:
     d_max_diag: dict
     xi: float
     grid_data: object              # GridData from energy.py (or None)
+    # capacity.mode mean_demand: lambda_hat (jobs / h), mean_rd and D_bar (machines, per resource), H span (h), f
+    capacity_diag: Optional[dict] = None
 
     @property
     def n_resources(self) -> int:
@@ -286,10 +288,27 @@ def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
         )
 
 
+def mean_demand(A: np.ndarray, d_hours: np.ndarray, span_hours: float) -> dict:
+    """
+    Mean demand of a job history (capacity.mode mean_demand), per resource:
+        lambda_hat = n / span_hours            (jobs per hour)
+        mean_rd    = (1/n) sum_j r_j d_j       (machine-hours per job)
+        D_bar      = lambda_hat * mean_rd      (machines) = total work / span
+    """
+    n = len(d_hours)
+    lam = n / span_hours
+    mean_rd = (np.asarray(A, float) * np.asarray(d_hours, float)[:, None]).sum(axis=0) / n
+    return dict(lambda_hat=lam, mean_rd=mean_rd, D_bar=lam * mean_rd, span_hours=span_hours, n=n)
+
+
 def _compute_d_max_steps(T: int, cfg: Config) -> tuple[int, dict]:
-    """d_max = min(time.d_max_hours, d_max_horizon_fraction * T) in steps; d_max_hours None -> the ceiling."""
+    """d_max = min(time.d_max_hours, d_max_horizon_fraction * T) in steps; d_max_hours None -> the ceiling.
+    limits.d_cap_hours set -> d_max = the cap (the ceiling rule is not used; the abort check still applies)."""
     ceiling = max(int(cfg.time.d_max_horizon_fraction * T), 1)
-    if cfg.time.d_max_hours is not None:
+    if cfg.limits.d_cap_hours is not None:
+        ceiling = max(int(np.rint(cfg.limits.d_cap_hours * 3600.0 / cfg.time.tick_seconds)), 1)
+        candidate = ceiling
+    elif cfg.time.d_max_hours is not None:
         candidate = max(int(np.rint(cfg.time.d_max_hours * 3600.0 / cfg.time.tick_seconds)), 1)
     else:
         candidate = ceiling
@@ -382,30 +401,37 @@ def load_dataset(cfg: Config) -> Dataset:
     # timeline (steps_H, steps_stream_abs) -- NOT on stream.arrival_step,
     # which is re-based to 0 and would misalign with steps_H. See
     # _size_capacity's docstring for why stream alone is not used.
-    capacity_basis = _OccupancyBasis(
-        arrival_step=all_steps,
-        duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
-        A=np.concatenate([H.A, stream.A], axis=0),
-    )
-    capacity = _size_capacity(capacity_basis, cfg)
+    capacity_diag = None
+    if cfg.capacity.mode == "mean_demand":
+        # Phase 0 information only: H's jobs (after the limits), capped durations, H's span
+        capacity_diag = mean_demand(H.A, H.duration_hours, H_span_steps * cfg.time.tick_seconds / 3600.0)
+        capacity_diag["f"] = float(cfg.capacity.f)
+        capacity = cfg.capacity.f * capacity_diag["D_bar"]
+    else:
+        capacity_basis = _OccupancyBasis(
+            arrival_step=all_steps,
+            duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
+            A=np.concatenate([H.A, stream.A], axis=0),
+        )
+        capacity = _size_capacity(capacity_basis, cfg)
 
-    # Regression check: H+stream now partition the filtered dataset with no
-    # gaps (positional split, no stratified pool), so capacity computed from
-    # the H+stream basis must equal capacity computed directly on the WHOLE
-    # filtered dataset's timeline in one shot.
-    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
-    full_basis = _OccupancyBasis(
-        arrival_step=full_jobs.arrival_step,
-        duration_steps=full_jobs.duration_steps,
-        A=full_jobs.A,
-    )
-    capacity_full = _size_capacity(full_basis, cfg)
-    assert np.allclose(capacity, capacity_full), (
-        f"capacity from H+stream basis ({capacity}) does not match capacity "
-        f"computed directly on the full filtered dataset's timeline "
-        f"({capacity_full}) -- the H/stream split should partition df with "
-        f"no gaps or reordering."
-    )
+        # Regression check: H+stream now partition the filtered dataset with no
+        # gaps (positional split, no stratified pool), so capacity computed from
+        # the H+stream basis must equal capacity computed directly on the WHOLE
+        # filtered dataset's timeline in one shot.
+        full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
+        full_basis = _OccupancyBasis(
+            arrival_step=full_jobs.arrival_step,
+            duration_steps=full_jobs.duration_steps,
+            A=full_jobs.A,
+        )
+        capacity_full = _size_capacity(full_basis, cfg)
+        assert np.allclose(capacity, capacity_full), (
+            f"capacity from H+stream basis ({capacity}) does not match capacity "
+            f"computed directly on the full filtered dataset's timeline "
+            f"({capacity_full}) -- the H/stream split should partition df with "
+            f"no gaps or reordering."
+        )
 
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
@@ -439,4 +465,5 @@ def load_dataset(cfg: Config) -> Dataset:
         d_max_diag=d_max_diag,
         xi=xi,
         grid_data=grid_data,
+        capacity_diag=capacity_diag,
     )

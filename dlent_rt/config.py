@@ -129,6 +129,13 @@ class LimitsCfg:
     # Jobs with a CPU or RAM request larger than r_max_machines are removed (None = no limit).
     r_max_machines: Optional[float] = 0.1
     xi_warn_threshold: float = 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this
+    # Duration cap (None = off): d_j = min(effective duration, d_cap_hours); jobs are kept, only shortened. When set,
+    # d_max = d_cap_hours (the time.d_max_hours / horizon-ceiling rule is not used; the abort check still applies).
+    d_cap_hours: Optional[float] = None
+    # Job quota (None = off): a job with a CPU request > job_quota_machines OR a RAM request > job_quota_mem
+    # (machines) is rejected before the market: it never enters Phase 0 or the online run.
+    job_quota_machines: Optional[float] = None
+    job_quota_mem: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -139,11 +146,14 @@ class AbsoluteCapCfg:
 
 @dataclass(frozen=True)
 class CapacityCfg:
-    mode: str = "exceeded_share"   # "exceeded_share" | "absolute"
+    mode: str = "exceeded_share"   # "exceeded_share" | "mean_demand" | "absolute"
     # exceeded_share: c_i = the demand level of resource i exceeded this share of the time when every job is
     # admitted (time-weighted, on the same A and duration_steps the model uses).
     exceeded_share: float = 0.25
     absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)   # mode "absolute": c in machines
+    # mean_demand: C_i = f * D_bar_i, D_bar_i = lambda_hat * mean_j(r_ij d_j) = sum_{j in H} r_ij d_j / |H|
+    # (machines; on H only, after the limits, with the capped durations; |H| = H's span in hours)
+    f: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -308,7 +318,11 @@ class Config:
         assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
         assert self.scalarization.method in ("chebyshev", "linear")
         assert self.oracle.kind == "frozen", "oracle.kind: only 'frozen' is implemented"
-        assert self.capacity.mode in ("exceeded_share", "absolute")
+        assert self.capacity.mode in ("exceeded_share", "mean_demand", "absolute")
+        if self.capacity.mode == "mean_demand":
+            assert self.capacity.f is not None and self.capacity.f > 0
+        for x in (self.limits.d_cap_hours, self.limits.job_quota_machines, self.limits.job_quota_mem):
+            assert x is None or x > 0
         assert 0.0 <= self.capacity.exceeded_share < 1.0
         assert self.time.d_max_hours is None or self.time.d_max_hours > 0
         assert self.limits.r_max_machines is None or self.limits.r_max_machines > 0
