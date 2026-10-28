@@ -472,9 +472,12 @@ def sub_stream(S, mask):
     return type(S)(n=int(mask.sum()), **kw)
 
 
-def window_models(base_cfg, f: float, days=(0.0, 7.0), seed: int = 0, milp_time_limit: float = 900.0) -> dict:
+def window_models(base_cfg, f: float, days=(0.0, 7.0), seed: int = 0, milp_time_limit: float = 900.0,
+                  tail_hours: float | None = 1.0) -> dict:
     """Fluid OPT, fluid on feasible types and the bucketed MILP (reference buckets, true durations) on the stream
-    arrivals of days [days[0], days[1]) after H; T = the window length."""
+    arrivals of days [days[0], days[1]) after H; T = the window length. tail_hours: the MILP's capacity checks after
+    the last arrival (None = the old behaviour). Also 'fluid_window': fluid OPT with each type's volume counted only
+    inside the window (mean of min(D_j, window end - t_j) over its jobs), the end-of-window diagnostic."""
     import time
     cfg = replace(base_cfg, capacity=replace(base_cfg.capacity, f=f)).validate()
     ds = load_dataset(cfg)
@@ -489,9 +492,20 @@ def window_models(base_cfg, f: float, days=(0.0, 7.0), seed: int = 0, milp_time_
     fluid = Bw.fluid_opt()
     ff = Bw.fluid_opt_feasible_types()
     t_lp = time.perf_counter() - t
+    ref = Bw.reference_state
+    j = Bw.bucket_types("reference")["type"]
+    ok = j >= 0
+    inside = np.minimum(Sw.D, Bw.T - (Sw.tick - t0) + 1).astype(float)          # ticks of each job inside the window
+    N = np.bincount(j[ok], minlength=ref.n_types)
+    d_in = np.divide(np.bincount(j[ok], weights=inside[ok], minlength=ref.n_types), N, out=np.zeros(ref.n_types),
+                     where=N > 0)
+    lp_w = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=ref.A_type * d_in[:, None], c=Bw.c, presolve=cfg.lp.presolve)
     n_cand, nnz = milp_nonzeros(Bw, "reference")
-    o = Bw.job_opt_bucketed("reference", "true", time_limit=milp_time_limit)
+    tail = None if tail_hours is None else int(round(tail_hours * 3600 / cfg.time.tick_seconds))
+    o = Bw.job_opt_bucketed("reference", "true", time_limit=milp_time_limit, tail_step=tail)
     return dict(f=f, days=days, n_jobs=int(Sw.n), C=Bw.c.tolist(), fluid=fluid, fluid_feasible=ff["value"],
+                fluid_window=float(lp_w.optimum) * Bw.T, tail_hours=tail_hours, n_tail_checks=o["n_tail_checks"],
                 bucketed_believed=o["R_believed"], bucketed_realised=o["R_real"], bucketed_lp_believed=o["R_lp_believed"],
-                status=o["status"], gap=o["gap"], milp_runtime_s=o["runtime_s"], lp_runtime_s=t_lp,
-                n_candidates=n_cand, nonzeros=nnz, feasible_true=o["feasible_true"])
+                bucketed_dual_bound=o["dual_bound"], status=o["status"], gap=o["gap"], milp_runtime_s=o["runtime_s"],
+                milp_lp_runtime_s=o["lp_runtime_s"], lp_runtime_s=t_lp, n_candidates=n_cand, nonzeros=o["nonzeros"],
+                feasible_true=o["feasible_true"])

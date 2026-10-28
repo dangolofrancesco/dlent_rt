@@ -39,7 +39,6 @@ from functools import cached_property
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from . import reward
 from .models.core.reinit import build_window_state
@@ -53,12 +52,51 @@ def regret(alg_total: float, benchmark_total: float) -> float:
     return float(benchmark_total) - float(alg_total)
 
 
-def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0) -> dict:
+def _highs_max(M, obj, ub, integer: bool, time_limit: float) -> dict:
+    """max obj^T x, M x <= ub, 0 <= x <= 1 (x integer if `integer`) on a NEW HiGHS instance with its own time
+    limit, so every solve gets its full budget (no clock shared with earlier solves)."""
+    import highspy
+    M = sp.csc_matrix(M)
+    n = M.shape[1]
+    h = highspy.Highs()
+    h.setOptionValue("output_flag", False)
+    h.setOptionValue("time_limit", float(time_limit))
+    lp = highspy.HighsLp()
+    lp.num_col_, lp.num_row_ = n, M.shape[0]
+    lp.sense_ = highspy.ObjSense.kMaximize
+    lp.col_cost_ = np.asarray(obj, float)
+    lp.col_lower_, lp.col_upper_ = np.zeros(n), np.ones(n)
+    lp.row_lower_, lp.row_upper_ = np.full(M.shape[0], -highspy.kHighsInf), np.asarray(ub, float)
+    lp.a_matrix_.format_ = highspy.MatrixFormat.kColwise
+    lp.a_matrix_.start_, lp.a_matrix_.index_ = M.indptr.astype(np.int32), M.indices.astype(np.int32)
+    lp.a_matrix_.value_ = M.data.astype(float)
+    lp.a_matrix_.num_col_, lp.a_matrix_.num_row_ = n, M.shape[0]
+    if integer:
+        lp.integrality_ = [highspy.HighsVarType.kInteger] * n
+    h.passModel(lp)
+    t0 = time.perf_counter()
+    h.run()
+    wall = time.perf_counter() - t0
+    info = h.getInfo()
+    x = np.array(h.getSolution().col_value, float) if info.primal_solution_status > 0 else np.zeros(n)
+    return dict(x=x, obj=float(np.asarray(obj, float) @ x), status=h.modelStatusToString(h.getModelStatus()),
+                gap=float(info.mip_gap) if integer else 0.0,
+                dual_bound=float(info.mip_dual_bound) if integer else float(info.objective_function_value),
+                runtime_s=wall, highs_run_time_s=float(h.getRunTime()))
+
+
+def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0, lp_time_limit: float | None = None,
+                   tail_step: int | None = None) -> dict:
     """
     max obj^T x, x in {0,1}^n, s.t. at the arrival tick of every job k the occupancy of the chosen
     jobs is <= c: job j occupies the arrival rows k = j .. last[j] (arrivals with t_k < t_j + D_j).
     t must be sorted ascending (stream order). Returns x (bool), the MILP and LP-relaxation
     objective values, gap, status and the MILP runtime [s].
+
+    The LP relaxation and the MILP each run on their own HiGHS instance with their own time limit
+    (lp_time_limit, default = time_limit), so neither uses the other's budget.
+    tail_step (ticks, None = off): also check the capacity at t_last + k * tail_step (k = 1, 2, ...) until the
+    last candidate job ends, so the jobs that run past the last arrival (the end of a window) still use capacity.
     """
     t, D, A, obj = (np.asarray(a) for a in (t, D, A, obj))
     n = t.size
@@ -67,16 +105,27 @@ def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0) -> dict:
     cols = np.repeat(np.arange(n), lengths)
     start = np.repeat(np.cumsum(lengths) - lengths, lengths)
     rows = cols + (np.arange(cols.size) - start)
-    M = sp.vstack([sp.csr_matrix((A[cols, r], (rows, cols)), shape=(n, n))
+    n_rows = n
+    n_tail = 0
+    if tail_step is not None and n:
+        taus = np.arange(t[-1] + tail_step, (t + D).max(), tail_step)
+        n_tail = taus.size
+        if n_tail:
+            # job j runs at tau (> every arrival) iff t_j + D_j > tau: rows n + k for k < its last tail check
+            k_end = np.searchsorted(taus, t + D, side="left")              # number of tail checks job j covers
+            tc = np.repeat(np.arange(n), k_end)
+            tr = n + (np.arange(tc.size) - np.repeat(np.cumsum(k_end) - k_end, k_end))
+            cols, rows = np.concatenate([cols, tc]), np.concatenate([rows, tr])
+            n_rows = n + n_tail
+    M = sp.vstack([sp.csr_matrix((A[cols, r], (rows, cols)), shape=(n_rows, n))
                    for r in range(A.shape[1])]).tocsr()                     # one block per resource
-    ub = np.repeat(np.asarray(c, float), n)
-    lp = linprog(-obj, A_ub=M, b_ub=ub, bounds=(0, 1), method="highs")
-    t0 = time.perf_counter()
-    ip = milp(-obj, constraints=LinearConstraint(M, -np.inf, ub), integrality=np.ones(n),
-              bounds=Bounds(0, 1), options=dict(time_limit=time_limit))
-    runtime = time.perf_counter() - t0
-    return dict(x=np.round(ip.x).astype(bool), ip_obj=-float(ip.fun), lp_obj=-float(lp.fun),
-                gap=float(getattr(ip, "mip_gap", np.nan)), status=ip.message, runtime_s=runtime)
+    ub = np.repeat(np.asarray(c, float), n_rows)
+    lp = _highs_max(M, obj, ub, integer=False, time_limit=time_limit if lp_time_limit is None else lp_time_limit)
+    ip = _highs_max(M, obj, ub, integer=True, time_limit=time_limit)
+    return dict(x=np.round(ip["x"]).astype(bool), ip_obj=ip["obj"], lp_obj=lp["obj"], gap=ip["gap"],
+                status=ip["status"], runtime_s=ip["runtime_s"], highs_run_time_s=ip["highs_run_time_s"],
+                dual_bound=ip["dual_bound"], lp_runtime_s=lp["runtime_s"], n_tail_checks=int(n_tail),
+                nonzeros=int(M.nnz))
 
 
 def peak_occupancy(t, D, A) -> np.ndarray:
@@ -161,7 +210,7 @@ class Benchmarks:
                     d_bar=np.where(seen, st.d_bar[jj], 0.0))
 
     def job_opt_bucketed(self, source: str = "phase0", duration: str = "true",
-                         time_limit: float = 300.0) -> dict:
+                         time_limit: float = 300.0, tail_step: int | None = None) -> dict:
         """
         Job-level MILP on BUCKETED jobs: max sum_j r~_k(j) x_j over the jobs with r~ > 0, same
         per-tick capacity, stream and real A as job_level_opt. duration "true"
@@ -174,7 +223,7 @@ class Benchmarks:
         r = b["r"]
         cand = np.flatnonzero(r > 0)
         D_occ = S.D[cand] if duration == "true" else np.maximum(np.rint(b["d_bar"][cand]), 1).astype(np.int64)
-        o = occupancy_milp(S.tick[cand], D_occ, S.A[cand], r[cand], self.c, time_limit)
+        o = occupancy_milp(S.tick[cand], D_occ, S.A[cand], r[cand], self.c, time_limit, tail_step=tail_step)
         x = np.zeros(S.n, bool)
         x[cand] = o["x"]
         peak = peak_occupancy(S.tick[x], S.D[x], S.A[x]) / self.c
@@ -185,7 +234,8 @@ class Benchmarks:
                     n_unseen_types=int(np.unique(b["type"][unseen & (b["type"] >= 0)]).size),
                     n_chosen_R_neg=int((R[x] < 0).sum()), peak_true_occ_over_c=peak.tolist(),
                     feasible_true=bool(np.all(peak <= 1 + 1e-9)),
-                    gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"])
+                    gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"], dual_bound=o["dual_bound"],
+                    lp_runtime_s=o["lp_runtime_s"], n_tail_checks=o["n_tail_checks"], nonzeros=o["nonzeros"])
 
     # ------------------------------------------------------------------ #
     def feasible_ceiling(self) -> float:

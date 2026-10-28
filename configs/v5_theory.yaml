@@ -58,7 +58,7 @@ limits:
 # Cluster capacity, sized on H + stream combined, on one shared timeline (data._size_capacity)
 capacity:
   mode: "mean_demand"         # C_i = f * D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H| (H only, after the quota)
-  f: 1.25                     # fixed rule of the extended f scan (reports/week32/bid_diagnosis.md, 30.2%)
+  f: 0.50                     # decided (week 32): picked by the fixed rule with the dual rule (theory_models_2.md, 24.1%)
   exceeded_share: 0.25        # not used by mean_demand
   absolute:                   # used only when mode == "absolute" (machines)
     cpu: null
@@ -187,3 +187,6 @@ tests:
 online:
   bid_seed_offset: 1
   thinning_seed_offset: 2
+
+policy:
+  unseen_types: "dual_rule"   # decided (week 32): unseen types admitted iff r~ - tau v > 0 (ReInit's fallback estimates)

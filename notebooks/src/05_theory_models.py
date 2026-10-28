@@ -1,7 +1,8 @@
 # %% [markdown]
 # # DLENT-RT — theoretical (type / average) models over f
 #
-# Loads `configs/v5_theory.yaml` (the quota is fixed at the f = 1.25 fixed point, so every f has the same jobs),
+# Loads `configs/v5_theory.yaml` (f = 0.5 and the dual rule for unseen types; the quota is fixed at the f = 1.25
+# fixed point, so every f has the same jobs),
 # shows the job distributions, then evaluates the type / average models for each f: fluid OPT (hindsight), fluid on
 # feasible types, the Phase 0 LP and its static policy on the real stream, and the fluid LP per window. The bucketed
 # MILP is run only if its matrix is small enough. No online model. The logic is in `dlent_rt/theory_eval.py`.
@@ -19,8 +20,22 @@ from dlent_rt import theory_eval as te
 warnings.simplefilter("ignore")
 pd.set_option("display.max_columns", 30, "display.width", 250)
 
-cfg = load_config(ROOT / "configs" / "v5_theory.yaml")
+cfg = load_config(ROOT / "configs" / "v5_theory.yaml")          # f = 0.5, policy.unseen_types = dual_rule
 F_SCAN = (0.10, 0.20, 0.30, 0.50, 0.70, 1.25)
+
+# %% [markdown]
+# ## 0. The theoretical models at f = 0.5 (summary)
+#
+# From the cache of `scripts/week32/theory_f050.py` (`reports/week32/theory_f050_cache.pkl`; the 1-week bucketed
+# MILP behind the discretization cost takes up to an hour). Run that script first.
+
+# %%
+import pickle
+with open(ROOT / "reports" / "week32" / "theory_f050_cache.pkl", "rb") as fh:
+    F050 = pickle.load(fh)
+with pd.option_context("display.max_colwidth", 200):
+    display(F050["summary"].set_index("quantity"))
+display(F050["milp"])
 
 # %% [markdown]
 # ## 1. Job distributions (all 300k jobs and the jobs of H, before and after the 24 h cap and the quota)
