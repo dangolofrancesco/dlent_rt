@@ -3,7 +3,8 @@ Build the job file data/batch_v2_30k.csv from the raw outputs of scripts/data/fe
 It replaces scripts/data/data_generator.py for the new path; data_generator.py stays as it was, so the old file
 data/batch_may2019_30k.csv can still be rebuilt.
 
-    dlent_venv/bin/python scripts/data/build_v2.py
+    dlent_venv/bin/python scripts/data/build_v2.py                                        # 30k
+    dlent_venv/bin/python scripts/data/build_v2.py data/raw/v2_300k data/batch_v2_300k.csv   # 300k
 
 One row per job (instances = the job's instances that have usage rows, i.e. that ran):
   arrival_utc         2019-05-01 07:00 UTC + (first usage start - 600 s), with its time zone (+00:00)
@@ -43,9 +44,9 @@ def real_peak(inst: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return run.groupby(ev["collection_id"]).max().add_suffix("_peak")
 
 
-def main() -> None:
-    inst = pd.read_csv(RAW / "instances.csv.gz")
-    jobs = pd.read_csv(RAW / "jobs.csv")
+def main(raw: Path = RAW, out: Path = OUT) -> None:
+    inst = pd.read_csv(raw / "instances.csv.gz")
+    jobs = pd.read_csv(raw / "jobs.csv")
     inst["no_request"] = inst["cpus"].isna()
     inst[["cpus", "memory"]] = inst[["cpus", "memory"]].fillna(0.0)
     inst["changed"] = (inst["n_cpu_values"] > 1) | (inst["n_ram_values"] > 1)
@@ -70,9 +71,11 @@ def main() -> None:
             "CPU_peak", "RAM_peak", "CPU_hours_real", "RAM_hours_real", "duration", "n_instances",
             "n_instances_no_request", "request_changed", "n_update_events", "first_start_us", "last_end_us"]
     job = job[cols].sort_values(["arrival_utc", "collection_id"], kind="stable").reset_index(drop=True)
-    job.to_csv(OUT, index=False)
-    print(f"{len(job)} jobs -> {OUT}")
+    job.to_csv(out, index=False)
+    print(f"{len(job)} jobs -> {out}")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    a = sys.argv[1:]
+    main(ROOT / a[0], ROOT / a[1]) if len(a) == 2 else main()

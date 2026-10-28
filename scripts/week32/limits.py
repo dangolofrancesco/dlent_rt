@@ -128,7 +128,7 @@ def timeline(ds, cfg):
     J = (ds.H, ds.stream)
     dts = np.concatenate([j.datetime for j in J])
     steps = _assign_real_tick_steps(dts, dts[0], cfg.time.tick_seconds)
-    arr = np.concatenate([ds.H.arrival_step, ds.stream.arrival_step + steps[cfg.data.n0]]).astype(float)
+    arr = np.concatenate([ds.H.arrival_step, ds.stream.arrival_step + steps[ds.H.n]]).astype(float)
     assert np.array_equal(arr, steps)
     return (arr, np.concatenate([j.duration_steps for j in J]).astype(float), np.concatenate([j.A for j in J]),
             np.concatenate([j.duration_hours for j in J]), dts)

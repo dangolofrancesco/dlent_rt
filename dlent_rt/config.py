@@ -36,6 +36,8 @@ class DataCfg:
     grid_csv: str = "data/grid_data_may_2019.csv"
     n0: int = 10000
     columns: ColumnsCfg = field(default_factory=ColumnsCfg)
+    # H = the jobs that arrive in the first h_days days (None = the first n0 jobs)
+    h_days: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,11 @@ class LimitsCfg:
     # (machines) is rejected before the market: it never enters Phase 0 or the online run.
     job_quota_machines: Optional[float] = None
     job_quota_mem: Optional[float] = None
+    # "fixed": the two values above. "share_of_C": Q_i = quota_share * C_i, C = capacity.f * D_bar on H after the
+    # quota, found by a fixed point that starts from Q = the 99th percentile of H's requests and stops when Q moves
+    # by < 1% on both resources (needs capacity.mode mean_demand and d_cap_hours).
+    job_quota_rule: str = "fixed"
+    quota_share: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -321,8 +328,12 @@ class Config:
         assert self.capacity.mode in ("exceeded_share", "mean_demand", "absolute")
         if self.capacity.mode == "mean_demand":
             assert self.capacity.f is not None and self.capacity.f > 0
-        for x in (self.limits.d_cap_hours, self.limits.job_quota_machines, self.limits.job_quota_mem):
+        for x in (self.limits.d_cap_hours, self.limits.job_quota_machines, self.limits.job_quota_mem, self.data.h_days):
             assert x is None or x > 0
+        assert self.limits.job_quota_rule in ("fixed", "share_of_C")
+        if self.limits.job_quota_rule == "share_of_C":
+            assert self.capacity.mode == "mean_demand" and self.limits.d_cap_hours is not None
+            assert 0 < self.limits.quota_share <= 1
         assert 0.0 <= self.capacity.exceeded_share < 1.0
         assert self.time.d_max_hours is None or self.time.d_max_hours > 0
         assert self.limits.r_max_machines is None or self.limits.r_max_machines > 0

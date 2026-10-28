@@ -9,7 +9,7 @@
 # No online run.
 
 # %%
-import os, sys, json, warnings
+import os, sys, json, time, resource, warnings
 from pathlib import Path
 import numpy as np, pandas as pd
 ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
@@ -36,7 +36,11 @@ print(f"limits: R_max {lr.r_max_machines} removed {lr.n_removed}; quota {lr.quot
 # ## Phase 0 output
 
 # %%
+t0 = time.perf_counter()
 st = run_phase0(ds, cfg)
+runtime = time.perf_counter() - t0
+peak_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1e9 if sys.platform == "darwin" else 1e6)
+print(f"Phase 0 runtime {runtime:.1f} s; peak memory of the kernel {peak_gb:.2f} GB")
 S = phase0_summary(ds, st, cfg)
 rows = [(k, json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in S.items() if k != "flags"]
 with pd.option_context("display.max_colwidth", 200, "display.max_rows", 100):

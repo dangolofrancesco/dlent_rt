@@ -301,6 +301,47 @@ def mean_demand(A: np.ndarray, d_hours: np.ndarray, span_hours: float) -> dict:
     return dict(lambda_hat=lam, mean_rd=mean_rd, D_bar=lam * mean_rd, span_hours=span_hours, n=n)
 
 
+def _n_history(df: pd.DataFrame, cfg: Config) -> int:
+    """Number of jobs in H: the first data.n0 rows, or (data.h_days) the rows that arrive in the first h_days days."""
+    if cfg.data.h_days is None:
+        return cfg.data.n0
+    t = df[cfg.data.columns.datetime].to_numpy()
+    return int(np.searchsorted(t, t[0] + np.timedelta64(int(round(cfg.data.h_days * 86400)), "s"), side="left"))
+
+
+def _quota_fixed_point(df: pd.DataFrame, cfg: Config, a_cols: list[str],
+                       tol: float = 0.01, max_iter: int = 50) -> tuple[np.ndarray, list]:
+    """
+    limits.job_quota_rule = share_of_C: Q = quota_share * C, C = capacity.f * D_bar(H after the quota Q).
+    Start from Q = the 99th percentile of H's requests (df after R_max, no quota); repeat until Q moves by < tol
+    on every resource. H, its span and the capped durations follow the same rules as load_dataset.
+    """
+    col, lim = cfg.data.columns, cfg.limits
+    A = df[a_cols].to_numpy(dtype=float)
+    t = df[col.datetime].to_numpy()
+    d = np.minimum(np.maximum(df[col.duration_hours].to_numpy(dtype=float), cfg.time.duration_floor_hours),
+                   lim.d_cap_hours)
+    Q = np.quantile(A[:_n_history(df, cfg)], 0.99, axis=0)
+    its = []
+    for k in range(max_iter):
+        idx = np.flatnonzero((A <= Q[None, :]).all(axis=1))
+        h = idx[:_n_history(df.iloc[idx], cfg)]
+        if not np.all(Q > 0) or h.size < 2:
+            raise ValueError(f"quota fixed point collapsed (Q = {Q.tolist()}, {h.size} jobs in H after {k} steps): "
+                             f"Q = {lim.quota_share} x f x D_bar(Q) has no positive solution at f = {cfg.capacity.f}")
+        steps = _assign_real_tick_steps(t[h], t[h][0], cfg.time.tick_seconds)
+        md = mean_demand(A[h], d[h], (steps[-1] - steps[0] + 1) * cfg.time.tick_seconds / 3600.0)
+        C = cfg.capacity.f * md["D_bar"]
+        Q_new = lim.quota_share * C
+        change = np.abs(Q_new - Q) / Q
+        its.append(dict(iteration=k, Q=Q.tolist(), n_kept=int(idx.size), n_H=int(h.size), D_bar=md["D_bar"].tolist(),
+                        C=C.tolist(), Q_next=Q_new.tolist(), change=change.tolist()))
+        Q = Q_new
+        if np.all(change < tol):
+            break
+    return Q, its
+
+
 def _compute_d_max_steps(T: int, cfg: Config) -> tuple[int, dict]:
     """d_max = min(time.d_max_hours, d_max_horizon_fraction * T) in steps; d_max_hours None -> the ceiling.
     limits.d_cap_hours set -> d_max = the cap (the ceiling rule is not used; the abort check still applies)."""
@@ -340,9 +381,15 @@ def load_dataset(cfg: Config) -> Dataset:
     resources = ["cpu", "ram"]
     a_cols = [col.requested_cpu, col.requested_ram]
 
-    df, limit_report = apply_r_max(df, cfg, a_cols)
+    if cfg.limits.job_quota_rule == "share_of_C":
+        df_r, _ = apply_r_max(df, cfg, a_cols, quota_values=(None, None))
+        Q, its = _quota_fixed_point(df_r, cfg, a_cols)
+        df, limit_report = apply_r_max(df, cfg, a_cols, quota_values=(float(Q[0]), float(Q[1])))
+        limit_report.quota_iterations = its
+    else:
+        df, limit_report = apply_r_max(df, cfg, a_cols)
 
-    n0 = cfg.data.n0
+    n0 = _n_history(df, cfg)
     if n0 >= len(df):
         raise ValueError(
             f"n0={n0} >= rows after the size limit ({len(df)}). "

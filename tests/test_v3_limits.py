@@ -79,3 +79,31 @@ def test_cap_truncates_and_is_used_everywhere(tmp_path):
                            EnergyParams(em.machine_cores, em.machine_ram_gb, em.p_core, em.p_gb, em.pue))
     np.testing.assert_allclose(S.energy_kwh, E, rtol=1e-12)
     np.testing.assert_allclose(S.C_carbon, carbon_kg(E, S.ci), rtol=1e-12)
+
+
+def test_quota_share_of_C_fixed_point(tmp_path):
+    cfg = _cfg(tmp_path, limits=dict(d_cap_hours=2.0, job_quota_rule="share_of_C", quota_share=0.2),
+               capacity=dict(mode="mean_demand", f=1.0))
+    ds = load_dataset(cfg)
+    its = ds.limit_report.quota_iterations
+    assert len(its) >= 1 and max(its[-1]["change"]) < 0.01
+    Q = np.array(ds.limit_report.quota)
+    np.testing.assert_allclose(Q, its[-1]["Q_next"], rtol=1e-12)
+    np.testing.assert_allclose(Q / ds.capacity, 0.2, rtol=0.02)          # within the 1% stop + one step
+    A = np.concatenate([ds.H.A, ds.stream.A])
+    assert np.all(A <= Q[None, :])
+
+
+def test_quota_share_of_C_collapse_is_reported(tmp_path):
+    cfg = _cfg(tmp_path, limits=dict(d_cap_hours=2.0, job_quota_rule="share_of_C", quota_share=0.2),
+               capacity=dict(mode="mean_demand", f=1e-4))
+    with pytest.raises(ValueError, match="collapsed"):
+        load_dataset(cfg)
+
+
+def test_history_by_days(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg = replace(cfg, data=replace(cfg.data, h_days=0.25)).validate()
+    ds = load_dataset(cfg)
+    t = pd.to_datetime(pd.read_csv(cfg.data.batch_csv)["arrival_utc"]).sort_values()
+    assert ds.H.n == int((t < t.iloc[0] + pd.Timedelta(hours=6)).sum())
