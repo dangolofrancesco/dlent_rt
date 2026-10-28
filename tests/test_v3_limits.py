@@ -107,3 +107,14 @@ def test_history_by_days(tmp_path):
     ds = load_dataset(cfg)
     t = pd.to_datetime(pd.read_csv(cfg.data.batch_csv)["arrival_utc"]).sort_values()
     assert ds.H.n == int((t < t.iloc[0] + pd.Timedelta(hours=6)).sum())
+
+
+def test_quota_from_f_decouples_the_quota_from_f(tmp_path):
+    lim = dict(d_cap_hours=2.0, job_quota_rule="share_of_C", quota_share=0.2)
+    ref = load_dataset(_cfg(tmp_path, limits=lim, capacity=dict(mode="mean_demand", f=1.0)))
+    low = load_dataset(_cfg(tmp_path, limits=dict(lim, quota_from_f=1.0), capacity=dict(mode="mean_demand", f=0.3)))
+    assert low.limit_report.quota == ref.limit_report.quota                  # the fixed point at f = 1.0
+    assert np.array_equal(np.concatenate([low.H.collection_id, low.stream.collection_id]),
+                          np.concatenate([ref.H.collection_id, ref.stream.collection_id]))   # same jobs
+    np.testing.assert_allclose(low.capacity, 0.3 * low.capacity_diag["D_bar"], rtol=1e-12)
+    np.testing.assert_allclose(low.capacity, 0.3 * ref.capacity, rtol=1e-12)

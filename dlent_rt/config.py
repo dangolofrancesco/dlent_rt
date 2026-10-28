@@ -146,6 +146,9 @@ class LimitsCfg:
     # by < 1% on both resources (needs capacity.mode mean_demand and d_cap_hours).
     job_quota_rule: str = "fixed"
     quota_share: float = 0.2
+    # share_of_C only: compute the fixed point at this f instead of capacity.f (None = capacity.f). C = capacity.f x
+    # D_bar still uses the config's own f, so a scan over capacity.f keeps the same jobs.
+    quota_from_f: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -337,6 +340,7 @@ class Config:
         if self.limits.job_quota_rule == "share_of_C":
             assert self.capacity.mode == "mean_demand" and self.limits.d_cap_hours is not None
             assert 0 < self.limits.quota_share <= 1
+            assert self.limits.quota_from_f is None or self.limits.quota_from_f > 0
         assert 0.0 <= self.capacity.exceeded_share < 1.0
         assert self.time.d_max_hours is None or self.time.d_max_hours > 0
         assert self.limits.r_max_machines is None or self.limits.r_max_machines > 0

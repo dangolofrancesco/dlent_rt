@@ -7,7 +7,7 @@ again.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -383,7 +383,9 @@ def load_dataset(cfg: Config) -> Dataset:
 
     if cfg.limits.job_quota_rule == "share_of_C":
         df_r, _ = apply_r_max(df, cfg, a_cols, quota_values=(None, None))
-        Q, its = _quota_fixed_point(df_r, cfg, a_cols)
+        cfg_q = cfg if cfg.limits.quota_from_f is None else replace(
+            cfg, capacity=replace(cfg.capacity, f=cfg.limits.quota_from_f))
+        Q, its = _quota_fixed_point(df_r, cfg_q, a_cols)
         df, limit_report = apply_r_max(df, cfg, a_cols, quota_values=(float(Q[0]), float(Q[1])))
         limit_report.quota_iterations = its
     else:

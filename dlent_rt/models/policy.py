@@ -188,3 +188,25 @@ class JobGreedyPolicy:
 def run_policy(stream, capacity, policy) -> SimResult:
     """Any Policy through the shared event-driven loop (no occupancy log)."""
     return simulate(stream, Occupancy(capacity, record=False), policy)
+
+
+class FractionPolicy:
+    """Static policy with the LP's admission FRACTIONS (week 32): want_i = 1[u_i < x_j] for the arrival's type j
+    under `state`'s grid (u_i uniform, fixed seed). x_j in [0, 1] is the LP-RS solution of that state; a type with
+    no observation (p = 0) or no type gets x = 0. No learning, no tests; the physical gate is applied by simulate."""
+
+    def __init__(self, state: PhaseState, stream, x: np.ndarray, seed: int = 0):
+        k = state.grid.assign(stream.v, state.myerson)
+        j = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
+        jj = np.maximum(j, 0)
+        self.x_job = np.where((j >= 0) & (np.asarray(state.p)[jj] > 0), np.asarray(x, float)[jj], 0.0)
+        self.u = np.random.default_rng(seed).random(stream.n)
+
+    def before_arrival(self, i: int, t: int) -> None:
+        pass
+
+    def want(self, i: int, t: int) -> bool:
+        return bool(self.u[i] < self.x_job[i])
+
+    def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
+        pass
