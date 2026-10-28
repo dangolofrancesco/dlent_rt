@@ -1,13 +1,13 @@
 """
-Ablation runner (week 30, round 1: single factors), small-cluster regime, 30k trace.
+Ablation runner (week 30 rounds; week 32: on the committed default config and data/batch_v2_30k.csv).
 
     caffeinate -ims dlent_venv/bin/python scripts/ablation_runner.py run        # all ablations x seeds (resumes)
     dlent_venv/bin/python scripts/ablation_runner.py summary                    # re-aggregate the cached runs
 
-Config: the committed configs/default.yaml + ONLY the capacity block of configs/regime_small_cluster.yaml
-(scripts/regime_config.py, both from git HEAD), then the ablation's overrides. Seeds: ONLY the thinning seed varies
+Config: the committed configs/default.yaml (scripts/regime_config.py, from git HEAD), then the ablation's overrides.
+The week-30 results (small-cluster regime, old data) are in archive/reports/week30/ablations/. Seeds: ONLY the thinning seed varies
 (online.thinning_seed_offset in SEEDS); Phase 0, H, the stream and the bids are fixed (the thinning draws u_rand are
-the model's only online randomness). Every run is cached in reports/week30/ablations/runs/<ablation>__s<offset>.json
+the model's only online randomness). Every run is cached in reports/ablations/runs/<ablation>__s<offset>.json
 (a rerun skips the cached ones); runs.csv has one row per (ablation, seed), summary.csv the mean / std over seeds and
 the paired difference vs the baseline with the same seed (mean, 95% t-interval).
 """
@@ -30,8 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-REGIME = "configs/regime_small_cluster.yaml"
-OUT = ROOT / "reports" / "week30" / "ablations"
+REGIME = None                                 # None = the committed default (regime_config.committed_with_regime)
+OUT = ROOT / "reports" / "ablations"
 SEEDS = (2, 3, 4, 5, 6)
 MAX_WORKERS = 4                               # ~1 GB per DLENT-RT run
 T_975_4 = 2.7764451051977987                  # Student t quantile 0.975, 4 degrees of freedom (5 seeds)

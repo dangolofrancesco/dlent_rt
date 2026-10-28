@@ -1,7 +1,7 @@
 """
 Pareto frontier over the objective weights lambda (week 30, offline only; nothing enters the online loop).
 
-    dlent_venv/bin/python scripts/pareto_run.py            # writes reports/week30/pareto/*.csv (cache)
+    dlent_venv/bin/python scripts/pareto_run.py            # writes reports/pareto/*.csv (cache)
 
 Instance (same as notebook 03): the COMMITTED configs/default.yaml (`git show HEAD:configs/default.yaml` into a
 temporary file; an uncommitted working-copy edit is never read), seed 42, no drop filter.
@@ -53,10 +53,10 @@ from dlent_rt.models.theory import TheoryModel
 from dlent_rt.phase0 import run_phase0
 
 # named regime (optional): DLENT_REGIME=configs/regime_<name>.yaml overrides ONLY the committed capacity
-# (scripts/regime_config.py, both files from git HEAD); results then go to reports/week30/pareto_<name>/
+# (scripts/regime_config.py, both files from git HEAD); results then go to reports/pareto_<name>/
 REGIME = os.environ.get("DLENT_REGIME") or None
 REGIME_TAG = Path(REGIME).stem.replace("regime_", "") if REGIME else None
-OUT = ROOT / "reports" / "week30" / (f"pareto_{REGIME_TAG}" if REGIME else "pareto")
+OUT = ROOT / "reports" / (f"pareto_{REGIME_TAG}" if REGIME else "pareto")
 MILP_TL = 600.0
 MAX_WORKERS = 4                                       # ~1 GB per DLENT-RT run: 13 at once swap a 16 GB machine
 RHO = 1e-3                                            # augmentation of the standard Chebyshev LP

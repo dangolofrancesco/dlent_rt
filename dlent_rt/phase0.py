@@ -142,14 +142,11 @@ def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndar
     return L, ts.priorities[qi].astype(float), ts.hw_profiles[ai]
 
 
-def type_request(tid: np.ndarray, A: np.ndarray, A_of_type: np.ndarray, mode: str) -> np.ndarray:
+def type_request(tid: np.ndarray, A: np.ndarray, A_of_type: np.ndarray) -> np.ndarray:
     """
-    (n_types, |I|) request entering the type volume v = A_type * d_bar. mode "profile": the hardware profile.
-    mode "real_mean" (hardware.type_volume): the mean real request of the jobs with type id tid (rows of A),
-    the profile for types without jobs.
+    (n_types, |I|) request entering the type volume v = A_type * d_bar: the mean real request of the jobs with
+    type id tid (rows of A); the hardware profile A_of_type for types without jobs.
     """
-    if mode == "profile":
-        return A_of_type
     N = np.bincount(tid, minlength=len(A_of_type))
     mean = np.column_stack([type_mean(tid, N, A[:, i]) for i in range(A.shape[1])])
     return np.where(N[:, None] > 0, mean, A_of_type)
@@ -185,7 +182,7 @@ class PhaseState:
     r_nocarbon: np.ndarray                # r_tilde without the carbon term (diagnostic)
     C_elec_bar: np.ndarray                # mean electricity cost per type
     C_carbon_bar: np.ndarray              # mean carbon emissions per type (kgCO2)
-    v: np.ndarray                         # (n_types, |I|) expected resource volume
+    v: np.ndarray                         # (n_types, |I|) expected resource volume = A_type * d_bar
     L: np.ndarray                         # bid-space bin floor (for payment rule)
     phi_tilde: np.ndarray                 # phi(L): virtual value at floor (payment rule);
                                           # NaN under known_distribution (per job: phi_job(L, c_j))
@@ -207,6 +204,7 @@ class PhaseState:
     # $/kgCO2 applied to C_carbon_bar: s_C (quantile_linear), frozen at Phase 0
     carbon_price: float = 0.0             # always overwritten in run_phase0
     norm_info: Optional[dict] = None      # quantile_linear: q, Q_cv, Q_abs_pi, D_q, K_q, s_C
+    A_type: Optional[np.ndarray] = None   # (n_types, |I|) request of the type volume (type_request)
 
 
 
@@ -333,9 +331,9 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     L, priority_of_type, A_of_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
 
-    # 8. Expected resource volume (hardware.type_volume: profile or the mean real request of the type's jobs)
+    # 8. Expected resource volume: the mean real request of the type's jobs x its mean duration
     tid_ok = stats["type_ids"] >= 0
-    A_vol = type_request(stats["type_ids"][tid_ok], H.A[tid_ok], A_of_type, cfg.hardware.type_volume)
+    A_vol = type_request(stats["type_ids"][tid_ok], H.A[tid_ok], A_of_type)
     v = A_vol * d_bar[:, None]
 
     # 9-11. Raw objectives (per-type SAMPLE MEANS), normalization, scalarization
@@ -407,5 +405,5 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         n_ir_rejected=stats["n_ir_rejected"],
         n_assigned=stats["n_assigned"],
         n_types_hw_degenerate=n_types_hw_degenerate,
-        carbon_price=float(carbon_price), norm_info=norm_info,
+        carbon_price=float(carbon_price), norm_info=norm_info, A_type=A_vol,
     )

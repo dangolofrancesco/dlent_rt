@@ -4,83 +4,59 @@ run:
   seed: 42                    # single seed controls every stochastic element
   output_dir: "runs"          # where per-step logs and summaries are written
 
-# Data ingestion
+# Data ingestion (week 32: scripts/data/fetch_v2.py -> scripts/data/build_v2.py)
 data:
-  batch_csv: "data/batch_may2019_30k.csv"     # relative paths: to the repository root
-  grid_csv: "data/grid_data_may_2019.csv"
+  batch_csv: "data/batch_v2_30k.csv"          # relative paths: to the repository root
+  grid_csv: "data/grid_data_may_2019.csv"     # hourly price / carbon, UTC
   n0: 10000
   columns:
     collection_id: "collection_id"
-    datetime: "request_time"
-    priority: "priority"
+    datetime: "arrival_utc"                   # UTC with its time zone (the grid's time base)
+    priority: "priority_tier"                 # Google tiers 1..5 (bin edges -1, 99, 115, 119, 359)
     scheduling_class: "scheduling_class"
-    requested_cpu: "CPU"
+    requested_cpu: "CPU"                      # SUM of the instances' first requests, in machines
     requested_ram: "RAM"
-    duration_hours: "duration"
+    duration_hours: "duration"                # job span; used only where the CPU request is 0
+    cpu_hours_real: "CPU_hours_real"          # effective duration = CPU_hours_real / CPU request
 
-# Time model
+# Time model. One duration per job (the effective duration, floored at 1 minute, cut at d_max), used for the time
+# in the cluster, the bids and the energy.
 time:
   tick_seconds: 1.0           # wall-clock seconds per step (real-tick time model, the only one)
-  d_max_quantile: 1.0         # candidate = this quantile of SURVIVOR step-durations.
-                              # Default 1.0 = literal max of survivors (outlier
-                              # removal already decided what's "extreme"; this
-                              # should not silently re-trim on top of that).
-                              # Set <1.0 only if you want additional conservatism
-                              # beyond outlier removal.
+  d_max_hours: null           # provisional, week 32: null -> d_max = d_max_horizon_fraction * T (0.05 T)
   d_max_horizon_fraction: 0.05  # HARD ceiling: d_max <= this * T (theory needs d_max << T)
   d_max_ratio_abort: 0.10     # abort with diagnostic if final d_max/T still exceeds this
   duration_floor_hours: 0.016667  # 1 minute = 1/60 hour
 
 
-# Hardware profile discretization
+# Hardware profiles: they build ONLY the type id. Every request stays the real request; the type volume uses the
+# mean real request of the type's jobs.
 hardware:
-  n_profiles: 32              
+  n_profiles: 32
   log_space: true             # k-means++ in log-space (requests span orders of magnitude)
   fit_on: "full"              # "full" (H+stream) | "H"
   hw_floor: 1.0e-5            # min hardware profile component; excludes degenerate
                               # k-means centroids from gamma's v_min term only
 
 
-# Outlier handling (resource requests and durations)
-outliers:
-  policy: "drop"              # "drop" | "clip"
-  a_max_quantile: 0.90        # resource-request cutoff (per resource, on the trace)
-  d_max_quantile: 0.95        # duration cutoff (hours); jobs longer are dropped/clipped
-  # xi safety check: warn if max_i a_max,i / c_i exceeds this after handling
-  xi_warn_threshold: 0.10     # ~ 1/log(T). Under capacity.mode from_amax, xi_data = xi_target (0.5),
-                              # so this warning always fires: expected, not an error
+# Size limit
+limits:
+  r_max_machines: 0.1         # provisional, week 32: jobs with a CPU or RAM request > 0.1 machine are removed
+  xi_warn_threshold: 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this (~ 1/log T)
 
-# Cluster capacity
+# Cluster capacity, sized on H + stream combined, on one shared timeline (data._size_capacity)
 capacity:
-  # All modes below size capacity on the FULL historical dataset (H + stream
-  # combined, on one shared timeline) -- NOT on stream alone. Sizing on
-  # stream alone can misrepresent typical concurrency if the stream window
-  # happens to capture a non-representative slice of load (verified
-  # empirically: stream-only concurrency was ~3x the full-dataset
-  # concurrency in one configuration). See _size_capacity in data.py.
-  # mode "fraction_of_volume": c_i = fraction * sum_j (A_ij * D_j)  [core-hours]
-  #   Matches the static simulator's b_i = rho * sum_j V_ij (load factor rho).
-  # mode "fraction_of_peak": c_i = fraction * MAX concurrent occupancy. For
-  #   heavy-tailed workloads peak >> average, so the LP-RS (an
-  #   average-occupancy constraint) rarely binds here except at tiny fractions.
-  # mode "fraction_of_concurrency_quantile": c_i = fraction * (concurrency_quantile)
-  #   -th percentile of the concurrent-occupancy time series (not the max).
-  #   Sits between average and peak; this is the mode most likely to bind at
-  #   intuitive fractions (0.5-0.8) under a heavy-tailed real trace.
-  # mode "from_amax": c_i = a_max,i / xi_target, a_max,i = max request of resource i
-  #   over the kept jobs (H + stream). Same xi = a_max,i / c_i for CPU and RAM.
-  # mode "absolute": c_i taken directly from `absolute` below (real deployments).
-  mode: "from_amax"
-  xi_target: 0.5              # used only by from_amax (sizing only, not constants.xi_override)
-  fraction: 0.40              # fraction_of_* modes only (unused under from_amax)
-  concurrency_quantile: 0.80   # used only by fraction_of_concurrency_quantile
-  absolute:                   # used only when mode == "absolute"
+  mode: "exceeded_share"      # "exceeded_share" | "absolute"
+  exceeded_share: 0.25        # provisional, week 32: c_i = the demand level exceeded 25% of the time
+  absolute:                   # used only when mode == "absolute" (machines)
     cpu: null
     ram: null
 
 energy_model:
-  spec_cpu_core: 64           # cores per 1.0 normalized CPU in Google trace
-  spec_ram_gb: 256            # GB per 1.0 normalized RAM in Google trace
+  # DECLARED ASSUMPTION (not from Google): the largest machine of the trace (1.0) has 64 cores and 256 GB.
+  # Used only for bids and energy; requests and capacity stay in machines.
+  machine_cores: 64
+  machine_ram_gb: 256
   p_core: 15.0                # watts per physical core (Fan et al. 2007)
   p_gb: 0.35                  # watts per GB RAM
   pue: 1.10                   # power usage effectiveness
@@ -182,9 +158,9 @@ constants:
   # System constants of Zhang & Cheung (2025, App. A). null = data-derived (Phase 0).
   # xi_override and gamma_override are FORCED, NOT DATA-JUSTIFIED: they are set by
   # hand so that the error parameters are not vacuous (eps_D = 0.50 and
-  # 1 - eps_D - xi > 0 at xi = 0.001). On the data, xi = 0.5 (from_amax) and the
-  # dollar reward has max |r~| ~ 2.4e4 (week-30 phase0_regime_check), so neither
-  # value follows from the data. Their values are an open decision.
+  # 1 - eps_D - xi > 0 at xi = 0.001). On the data, xi = 0.951 at the week-32 scope
+  # (reports/week32/limits_numbers.md; 0.5 on the week-30 data), so neither value
+  # follows from the data. Their values are a closed decision (week 32).
   xi_override: 0.001
   gamma_override: 1.0
   # r_max in the data-derived gamma = p-weighted quantile of |r~| over populated

@@ -5,11 +5,12 @@ Phase 0 type volume. No model is run: load_dataset, counting, the FCFS replay, a
 
     dlent_venv/bin/python scripts/week32/limits.py
 
-Base: configs/regime_v2.yaml with time.duration_mode = effective. Writes reports/week32/limits_numbers.md and
+Base: configs/default.yaml (effective duration), with limits.r_max_machines and time.d_max_hours varied. Writes reports/week32/limits_numbers.md and
 reports/week32/figs/fig4_request_size.png, fig5_duration.png, fig6_demand_limits.png.
 """
 from __future__ import annotations
 
+import heapq
 import sys
 import warnings
 from dataclasses import replace
@@ -26,9 +27,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts" / "week32"))
 
-from data_audit import BLUE, INK, INK2, demand, fcfs, pct   # noqa: E402
 from dlent_rt.bid import bid_model                          # noqa: E402
-from dlent_rt.config import load_config                     # noqa: E402
+from dlent_rt.config import default_config                  # noqa: E402
 from dlent_rt.data import _assign_real_tick_steps, load_dataset   # noqa: E402
 from dlent_rt.grid import build_valuation_grid              # noqa: E402
 from dlent_rt.phase0 import (                               # noqa: E402
@@ -41,8 +41,64 @@ R_MAX = (1.0, 2.0, 5.0, 10.0, 20.0, None)
 R_EXTRA = (0.02, 0.05, 0.1, 0.2, 0.3, 0.5)   # extra scan below 1 machine: where the recommendation rule can hold
 D_MAX = (4.0, 12.0, None)              # None = 0.05 T (the code's ceiling)
 ALMOST_NONE = 0.01                     # "(almost) no job larger than the cluster": they hold < 1% of the kept work
-ORANGE = "#eb6834"
+INK, INK2, BLUE, ORANGE = "#0b0b0b", "#52514e", "#2a78d6", "#eb6834"
+FULL = 0.95                            # "cluster at least 95% full"
 lines: list[str] = []
+
+
+def demand(start, dur, A, w0, w1):
+    """Step function of the summed request of running jobs, clipped to [w0, w1]: (times, levels, weights)."""
+    s = np.clip(start, w0, w1)
+    e = np.clip(start + dur, w0, w1)
+    t = np.concatenate([s, e, [w0, w1]])
+    d = np.concatenate([A, -A, np.zeros((2, A.shape[1]))])
+    o = np.argsort(t, kind="stable")
+    ut, inv = np.unique(t[o], return_inverse=True)
+    agg = np.zeros((len(ut), A.shape[1]))
+    np.add.at(agg, inv, d[o])
+    lev = np.cumsum(agg, axis=0)[:-1]
+    return ut, lev, np.diff(ut)
+
+
+def wquant(lev, w, q):
+    outv = []
+    for i in range(lev.shape[1]):
+        o = np.argsort(lev[:, i], kind="stable")
+        cw = np.cumsum(w[o]) / w.sum()
+        outv.append(lev[o, i][min(np.searchsorted(cw, q), len(o) - 1)])
+    return np.array(outv)
+
+
+def _unused(lev, w):
+    r = dict(mean=(lev * w[:, None]).sum(0) / w.sum(), peak=lev.max(0))
+    for x in X_LEVELS:
+        r[f"exc{int(x * 100)}"] = wquant(lev, w, 1 - x)
+    return r
+
+
+def fcfs(start, dur, A, c, w0, w1):
+    """Admit each job, in arrival order, if it fits now on every resource (no queue, no reward)."""
+    order = np.argsort(start, kind="stable")
+    occ = np.zeros(A.shape[1])
+    heap: list = []
+    acc = np.zeros(len(start), bool)
+    tol = 1e-12
+    for j in order:
+        while heap and heap[0][0] <= start[j]:
+            _, k = heapq.heappop(heap)
+            occ -= A[k]
+        if np.all(occ + A[j] <= c + tol):
+            acc[j] = True
+            occ += A[j]
+            heapq.heappush(heap, (start[j] + dur[j], j))
+    _, lev, w = demand(start[acc], dur[acc], A[acc], w0, w1)
+    full = (lev >= FULL * c[None, :] - tol).any(axis=1)
+    return dict(acc_jobs=acc.mean(), acc_cpuh=(A[acc, 0] * dur[acc]).sum() / (A[:, 0] * dur).sum(),
+                full_time=(w * full).sum() / w.sum())
+
+
+def pct(x, d=1):
+    return f"{100 * x:.{d}f}%"
 
 
 def out(s: str = "") -> None:
@@ -59,13 +115,12 @@ def table(df: pd.DataFrame, title: str) -> None:
 
 
 def base_cfg():
-    cfg = load_config(ROOT / "configs" / "regime_v2.yaml")
-    return replace(cfg, time=replace(cfg.time, duration_mode="effective")).validate()
+    return default_config()
 
 
 def cfg_for(base, r_max, d_max):
-    o = replace(base.outliers, policy="none" if r_max is None else "r_max", r_max_machines=r_max)
-    return replace(base, outliers=o, time=replace(base.time, d_max_hours=d_max)).validate()
+    return replace(base, limits=replace(base.limits, r_max_machines=r_max),
+                   time=replace(base.time, d_max_hours=d_max)).validate()
 
 
 def timeline(ds, cfg):
@@ -243,7 +298,7 @@ def main() -> None:
     tid = assign_type_ids(ts, np.asarray(grid.assign(bids.v_rate, my)), H.priority, H.hw_idx)
     okt = tid >= 0
     _, _, A_prof = type_arrays(ts, grid)
-    A_real = type_request(tid[okt], H.A[okt], A_prof, "real_mean")
+    A_real = type_request(tid[okt], H.A[okt], A_prof)
     N = np.bincount(tid[okt], minlength=ts.n_types)
     pop = N > 0
     rows = []

@@ -1,5 +1,5 @@
 """
-Trace preprocessing: hardware-profile discretization and outlier handling.
+Trace preprocessing: hardware profiles (they build the type id only) and the size limit R_max.
 """
 from __future__ import annotations
 
@@ -78,82 +78,21 @@ def fit_hardware_catalogue(A_fit: np.ndarray, cfg: Config) -> HardwareCatalogue:
 
 
 # --------------------------------------------------------------------------- #
-# Outlier handling
+# Size limit R_max
 # --------------------------------------------------------------------------- #
 @dataclass
-class OutlierReport:
-    """What the outlier step did, for logging and diagnostics."""
-    a_max_thresholds: np.ndarray       # per-resource request cutoff (native units)
-    d_max_hours_threshold: float       # duration cutoff (hours)
-    n_dropped_resource: int
-    n_dropped_duration: int
-    n_dropped_total: int
+class LimitReport:
+    """What the size limit did, for logging and diagnostics."""
+    r_max_machines: Optional[float]     # None = no limit
+    n_removed: int
     n_before: int
     n_after: int
-    policy: str
 
 
-def handle_outliers(
-    df: pd.DataFrame, cfg: Config, a_cols: list[str], d_col: str
-) -> tuple[pd.DataFrame, OutlierReport]:
-    """
-    Apply the outlier policy to a dataframe. Thresholds are computed on `df`.
-
-    drop: rows exceeding any resource cutoff OR the duration cutoff are removed.
-    clip: those values are clamped to the cutoff (values distorted, count kept).
-    none: no filter; every row is kept (thresholds reported as NaN).
-    r_max: rows with any request > outliers.r_max_machines are removed; durations are not filtered.
-    """
-    o = cfg.outliers
-    n_before = len(df)
-    if o.policy == "none":
-        report = OutlierReport(
-            a_max_thresholds=np.full(len(a_cols), np.nan), d_max_hours_threshold=float("nan"),
-            n_dropped_resource=0, n_dropped_duration=0, n_dropped_total=0,
-            n_before=n_before, n_after=n_before, policy="none",
-        )
-        return df.reset_index(drop=True), report
-    if o.policy == "r_max":
-        over = (df[a_cols].to_numpy(dtype=float) > o.r_max_machines).any(axis=1)
-        report = OutlierReport(
-            a_max_thresholds=np.full(len(a_cols), float(o.r_max_machines)), d_max_hours_threshold=float("nan"),
-            n_dropped_resource=int(over.sum()), n_dropped_duration=0, n_dropped_total=int(over.sum()),
-            n_before=n_before, n_after=int((~over).sum()), policy="r_max",
-        )
-        return df.loc[~over].reset_index(drop=True), report
-
-    a_thresh = np.array([df[c].quantile(o.a_max_quantile) for c in a_cols])
-    d_thresh = float(df[d_col].quantile(o.d_max_quantile))
-
-    A = df[a_cols].to_numpy(dtype=float)
-    D = df[d_col].to_numpy(dtype=float)
-
-    over_resource = (A > a_thresh[None, :]).any(axis=1)
-    over_duration = D > d_thresh
-
-    if o.policy == "drop":
-        keep = ~(over_resource | over_duration)
-        out = df.loc[keep].reset_index(drop=True)
-        report = OutlierReport(
-            a_max_thresholds=a_thresh,
-            d_max_hours_threshold=d_thresh,
-            n_dropped_resource=int(over_resource.sum()),
-            n_dropped_duration=int(over_duration.sum()),
-            n_dropped_total=int((over_resource | over_duration).sum()),
-            n_before=n_before, n_after=len(out), policy="drop",
-        )
-        return out, report
-    else:  # clip
-        out = df.copy()
-        for j, c in enumerate(a_cols):
-            out[c] = out[c].clip(upper=a_thresh[j])
-        out[d_col] = out[d_col].clip(upper=d_thresh)
-        report = OutlierReport(
-            a_max_thresholds=a_thresh,
-            d_max_hours_threshold=d_thresh,
-            n_dropped_resource=int(over_resource.sum()),   # count affected
-            n_dropped_duration=int(over_duration.sum()),
-            n_dropped_total=int((over_resource | over_duration).sum()),
-            n_before=n_before, n_after=len(out), policy="clip",
-        )
-        return out, report
+def apply_r_max(df: pd.DataFrame, cfg: Config, a_cols: list[str]) -> tuple[pd.DataFrame, LimitReport]:
+    """Remove the jobs with any request (CPU or RAM, machines) larger than limits.r_max_machines."""
+    r = cfg.limits.r_max_machines
+    over = (np.zeros(len(df), bool) if r is None
+            else (df[a_cols].to_numpy(dtype=float) > r).any(axis=1))
+    report = LimitReport(r_max_machines=r, n_removed=int(over.sum()), n_before=len(df), n_after=int((~over).sum()))
+    return df.loc[~over].reset_index(drop=True), report

@@ -21,33 +21,28 @@ class RunCfg:
 @dataclass(frozen=True)
 class ColumnsCfg:
     collection_id: str = "collection_id"
-    datetime: str = "request_time"
-    priority: str = "priority"
+    datetime: str = "arrival_utc"          # with its time zone; converted to naive UTC (the grid's time base)
+    priority: str = "priority_tier"
     scheduling_class: str = "scheduling_class"
-    requested_cpu: str = "CPU"
+    requested_cpu: str = "CPU"             # SUM of the instances' first requests (machines)
     requested_ram: str = "RAM"
-    duration_hours: str = "duration"
-    cpu_hours_real: str = "CPU_hours_real"   # used only by time.duration_mode = "effective"
+    duration_hours: str = "duration"       # job span (first start to last end); used where CPU is 0
+    cpu_hours_real: str = "CPU_hours_real" # effective duration = cpu_hours_real / requested_cpu
 
 
 @dataclass(frozen=True)
 class DataCfg:
-    batch_csv: str = "data/batch_may2019_30k.csv"
+    batch_csv: str = "data/batch_v2_30k.csv"   # scripts/data/fetch_v2.py + scripts/data/build_v2.py
     grid_csv: str = "data/grid_data_may_2019.csv"
     n0: int = 10000
     columns: ColumnsCfg = field(default_factory=ColumnsCfg)
-    # time base of columns.datetime:
-    #   "trace" -> the timestamps are read as written (old files: 2019-05-01 + trace microseconds, no time zone)
-    #   "utc"   -> the timestamps must carry a time zone; they are converted to UTC (naive), the time base of
-    #              grid_csv (timestamp_utc). data/batch_v2_30k.csv stores UTC (scripts/data/build_v2.py).
-    time_base: str = "trace"
 
 
 @dataclass(frozen=True)
 class EnergyModelCfg:
     # DECLARED ASSUMPTION (not from Google): the size of the largest machine of the trace, i.e. of 1.0 in the
     # trace's units. Google publishes only the normalised values. Used only where cores / GB are needed (bids,
-    # energy). The old keys spec_cpu_core / spec_ram_gb are still accepted (_ALIASES).
+    # energy). Requests and capacity stay in machines.
     machine_cores: float = 64       # cores of the largest machine (1.0 CPU)
     machine_ram_gb: float = 256     # GB of the largest machine (1.0 RAM)
     p_core: float = 15.0            # watts per physical core
@@ -98,7 +93,9 @@ class BidCfg:
 @dataclass(frozen=True)
 class TimeCfg:
     tick_seconds: float = 1.0           # wall-clock length of one step (real-tick time model)
-    d_max_quantile: float = 1.0     # 1.0 = max of survivors (no double-trim; see outliers.d_max_quantile)
+    # Durations longer than d_max are cut (not removed); the one capped duration is used for the time in the
+    # cluster, the bids and the energy. d_max = min(d_max_hours, d_max_horizon_fraction * T); None -> the ceiling.
+    d_max_hours: Optional[float] = None
     d_max_horizon_fraction: float = 0.05
     d_max_ratio_abort: float = 0.10
     # Minimum job duration for allocation purposes. Jobs shorter than this
@@ -106,24 +103,12 @@ class TimeCfg:
     # (GCP/AWS bill 1 min minimum) and preventing near-zero resource
     # volumes from inflating gamma.
     duration_floor_hours: float = 0.016667    # ~1 minute (the YAML value in use, not exactly 1/60)
-    # Experiment option (default 1.0 = off): arrival tick of every H and stream job -> floor(tick / k),
-    # then the one-arrival-per-tick rule (a collision moves to the next free tick). Order, durations
-    # and the job set are unchanged; capacity is sized on the ORIGINAL ticks (same cluster for all k).
-    arrival_time_scale: float = 1.0
-    # Explicit duration cap in hours (None = old rule: d_max_quantile of the kept durations). Either way the
-    # horizon ceiling d_max <= d_max_horizon_fraction * T and the d_max_ratio_abort check still apply.
-    d_max_hours: Optional[float] = None
-    # true -> one duration everywhere: duration_hours = min(duration, d_max), so the bids, the energy and the time
-    # in the cluster use the same capped duration. false (old) -> only duration_steps is capped.
-    cap_duration_everywhere: bool = False
-    # "span" (old) -> duration = the file's duration column (first start to last end of the job).
-    # "effective"  -> duration = columns.cpu_hours_real / requested_cpu (the job's real CPU-hours spread over its
-    #                 SUM request); jobs with a zero CPU request keep the span. Read once, used everywhere.
-    duration_mode: str = "span"
 
 
 @dataclass(frozen=True)
 class HardwareCfg:
+    # Hardware profiles build ONLY the type id (hw_idx). The request A of a job is always its real request, and the
+    # type volume v = A_type * d_bar uses the mean real request of the type's jobs (phase0.type_request).
     n_profiles: int = 32
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
@@ -137,22 +122,13 @@ class HardwareCfg:
     # on which types are served -- only on which types contribute to
     # gamma's v_min term.
     hw_floor: float = 1.0e-5
-    # true (old) -> A = the snapped profile, everywhere. false -> the profile is used ONLY for the type id
-    # (hw_idx); A = the real request for the gate, the capacity, the bids and the energy. Phase 0's type volume
-    # v = A_type * d_bar still uses the profile (phase0.build_type_space).
-    snap_requests: bool = True
-    # Phase 0 / ReInit type volume v = A_type * d_bar. "profile" (old): A_type = the hardware profile.
-    # "real_mean": A_type = the mean REAL request (JobArrays.A) of the type's jobs; the profile where a type has no job.
-    type_volume: str = "profile"
 
 
 @dataclass(frozen=True)
-class OutliersCfg:
-    policy: str = "drop"            # "drop" | "clip" | "none" (no outlier filter) | "r_max" (fixed limit below)
-    r_max_machines: Optional[float] = None   # policy "r_max": jobs with a CPU or RAM request > this are removed
-    a_max_quantile: float = 0.90
-    d_max_quantile: float = 0.95
-    xi_warn_threshold: float = 0.10
+class LimitsCfg:
+    # Jobs with a CPU or RAM request larger than r_max_machines are removed (None = no limit).
+    r_max_machines: Optional[float] = 0.1
+    xi_warn_threshold: float = 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this
 
 
 @dataclass(frozen=True)
@@ -163,19 +139,11 @@ class AbsoluteCapCfg:
 
 @dataclass(frozen=True)
 class CapacityCfg:
-    mode: str = "from_amax"   # "exceeded_share" | "fraction_of_volume" | "fraction_of_peak" | "fraction_of_concurrency_quantile" | "from_amax" | "absolute"
-    # exceeded_share (week 32): c_i = the level of the concurrent request of resource i that is exceeded this share
-    # of the time when every job is admitted (time-weighted, on the same A and duration_steps the model uses).
+    mode: str = "exceeded_share"   # "exceeded_share" | "absolute"
+    # exceeded_share: c_i = the demand level of resource i exceeded this share of the time when every job is
+    # admitted (time-weighted, on the same A and duration_steps the model uses).
     exceeded_share: float = 0.25
-    fraction: float = 0.40               # fraction_of_* modes only
-    concurrency_quantile: float = 0.80   # used only by fraction_of_concurrency_quantile
-    absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)
-    # from_amax only: c_i = a_max,i / xi_target (sizing only; constants.xi_override is separate)
-    xi_target: float = 0.5
-    # After the outlier policy and the capacity sizing: drop from H and from the stream every
-    # job with A_ij > c_i on any resource (it can never pass the physical gate). c is NOT
-    # re-sized; the timeline (T, H span), d_max and the hardware catalogue are unchanged.
-    drop_jobs_exceeding_capacity: bool = False
+    absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)   # mode "absolute": c in machines
 
 
 @dataclass(frozen=True)
@@ -314,7 +282,7 @@ class Config:
     data: DataCfg = field(default_factory=DataCfg)
     time: TimeCfg = field(default_factory=TimeCfg)
     hardware: HardwareCfg = field(default_factory=HardwareCfg)
-    outliers: OutliersCfg = field(default_factory=OutliersCfg)
+    limits: LimitsCfg = field(default_factory=LimitsCfg)
     capacity: CapacityCfg = field(default_factory=CapacityCfg)
     energy_model: EnergyModelCfg = field(default_factory=EnergyModelCfg)
     bid: BidCfg = field(default_factory=BidCfg)
@@ -337,40 +305,22 @@ class Config:
     #  validation 
     def validate(self) -> "Config":
         assert self.time.tick_seconds > 0
-        assert self.time.arrival_time_scale > 0
         assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
         assert self.scalarization.method in ("chebyshev", "linear")
         assert self.oracle.kind == "frozen", "oracle.kind: only 'frozen' is implemented"
-        assert self.capacity.mode in (
-            "exceeded_share", "fraction_of_volume", "fraction_of_peak",
-            "fraction_of_concurrency_quantile", "from_amax", "absolute",
-        )
-        assert self.capacity.xi_target > 0.0
-        assert 0.0 < self.capacity.concurrency_quantile <= 1.0
-        assert 0.0 < self.capacity.fraction <= 1.0
-        assert isinstance(self.capacity.drop_jobs_exceeding_capacity, bool)
+        assert self.capacity.mode in ("exceeded_share", "absolute")
         assert 0.0 <= self.capacity.exceeded_share < 1.0
-        assert self.data.time_base in ("trace", "utc")
-        assert isinstance(self.time.cap_duration_everywhere, bool)
         assert self.time.d_max_hours is None or self.time.d_max_hours > 0
-        assert isinstance(self.hardware.snap_requests, bool)
-        assert self.time.duration_mode in ("span", "effective")
-        assert self.hardware.type_volume in ("profile", "real_mean")
-        if self.outliers.policy == "r_max":
-            assert self.outliers.r_max_machines is not None and self.outliers.r_max_machines > 0
+        assert self.limits.r_max_machines is None or self.limits.r_max_machines > 0
         ab = self.ablation
         assert ab.thinning_delta_power is None or int(ab.thinning_delta_power) >= 1
         assert not (ab.thinning_eps_D_zero and ab.thinning_delta_power is not None), \
             "ablation: thinning_eps_D_zero and thinning_delta_power both set the thinning eps_D"
         assert self.grid.k_star >= 2
-        assert 0.0 < self.time.d_max_quantile <= 1.0
         assert 0.0 < self.time.d_max_horizon_fraction <= 1.0
         assert self.hardware.fit_on in ("full", "H")
         assert self.hardware.n_profiles >= 1
         assert self.grid.space in ("v", "phi", "phi_shifted")
-        assert self.outliers.policy in ("drop", "clip", "none", "r_max")
-        assert 0.0 < self.outliers.a_max_quantile <= 1.0
-        assert 0.0 < self.outliers.d_max_quantile <= 1.0
         if self.bid.known_distribution:
             assert self.grid.space == "v", \
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
@@ -399,11 +349,6 @@ def _from_dict(cls: type, data: dict[str, Any], path: str = "") -> Any:
         return data
     kwargs: dict[str, Any] = {}
     known = {f.name: f for f in fields(cls)}
-    for old, new in _ALIASES.get(cls.__name__, {}).items():
-        if old in data:
-            if new in data:
-                raise ValueError(f"Config key '{path}.{old}' is an old name of '{new}': give only one of them")
-            data = {(new if k == old else k): v for k, v in data.items()}
     unknown = set(data) - set(known)
     if unknown:
         raise ValueError(
@@ -426,10 +371,6 @@ def _from_dict(cls: type, data: dict[str, Any], path: str = "") -> Any:
     return cls(**kwargs)
 
 
-# old key -> new key (old YAML files, e.g. configs/default.yaml, keep loading unchanged)
-_ALIASES = {"EnergyModelCfg": {"spec_cpu_core": "machine_cores", "spec_ram_gb": "machine_ram_gb"}}
-
-
 def _resolve_dataclass_type(ftype: Any) -> Optional[type]:
     """Return the dataclass type if ftype is (or names) one, else None."""
     if is_dataclass(ftype):
@@ -442,7 +383,7 @@ def _resolve_dataclass_type(ftype: Any) -> Optional[type]:
 
 _DATACLASS_REGISTRY = {
     "RunCfg": RunCfg, "ColumnsCfg": ColumnsCfg, "DataCfg": DataCfg,
-    "TimeCfg": TimeCfg, "HardwareCfg": HardwareCfg, "OutliersCfg": OutliersCfg,
+    "TimeCfg": TimeCfg, "HardwareCfg": HardwareCfg, "LimitsCfg": LimitsCfg,
     "AbsoluteCapCfg": AbsoluteCapCfg, "CapacityCfg": CapacityCfg,
     "ObjectiveCfg": ObjectiveCfg, "GridCfg": GridCfg, "ConfidenceCfg": ConfidenceCfg,
     "ModelCfg": ModelCfg, "ScalarizationCfg": ScalarizationCfg, "OracleCfg": OracleCfg,

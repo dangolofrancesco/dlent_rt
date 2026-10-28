@@ -31,12 +31,10 @@ class _Recording(TheoryModel):
 
 
 def _golden_config(tmp: Path):
-    """The synthetic config the golden (tests/data/golden_known_false.npz) was frozen with,
-    week 29: capacity fraction_of_concurrency_quantile 0.40 / q 0.80, outliers d_max 0.90."""
-    cfg = synthetic_config(tmp, n0=400, n_jobs=3000, drift=True)
-    return replace(cfg, outliers=replace(cfg.outliers, d_max_quantile=0.90),
-                   capacity=replace(cfg.capacity, mode="fraction_of_concurrency_quantile",
-                                    fraction=0.40, concurrency_quantile=0.80))
+    """The synthetic config the golden (tests/data/golden_known_false.npz) was frozen with: the default
+    config on the synthetic trace (re-frozen in week 32, when the data path changed; save with
+    `python -m tests.test_known_distribution save`)."""
+    return synthetic_config(tmp, n0=400, n_jobs=3000, drift=True)
 
 
 def _run(known: bool, which: str):
@@ -153,3 +151,24 @@ def test_known_false_reproduces_previous_numbers():                    # (e)
     s = res.summary
     np.testing.assert_allclose([s["R_total"], s["n_admitted"], s["n_phases"]], g["sum"], rtol=1e-10)
     assert len({p["sigma"] for p in res.phases}) > 1                   # sigma_hat refit per phase
+
+
+def _golden_arrays() -> dict:
+    cfg, ds, m, res = _run(False, "golden")
+    st = m.state0
+    s = res.summary
+    g = {"p0_" + f: np.asarray(getattr(st, f)) for f in ["p", "v_bar", "phi_bar", "r_tilde", "phi_tilde", "tau", "L"]}
+    g["p0_scalars"] = np.array([st.lam_star, st.myerson.mu, st.myerson.sigma, st.carbon_price, st.gamma])
+    for f in ["R", "phi_mech", "payment", "admit", "k_hat", "type"]:
+        g["arr_" + f] = np.array([a[f] for a in res.arrivals], float)
+    g["ph_lam"] = np.array([p["lam_hat_start"] for p in res.phases])
+    g["ph_tau_end"] = np.array([p["tau_end"] for p in res.phases])
+    g["sum"] = np.array([s["R_total"], s["n_admitted"], s["n_phases"]], float)
+    return g
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["save"]:        # only on an intended, approved numeric change
+        np.savez(GOLDEN, **_golden_arrays())
+        print(f"saved {GOLDEN}")

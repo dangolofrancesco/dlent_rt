@@ -17,9 +17,7 @@ import pandas as pd
 from .energy import load_grid_data
 
 from .config import Config, resolve_path
-from .preprocess import (
-    HardwareCatalogue, OutlierReport, fit_hardware_catalogue, handle_outliers,
-)
+from .preprocess import HardwareCatalogue, LimitReport, apply_r_max, fit_hardware_catalogue
 
 
 @dataclass
@@ -28,10 +26,10 @@ class JobArrays:
     resources: list[str]
     priority: np.ndarray                        # priority (1-5)
     scheduling_class: np.ndarray         # scheduling class (0-3)
-    duration_hours: np.ndarray           # duration in hours (from CSV)
-    duration_steps: np.ndarray           # duration in steps (derived)
+    duration_hours: np.ndarray           # effective duration in hours, floored and capped at d_max
+    duration_steps: np.ndarray           # the same duration in steps
     arrival_step: np.ndarray
-    A: np.ndarray                        # (n, |I|) snapped resource requests (normalized)
+    A: np.ndarray                        # (n, |I|) real resource requests (machines)
     hw_idx: np.ndarray
     collection_id: np.ndarray
     datetime: np.ndarray                 # np.datetime64
@@ -54,14 +52,10 @@ class Dataset:
     n_arrivals_stream: int
     H_span_steps: int
     hw_catalogue: HardwareCatalogue
-    outlier_report: OutlierReport
+    limit_report: LimitReport
     d_max_diag: dict
     xi: float
     grid_data: object              # GridData from energy.py (or None)
-    # capacity.drop_jobs_exceeding_capacity: {"n_H", "n_stream"} jobs dropped (None = flag off)
-    capacity_drop: Optional[dict] = None
-    # time.arrival_time_scale: {"k", "n_nudged", "max_nudge"} (None = off)
-    arrival_compression: Optional[dict] = None
 
     @property
     def n_resources(self) -> int:
@@ -72,19 +66,17 @@ def _read_csv(cfg: Config) -> pd.DataFrame:
     col = cfg.data.columns
     df = pd.read_csv(resolve_path(cfg.data.batch_csv))
     df[col.datetime] = pd.to_datetime(df[col.datetime])
-    if cfg.data.time_base == "utc":
-        # the file must say its time zone; the model keeps naive UTC, the time base of the grid (timestamp_utc)
-        if getattr(df[col.datetime].dt, "tz", None) is None:
-            raise ValueError(f"data.time_base = 'utc' needs time-zone-aware timestamps in '{col.datetime}' "
-                             f"(e.g. 2019-05-01 07:05:00+00:00); {cfg.data.batch_csv} has none")
-        df[col.datetime] = df[col.datetime].dt.tz_convert("UTC").dt.tz_localize(None)
-    if cfg.time.duration_mode == "effective":
-        # one duration per job: real CPU-hours / SUM request (<= the span); a zero CPU request keeps the span
-        cpu = df[col.requested_cpu].to_numpy(dtype=float)
-        eff = np.divide(df[col.cpu_hours_real].to_numpy(dtype=float), cpu, out=df[col.duration_hours].to_numpy(dtype=float).copy(),
-                        where=cpu > 0)
-        assert np.all(eff <= df[col.duration_hours].to_numpy(dtype=float) * (1 + 1e-9)), "effective duration > span"
-        df[col.duration_hours] = eff
+    # the file must say its time zone; the model keeps naive UTC, the time base of the grid (timestamp_utc)
+    if getattr(df[col.datetime].dt, "tz", None) is None:
+        raise ValueError(f"'{col.datetime}' needs time-zone-aware timestamps (e.g. 2019-05-01 07:05:00+00:00); "
+                         f"{cfg.data.batch_csv} has none")
+    df[col.datetime] = df[col.datetime].dt.tz_convert("UTC").dt.tz_localize(None)
+    # effective duration: real CPU-hours / SUM request (<= the span); a zero CPU request keeps the span
+    cpu = df[col.requested_cpu].to_numpy(dtype=float)
+    span = df[col.duration_hours].to_numpy(dtype=float)
+    eff = np.divide(df[col.cpu_hours_real].to_numpy(dtype=float), cpu, out=span.copy(), where=cpu > 0)
+    assert np.all(eff <= span * (1 + 1e-9)), "effective duration > span"
+    df[col.duration_hours] = eff
     df = df.sort_values(col.datetime).reset_index(drop=True)
     return df
 
@@ -112,22 +104,6 @@ def _assign_real_tick_steps(
     return out
 
 
-def _compress_arrival_steps(steps: np.ndarray, k: float) -> tuple[np.ndarray, dict]:
-    """
-    time.arrival_time_scale: step -> floor(step / k), then the same one-arrival-per-tick rule as
-    _assign_real_tick_steps (a collision moves to the next free tick). Keeps the order.
-    """
-    s = np.floor(steps / k).astype(np.int64)
-    out = np.empty_like(s)
-    prev = -1
-    for i, x in enumerate(s):
-        cur = x if x > prev else prev + 1
-        out[i] = cur
-        prev = cur
-    nudge = out - s
-    return out, dict(k=float(k), n_nudged=int((nudge > 0).sum()), max_nudge=int(nudge.max()))
-
-
 def _duration_to_steps_real_tick(
     duration_hours: np.ndarray, tick_seconds: float, d_max_steps: Optional[int]
 ) -> np.ndarray:
@@ -153,16 +129,6 @@ def _convert_durations(
     )
 
 
-def _subset_jobs(J: JobArrays, keep: np.ndarray) -> JobArrays:
-    """The jobs of J where keep is True (arrival steps kept on the same timeline)."""
-    return JobArrays(
-        n=int(keep.sum()), resources=J.resources, priority=J.priority[keep],
-        scheduling_class=J.scheduling_class[keep], duration_hours=J.duration_hours[keep],
-        duration_steps=J.duration_steps[keep], arrival_step=J.arrival_step[keep], A=J.A[keep],
-        hw_idx=J.hw_idx[keep], collection_id=J.collection_id[keep], datetime=J.datetime[keep],
-    )
-
-
 def _build_job_arrays(
     df, cfg, resources, d_max_steps, catalogue, arrival_step,
 ):
@@ -172,16 +138,15 @@ def _build_job_arrays(
         df[col.requested_cpu].to_numpy(dtype=float),
         df[col.requested_ram].to_numpy(dtype=float),
     ])
-    hw_idx = catalogue.assign(A_raw)
-    # hardware.snap_requests = false: the profile gives only the type id (hw_idx); A stays the real request
-    A = catalogue.centroids[hw_idx] if cfg.hardware.snap_requests else A_raw
+    hw_idx = catalogue.assign(A_raw)        # the profile builds only the type id; A stays the real request
+    A = A_raw
     dur_hours = df[col.duration_hours].to_numpy(dtype=float)
     # Duration floor: treat sub-minute jobs as 1-minute for allocation.
     # Cloud providers bill on a 1-minute minimum (GCP/AWS), and without
     # this floor near-zero durations produce near-zero resource volumes
     # that inflate gamma's r_max/v_min term by orders of magnitude.
     dur_hours = np.maximum(dur_hours, cfg.time.duration_floor_hours)
-    if cfg.time.cap_duration_everywhere and d_max_steps is not None:
+    if d_max_steps is not None:
         # one duration everywhere: bids and energy (duration_hours) use the same cap as the cluster time
         dur_hours = np.minimum(dur_hours, d_max_steps * cfg.time.tick_seconds / 3600.0)
     dur_steps = _convert_durations(dur_hours, cfg, d_max_steps)
@@ -315,53 +280,25 @@ def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
         if stats.get("weights") is None:
             return stats["peak"]
         return _time_weighted_quantile(stats["levels"], stats["weights"], 1.0 - cfg.capacity.exceeded_share)
-    elif cfg.capacity.mode == "fraction_of_volume":
-        volume = (basis.A * basis.duration_steps[:, None]).sum(axis=0)
-        return cfg.capacity.fraction * volume
-    elif cfg.capacity.mode == "fraction_of_peak":
-        stats = _occupancy_stats(basis)
-        return cfg.capacity.fraction * stats["peak"]
-    elif cfg.capacity.mode == "fraction_of_concurrency_quantile":
-        stats = _occupancy_stats(basis)
-        if stats.get("weights") is None:
-            return cfg.capacity.fraction * stats["peak"]
-        qv = _time_weighted_quantile(
-            stats["levels"], stats["weights"], cfg.capacity.concurrency_quantile
-        )
-        return cfg.capacity.fraction * qv
-    elif cfg.capacity.mode == "from_amax":
-        # c_i = a_max,i / xi_target, a_max over the KEPT jobs of the basis (H + stream):
-        # the same xi = a_max,i / c_i for every resource by construction.
-        return basis.A.max(axis=0) / cfg.capacity.xi_target
     else:  # absolute
         return np.array(
             [cfg.capacity.absolute.cpu, cfg.capacity.absolute.ram], dtype=float
         )
 
 
-def _compute_d_max_steps(
-    duration_hours_all: np.ndarray, T: int, cfg: Config
-) -> tuple[int, dict]:
-    # arrivals_per_hour = _estimate_arrivals_per_hour(df, cfg)
-    steps = _convert_durations(
-        duration_hours_all, cfg, d_max_steps=None
-    )
-    q = cfg.time.d_max_quantile
-    if cfg.time.d_max_hours is not None:
-        # explicit cap (time.d_max_hours); the horizon ceiling and the abort check below still apply
-        candidate = int(np.rint(cfg.time.d_max_hours * 3600.0 / cfg.time.tick_seconds))
-    else:
-        candidate = int(np.quantile(steps, q))
-    candidate = max(candidate, 1)
-
+def _compute_d_max_steps(T: int, cfg: Config) -> tuple[int, dict]:
+    """d_max = min(time.d_max_hours, d_max_horizon_fraction * T) in steps; d_max_hours None -> the ceiling."""
     ceiling = max(int(cfg.time.d_max_horizon_fraction * T), 1)
+    if cfg.time.d_max_hours is not None:
+        candidate = max(int(np.rint(cfg.time.d_max_hours * 3600.0 / cfg.time.tick_seconds)), 1)
+    else:
+        candidate = ceiling
     d_max = min(candidate, ceiling)
 
     ratio = d_max / max(T, 1)
     diag = dict(
-        quantile=q,
         d_max_hours=cfg.time.d_max_hours,
-        candidate_from_quantile=candidate,
+        candidate=candidate,
         horizon_ceiling=ceiling,
         chosen=d_max,
         ratio_to_T=ratio,
@@ -371,9 +308,8 @@ def _compute_d_max_steps(
         raise ValueError(
             f"d_max/T = {ratio:.3f} exceeds abort threshold "
             f"{cfg.time.d_max_ratio_abort}. d_max={d_max}, T={T}. "
-            f"The theory requires d_max << T. Lower time.d_max_quantile or "
-            f"time.d_max_horizon_fraction, or drop more long-duration outliers "
-            f"(outliers.d_max_quantile)."
+            f"The theory requires d_max << T. Lower time.d_max_hours or "
+            f"time.d_max_horizon_fraction."
         )
     return d_max, diag
 
@@ -385,24 +321,19 @@ def load_dataset(cfg: Config) -> Dataset:
     resources = ["cpu", "ram"]
     a_cols = [col.requested_cpu, col.requested_ram]
 
-    df, outlier_report = handle_outliers(df, cfg, a_cols, col.duration_hours)
+    df, limit_report = apply_r_max(df, cfg, a_cols)
 
     n0 = cfg.data.n0
     if n0 >= len(df):
         raise ValueError(
-            f"n0={n0} >= rows after outlier handling ({len(df)}). "
-            "Lower n0 or relax outlier thresholds."
+            f"n0={n0} >= rows after the size limit ({len(df)}). "
+            "Lower n0 or raise limits.r_max_machines."
         )
 
     dts = df[col.datetime].to_numpy()
 
     # real-tick time model: one step = time.tick_seconds of wall clock
     all_steps = _assign_real_tick_steps(dts, dts[0], cfg.time.tick_seconds)
-    # capacity is sized on the original ticks; time.arrival_time_scale compresses the arrivals only
-    cap_steps = all_steps
-    arrival_compression = None
-    if cfg.time.arrival_time_scale != 1.0:
-        all_steps, arrival_compression = _compress_arrival_steps(all_steps, cfg.time.arrival_time_scale)
 
     # H = first n0 rows chronologically, stream = the rest. df is sorted by
     # datetime (_read_csv) and all_steps is row-aligned to df, so this is a
@@ -418,10 +349,10 @@ def load_dataset(cfg: Config) -> Dataset:
     # what the rest of the online loop (T, stream.arrival_step) expects.
     steps_stream_abs = all_steps[n0:]
 
-    assert len(df_H) + len(df_stream) == outlier_report.n_after, (
+    assert len(df_H) + len(df_stream) == limit_report.n_after, (
         f"job accounting mismatch: len(df_H)+len(df_stream)="
-        f"{len(df_H) + len(df_stream)} != outlier_report.n_after="
-        f"{outlier_report.n_after} -- the H/stream split must partition the "
+        f"{len(df_H) + len(df_stream)} != limit_report.n_after="
+        f"{limit_report.n_after} -- the H/stream split must partition the "
         f"filtered dataset with no gaps or overlap."
     )
     assert steps_H.max() < steps_stream_abs.min(), (
@@ -440,12 +371,7 @@ def load_dataset(cfg: Config) -> Dataset:
         A_fit = df_H[a_cols].to_numpy(dtype=float)
     catalogue = fit_hardware_catalogue(A_fit, cfg)
 
-    # under time.arrival_time_scale, d_max (its horizon ceiling) uses the ORIGINAL horizon, so that
-    # the durations are unchanged; d_max / T on the compressed T is reported by the experiment
-    T_dmax = T if arrival_compression is None else int(cap_steps[-1] - cap_steps[n0]) + 1
-    d_max_steps, d_max_diag = _compute_d_max_steps(
-        df[col.duration_hours].to_numpy(dtype=float), T_dmax, cfg,
-    )
+    d_max_steps, d_max_diag = _compute_d_max_steps(T, cfg)
 
     H = _build_job_arrays(df_H, cfg, resources,
                           d_max_steps, catalogue, steps_H)
@@ -457,7 +383,7 @@ def load_dataset(cfg: Config) -> Dataset:
     # which is re-based to 0 and would misalign with steps_H. See
     # _size_capacity's docstring for why stream alone is not used.
     capacity_basis = _OccupancyBasis(
-        arrival_step=cap_steps,
+        arrival_step=all_steps,
         duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
         A=np.concatenate([H.A, stream.A], axis=0),
     )
@@ -467,7 +393,7 @@ def load_dataset(cfg: Config) -> Dataset:
     # gaps (positional split, no stratified pool), so capacity computed from
     # the H+stream basis must equal capacity computed directly on the WHOLE
     # filtered dataset's timeline in one shot.
-    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, cap_steps)
+    full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
     full_basis = _OccupancyBasis(
         arrival_step=full_jobs.arrival_step,
         duration_steps=full_jobs.duration_steps,
@@ -481,25 +407,15 @@ def load_dataset(cfg: Config) -> Dataset:
         f"no gaps or reordering."
     )
 
-    capacity_drop = None
-    if cfg.capacity.drop_jobs_exceeding_capacity:
-        # jobs that can never pass the physical gate (A_ij > c_i on some resource) leave H and
-        # the stream; c, the timeline (T, H_span_steps), d_max and the catalogue are kept
-        keep_H = ~np.any(H.A > capacity[None, :], axis=1)
-        keep_S = ~np.any(stream.A > capacity[None, :], axis=1)
-        capacity_drop = dict(n_H=int((~keep_H).sum()), n_stream=int((~keep_S).sum()))
-        H, stream = _subset_jobs(H, keep_H), _subset_jobs(stream, keep_S)
-
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
 
-    if xi > cfg.outliers.xi_warn_threshold:
+    if xi > cfg.limits.xi_warn_threshold:
         import warnings
         warnings.warn(
             f"xi = max_i a_max,i/c_i = {xi:.3f} exceeds "
-            f"{cfg.outliers.xi_warn_threshold} (~1/log T). The DLENT guarantee "
-            f"needs xi small. Consider a lower outliers.a_max_quantile or a "
-            f"higher capacity.fraction.",
+            f"{cfg.limits.xi_warn_threshold} (~1/log T). The DLENT guarantee "
+            f"needs xi small (constants.xi_override forces it in the online loop).",
             RuntimeWarning,
         )
 
@@ -519,10 +435,8 @@ def load_dataset(cfg: Config) -> Dataset:
         n_arrivals_stream=stream.n,
         H_span_steps=H_span_steps,
         hw_catalogue=catalogue,
-        outlier_report=outlier_report,
+        limit_report=limit_report,
         d_max_diag=d_max_diag,
         xi=xi,
         grid_data=grid_data,
-        capacity_drop=capacity_drop,
-        arrival_compression=arrival_compression,
     )

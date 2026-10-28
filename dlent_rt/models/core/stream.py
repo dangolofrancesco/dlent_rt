@@ -32,7 +32,7 @@ class StreamData:
     cost_base: np.ndarray     # reference cost c_j (public function of the features)
     priority: np.ndarray
     hw_idx: np.ndarray
-    A: np.ndarray             # (n, |I|) snapped request
+    A: np.ndarray             # (n, |I|) real request (machines)
     D: np.ndarray             # duration in steps (clipped to d_max)
     duration_hours: np.ndarray
     energy_kwh: np.ndarray

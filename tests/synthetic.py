@@ -1,6 +1,6 @@
 """
 Synthetic trace + grid CSVs with the SAME schema as the real inputs
-(batch_may2019_30k.csv / grid_data_may_2019.csv). Used only by tests: the
+(batch_v2_30k.csv / grid_data_may_2019.csv). Used only by tests: the
 numbers are not meant to be realistic, only to exercise every code path.
 """
 from __future__ import annotations
@@ -30,10 +30,11 @@ def write_synthetic(tmpdir: Path, n_jobs: int = 3000, hours: float = 36.0,
         cpu[late] *= 2.0
     df = pd.DataFrame({
         "collection_id": np.arange(n_jobs),
-        "request_time": (t0 + secs.astype("timedelta64[s]")).astype("datetime64[s]"),
-        "priority": rng.integers(1, 6, n_jobs),
+        "arrival_utc": pd.to_datetime((t0 + secs.astype("timedelta64[s]")).astype("datetime64[s]")).tz_localize("UTC"),
+        "priority_tier": rng.integers(1, 6, n_jobs),
         "scheduling_class": rng.integers(0, 4, n_jobs),
         "CPU": cpu, "RAM": ram, "duration": dur,
+        "CPU_hours_real": cpu * dur,           # effective duration = span on the synthetic trace
     })
     hrs = np.arange(int(hours) + 2)
     grid = pd.DataFrame({

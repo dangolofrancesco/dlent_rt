@@ -1,7 +1,7 @@
 """
 Benchmarks for the regret of an online run (week-30 Stage D). Every number is scored with the
 single job-level reward dlent_rt.reward (R_job, $ per job), on the online STREAM (the
-outlier-filtered jobs after H), with Phase 0's bid model and frozen s_C.
+jobs after H, within the size limit R_max), with Phase 0's bid model and frozen s_C.
 
     b = Benchmarks(ds, state0, cfg)          # or Benchmarks.from_model(theory_model)
     b.score(admitted_mask)    sum of R_job over the admitted stream jobs                 [$ per run]
@@ -44,6 +44,7 @@ from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 from . import reward
 from .models.core.reinit import build_window_state
 from .models.core.stream import StreamData, build_stream
+from .lp_oracle import solve_lp_rs
 from .phase0 import assign_type_ids
 
 
@@ -163,7 +164,7 @@ class Benchmarks:
                          time_limit: float = 300.0) -> dict:
         """
         Job-level MILP on BUCKETED jobs: max sum_j r~_k(j) x_j over the jobs with r~ > 0, same
-        per-tick capacity, stream, snapped A and drop filter as job_level_opt. duration "true"
+        per-tick capacity, stream and real A as job_level_opt. duration "true"
         (variant A) uses each job's true D in the occupancy, "type" (variant B) the type's d_bar
         (rounded, >= 1 tick); B's set may then exceed c under the TRUE durations, reported as
         peak_true_occ / c. R_real = sum_j R_job,j x_j (realised), R_believed = sum_j r~ x_j.
@@ -185,3 +186,60 @@ class Benchmarks:
                     n_chosen_R_neg=int((R[x] < 0).sum()), peak_true_occ_over_c=peak.tolist(),
                     feasible_true=bool(np.all(peak <= 1 + 1e-9)),
                     gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"])
+
+    # ------------------------------------------------------------------ #
+    def feasible_ceiling(self) -> float:
+        """sum R_job^+ over the stream jobs with A_ij <= c_i on every resource: the most ANY policy can earn [$]."""
+        fits = ~np.any(self.S.A > self.c[None, :], axis=1)
+        return float(np.maximum(self.R, 0)[fits].sum())
+
+    def fluid_opt_feasible_types(self) -> dict:
+        """The fluid OPT (reference-state LP-RS x T) with every type whose request A_type exceeds c on some
+        resource removed (p = 0): the fluid benchmark without the load that can never run."""
+        ref = self.reference_state
+        feas = ~np.any(ref.A_type > self.c[None, :], axis=1)
+        lp = solve_lp_rs(p=ref.p * feas, r=ref.r_tilde, v=ref.v, c=self.c, presolve=self.cfg.lp.presolve)
+        return dict(value=float(lp.optimum) * self.T, tau=np.asarray(lp.tau).tolist(),
+                    n_types_removed=int((~feas & (ref.p > 0)).sum()), n_types_populated=int((ref.p > 0).sum()))
+
+    def ladder(self, model, result, time_limit: float = 300.0) -> dict:
+        """
+        The benchmark ladder of an online run (model = the TheoryModel, result = model.run()), every row scored
+        with R_job on the same stream and physical gate [$ per run]:
+        no-capacity bound, feasible ceiling, job-level MILP, bucketed MILP A (reference / Phase 0 buckets),
+        fluid OPT, fluid OPT on feasible types, G2, G1, static Phase 0, static Phase 0 + thinning at the cap
+        p = (1 - xi) / (1 + eps_D) (the run's common random numbers), DLENT-RT.
+        Checks: DLENT-RT's score = its R_total; a bucketed A set is feasible and its realised value is at most
+        the job MILP (within the MILP's own gap). G1's decision-error rate (sign R_job != sign r~) is returned.
+        """
+        from .models.policy import JobGreedyPolicy, TypeGreedyPolicy, run_policy, run_static
+
+        S, R = self.S, self.R
+        adm = np.zeros(S.n, bool)
+        adm[[a["i"] for a in result.arrivals if a["admit"]]] = True
+        assert np.isclose(self.score(adm), result.summary["R_total"], rtol=1e-10)
+        job = self.job_level_opt(time_limit=time_limit)
+        buck = {src: self.job_opt_bucketed(src, "true", time_limit=time_limit) for src in ("reference", "phase0")}
+        bound = job["R_ip"] * (1 + max(job["gap"], 0)) + 1e-6
+        for src, o in buck.items():
+            assert o["feasible_true"], src
+            assert o["R_real"] <= bound, (src, o["R_real"], job["R_ip"], job["gap"])
+        p_cap = (1 - model.ep.xi) / (1 + model.ep.eps_D)
+        g1 = TypeGreedyPolicy.from_state(self.state0, S, R, self.ds.H_span_steps)
+        sims = {"G2 job greedy": run_policy(S, self.c, JobGreedyPolicy(R)),
+                "G1 type greedy": run_policy(S, self.c, g1),
+                "static Phase 0": run_static(S, self.c, self.state0),
+                "static Phase 0 + thinning": run_static(S, self.c, self.state0, thin_p=p_cap, u_rand=model.u_rand)}
+        ff = self.fluid_opt_feasible_types()
+        rows = {"job-level, no capacity": job["R_nocap"], "feasible ceiling": self.feasible_ceiling(),
+                "job-level MILP": job["R_ip"],
+                "bucketed MILP A (reference buckets)": buck["reference"]["R_real"],
+                "bucketed MILP A (Phase 0 buckets)": buck["phase0"]["R_real"],
+                "fluid OPT": self.fluid_opt(), "fluid OPT on feasible types": ff["value"],
+                **{k: self.score(v.admit) for k, v in sims.items()}, "DLENT-RT": self.score(adm)}
+        ok = np.isfinite(g1.r_dec)
+        return dict(rows=rows, admitted={k: int(v.admit.sum()) for k, v in sims.items()} | {"DLENT-RT": int(adm.sum())},
+                    job=dict((k, v) for k, v in job.items() if k != "x"),
+                    bucketed={s: {k: v for k, v in o.items() if k != "x"} for s, o in buck.items()},
+                    fluid_feasible=ff, p_cap=float(p_cap),
+                    g1_decision_error=float(np.mean(np.sign(R[ok]) != np.sign(g1.r_dec[ok]))) if ok.any() else 0.0)

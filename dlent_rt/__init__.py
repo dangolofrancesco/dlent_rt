@@ -2,7 +2,7 @@
 DLENT-RT: real-time DLENT-Exact simulator for multi-objective cloud resource
 allocation with mechanism design and online learning.
 
-Pipeline: config -> data (outliers, hardware profiles, capacity) -> Phase 0
+Pipeline: config -> data (size limit R_max, effective duration, capacity) -> Phase 0
 (bids, known bid distribution, type space, additive dollar reward with the
 quantile_linear carbon price s_C, LP-RS) -> online theory model
 (dlent_rt.models.theory: oracle, thinning, Tests 1-3, ReInit, hindsight

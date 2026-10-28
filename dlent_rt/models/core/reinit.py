@@ -129,7 +129,7 @@ def build_window_state(
     p = N / max(W, 1)
     L, prio, A_type = type_arrays(ts, grid)
     phi_tilde = compute_phi_tilde(L, myerson)
-    A_vol = type_request(tid_arr[ok], stream.A[idx_arr][ok], A_type, cfg.hardware.type_volume)
+    A_vol = type_request(tid_arr[ok], stream.A[idx_arr][ok], A_type)
     v = A_vol * md["d_bar"][:, None]
     r_tilde, r_nocarbon, _ = type_reward(
         prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
@@ -145,7 +145,7 @@ def build_window_state(
         prev, myerson=myerson, grid=grid, bids=bids, p=p, d_bar=md["d_bar"],
         v_bar=mv["v_bar"], phi_bar=mv["phi_bar"], energy_bar=md["energy_bar"],
         power_bar=md["power_bar"], r_tilde=r_tilde, r_nocarbon=r_nocarbon,
-        C_elec_bar=md["C_elec_bar"], C_carbon_bar=md["C_carbon_bar"], v=v, L=L,
+        C_elec_bar=md["C_elec_bar"], C_carbon_bar=md["C_carbon_bar"], v=v, L=L, A_type=A_vol,
         phi_tilde=phi_tilde, tau=tau, lam_star=lp.optimum,
         n_assigned=int(ok.sum()), n_ir_rejected=int((~ok).sum()),
     )

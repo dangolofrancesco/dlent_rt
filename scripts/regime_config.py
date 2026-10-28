@@ -1,8 +1,8 @@
 """
-Committed default + a named regime's capacity override (week 30).
+Committed default + (optionally) a named regime's capacity override.
 
     from regime_config import committed_with_regime
-    cfg, info = committed_with_regime("configs/regime_small_cluster.yaml")   # or None: the committed default
+    cfg, info = committed_with_regime(None)        # the committed default; or "configs/regime_<name>.yaml"
 
 Both YAML files are read from git HEAD (`git show HEAD:<path>`), never from the working copy, so an uncommitted edit of
 configs/default.yaml is not used. The regime file may override ONLY the `capacity` block (checked); its keys are merged
