@@ -1,0 +1,73 @@
+{
+  "n_types": 20480,
+  "populated types": 4005,
+  "jobs assigned": 46596,
+  "IR rejected": 0,
+  "sum p (per h)": 277.3741118421596,
+  "true arrival rate of H (per h)": 277.37411184215966,
+  "grid": {
+    "k*": 128,
+    "space": "v",
+    "spacing": "geometric",
+    "ratio between edges": 1.15854455866985,
+    "first edge $": 1e-06,
+    "last edge $": 151.64599711640545
+  },
+  "s_C ($/kg)": 22.468250295764953,
+  "s_C derivation": {
+    "strategy": "quantile_linear",
+    "q": 0.9,
+    "Q_cv": 0.16031652187231757,
+    "Q_abs_pi": 0.022478601769291943,
+    "D_q": 0.09139756182080476,
+    "K_q": 0.004067853999206708,
+    "s_C": 22.468250295764953
+  },
+  "r_tilde min / median / max (populated)": [
+    -285.5075804191382,
+    0.004519685814592432,
+    490.986216726954
+  ],
+  "positive types %": 66.66666666666666,
+  "positive arrival mass %": 87.77792085157526,
+  "gamma (data)": 86400.0,
+  "gamma parts": {
+    "r_max": 0.01907235502418162,
+    "v_rate_max": 151.64599711640548,
+    "d_max (ticks)": 86400.0,
+    "c_max": 1.7370652534748448,
+    "r_max / v_min": 1.9492021190881772,
+    "dominant": "d_max (ticks)"
+  },
+  "gamma forced": 1.0,
+  "xi (data)": 0.49967802067332506,
+  "xi forced": 0.001,
+  "eps_D (data xi)": 53.71106044741744,
+  "d_max (h)": 24.0,
+  "C (machines)": [
+    1.7370652534748448,
+    1.1563098070612836
+  ],
+  "Q (machines)": [
+    0.8686452609913963,
+    0.5782174643472341
+  ],
+  "tau": [
+    0.00205715217311701,
+    0.0016154345048819186
+  ],
+  "LP optimum ($ per h)": 38.5553758750977,
+  "consumption if all admitted (p.v / C)": [
+    2.0371834267493645,
+    2.014705294558095
+  ],
+  "consumption at the optimum = LP fill": [
+    1.0000000000000007,
+    0.9999999999999998
+  ],
+  "types fully / partly / rejected": [
+    1473,
+    2,
+    2530
+  ]
+}
