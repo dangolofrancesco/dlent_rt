@@ -549,3 +549,117 @@ def save_json(obj, path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         json.dump(obj, fh, indent=2, default=lambda x: x.tolist() if hasattr(x, "tolist") else float(x))
+
+
+# --------------------------------------------------------------------------- #
+# 1b. What the job limits leave out (all jobs of the file, effective duration with the 1-minute floor, NO cap)
+# --------------------------------------------------------------------------- #
+KEPT_C, LOST_C, LINE_C, INK_C, GRID_C = "#2a78d6", "#2a78d6", "#eb6834", "#0b0b0b", "#e5e4e0"
+
+
+def _limit_axes(ax, xlabel, ylabel, title):
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, loc="left", fontsize=10, color=INK_C)
+    ax.grid(color=GRID_C, lw=0.6)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+
+
+def _hours(raw: pd.DataFrame, cfg) -> np.ndarray:
+    """Effective duration (CPU-hours / CPU request) with the 1-minute floor and NO 24 h cap."""
+    return np.maximum(raw["eff"].to_numpy(float), cfg.time.duration_floor_hours)
+
+
+def plot_quota(raw: pd.DataFrame, Q, cfg):
+    """
+    Cell A of section 1b. (a) CPU vs RAM request with the quota lines x = Q_CPU, y = Q_RAM; (b) CPU-hours vs RAM-hours
+    per job (request x effective duration, no cap). Kept jobs solid, jobs over the quota faded. Returns (fig, table).
+    Jobs with a zero request cannot be drawn on log axes; the text box counts them.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    col = cfg.data.columns
+    cpu, ram = raw[col.requested_cpu].to_numpy(float), raw[col.requested_ram].to_numpy(float)
+    d = _hours(raw, cfg)
+    Q = np.asarray(Q, float)
+    over = (cpu > Q[0]) | (ram > Q[1])
+    ch, rh = cpu * d, ram * d
+    fig, axs = plt.subplots(1, 2, figsize=(13, 5.2))
+    for ax, x, y in ((axs[0], cpu, ram), (axs[1], ch, rh)):
+        show = (x > 0) & (y > 0)
+        ax.scatter(x[show & over], y[show & over], s=2, color=LOST_C, alpha=0.08, lw=0, rasterized=True)
+        ax.scatter(x[show & ~over], y[show & ~over], s=2, color=KEPT_C, alpha=0.9, lw=0, rasterized=True)
+        ax.set_xscale("log"); ax.set_yscale("log")
+    axs[0].axvline(Q[0], color=LINE_C, ls="--", lw=1.2)
+    axs[0].axhline(Q[1], color=LINE_C, ls="--", lw=1.2)
+    axs[0].text(Q[0], axs[0].get_ylim()[0], f" Q_CPU = {Q[0]:.4f}", color=LINE_C, fontsize=8, va="bottom")
+    axs[0].text(axs[0].get_xlim()[0], Q[1], f" Q_RAM = {Q[1]:.4f}", color=LINE_C, fontsize=8, va="bottom")
+    _limit_axes(axs[0], "CPU request (machines, log)", "RAM request (machines, log)",
+                "(a) Requests: kept = below both quota lines")
+    _limit_axes(axs[1], "CPU-hours per job (log)", "RAM-hours per job (log)",
+                "(b) Work per job (request x effective duration, no cap)")
+    handles = [Line2D([], [], ls="", marker="o", ms=5, color=KEPT_C, label="kept"),
+               Line2D([], [], ls="", marker="o", ms=5, color=KEPT_C, alpha=0.25, label="over the quota")]
+    axs[0].legend(handles=handles, frameon=False, loc="upper left")
+    n, n_over = cpu.size, int(over.sum())
+    zero = int(((cpu <= 0) | (ram <= 0)).sum())
+    axs[1].text(0.02, 0.98, f"over the quota: {n_over:,} jobs ({100 * n_over / n:.1f}%)\n"
+                            f"they hold {100 * ch[over].sum() / ch.sum():.1f}% of the CPU-hours\n"
+                            f"and {100 * rh[over].sum() / rh.sum():.1f}% of the RAM-hours\n"
+                            f"({zero} jobs with a zero request are not drawn)",
+                transform=axs[1].transAxes, va="top", fontsize=9, color=INK_C,
+                bbox=dict(boxstyle="round", fc="white", ec=GRID_C))
+    fig.tight_layout()
+    rows = []
+    for name, m in (("total", np.ones(n, bool)), ("kept", ~over), ("lost by the quota", over)):
+        rows.append({"": name, "jobs": int(m.sum()), "jobs %": 100 * m.mean(), "CPU-hours": ch[m].sum(),
+                     "CPU-hours %": 100 * ch[m].sum() / ch.sum(), "RAM-hours": rh[m].sum(),
+                     "RAM-hours %": 100 * rh[m].sum() / rh.sum()})
+    return fig, pd.DataFrame(rows).set_index("")
+
+
+def plot_cap(raw: pd.DataFrame, cfg, n_bins: int = 60):
+    """
+    Cell B of section 1b. Histogram of the effective duration (1-minute floor, no cap; log-spaced bins with 24 h on
+    an edge) counted by jobs (a) and weighted by CPU-hours (b). Bars above the cap are faded. Returns (fig, table).
+    """
+    import matplotlib.pyplot as plt
+    col, tm = cfg.data.columns, cfg.time
+    cpu = raw[col.requested_cpu].to_numpy(float)
+    eff = raw["eff"].to_numpy(float)
+    d = _hours(raw, cfg)
+    ch = cpu * d
+    cap, lo, hi = tm.d_cap_hours, tm.duration_floor_hours, float(d.max())
+    k = max(int(round(n_bins * np.log(cap / lo) / np.log(max(hi, cap * 1.01) / lo))), 2)
+    step = (cap / lo) ** (1.0 / k)
+    edges = lo * step ** np.arange(0, int(np.ceil(np.log(max(hi, cap * 1.01) / lo) / np.log(step))) + 1)
+    edges[-1] = max(edges[-1], hi * 1.0001)
+    long, raised = eff > cap, eff < lo
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.2))
+    for ax, w, ylabel, title in ((axs[0], None, "jobs", "(a) Effective duration, counted by jobs"),
+                                 (axs[1], ch, "CPU-hours", "(b) The same bins, weighted by CPU-hours")):
+        h, _ = np.histogram(d, bins=edges, weights=w)
+        above = edges[:-1] >= cap * (1 - 1e-9)
+        ax.bar(edges[:-1][~above], h[~above], width=np.diff(edges)[~above], align="edge", color=KEPT_C, lw=0)
+        ax.bar(edges[:-1][above], h[above], width=np.diff(edges)[above], align="edge", color=KEPT_C, alpha=0.25, lw=0)
+        ax.axvline(cap, color=LINE_C, ls="--", lw=1.2)
+        ax.text(cap, ax.get_ylim()[1] * 0.95, f" {cap:g} h cap", color=LINE_C, fontsize=8, va="top")
+        ax.set_xscale("log")
+        _limit_axes(ax, "effective duration (hours, log; 1-minute floor, no cap)", ylabel, title)
+    n = d.size
+    cut = float((cpu[long] * (d[long] - cap)).sum())
+    axs[1].text(0.02, 0.98, f"longer than {cap:g} h: {int(long.sum()):,} jobs ({100 * long.mean():.2f}%)\n"
+                            f"the cap cuts {100 * cut / ch.sum():.1f}% of the CPU-hours\n"
+                            f"raised to 1 minute: {int(raised.sum()):,} jobs ({100 * raised.mean():.1f}%)",
+                transform=axs[1].transAxes, va="top", fontsize=9, color=INK_C,
+                bbox=dict(boxstyle="round", fc="white", ec=GRID_C))
+    fig.tight_layout()
+    rows = []
+    for name, m in (("total", np.ones(n, bool)), ("not touched", ~long & ~raised), (f"cut by the {cap:g} h cap", long),
+                    ("raised to 1 minute", raised)):
+        rows.append({"": name, "jobs": int(m.sum()), "jobs %": 100 * m.mean(), "CPU-hours": ch[m].sum(),
+                     "CPU-hours %": 100 * ch[m].sum() / ch.sum()})
+    rows.append({"": "CPU-hours removed by the cap (the part above 24 h)", "jobs": np.nan, "jobs %": np.nan,
+                 "CPU-hours": cut, "CPU-hours %": 100 * cut / ch.sum()})
+    return fig, pd.DataFrame(rows).set_index("")

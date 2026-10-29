@@ -68,8 +68,9 @@ class TheoryModel:
         lam = cfg.objective
         self.lam = (lam.lambda1, lam.lambda2, lam.lambda3)
         self.tax = state0.carbon_price      # $/kgCO2 frozen at Phase 0
-        # reward unit of Tests 2-3: with gamma forced to 1 the thresholds bound rewards by 1, so rewards are divided
-        # by Phase 0's r_max; with the data gamma (which contains r_max in $) they stay in $
+        # reward unit of Tests 2-3: with gamma forced to 1 the thresholds bound the rewards of admissible actions by 1,
+        # so rewards are divided by Phase 0's r_max = the largest positive r~ (fixed for the run); with the data gamma
+        # (which contains r_max in $) they stay in $
         self.r_unit = float(state0.r_max) if cfg.constants.gamma_override is not None else 1.0
         # realised job reward terms of every stream job, scored with Phase 0's bid model and s_C: one scale for every
         # model and benchmark (the decisions use each phase's own sigma through r~)

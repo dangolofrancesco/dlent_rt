@@ -64,7 +64,8 @@ dual rule with fallback estimates (hardware-profile means for duration and costs
 * **Theoretical model** (the default): frozen oracle k̂ = 1[r̃_j − τᵀ v_j > 0] with the phase's (r̃, τ, v); then
   Bernoulli thinning U(t) ~ Bern((1 − ξ)/(1 + ε̃_U(t))); then the physical gate. Tests 1–3 start d_max after the
   phase start; the timeout is 2 × the previous phase length. ξ = 0.001 and γ = 1 are forced; Test 1's threshold is
-  (1 − ξ) c. Tests 2 and 3 use rewards in units of Phase 0's r_max, the units of their thresholds.
+  (1 − ξ) c. Tests 2 and 3 use rewards in units of Phase 0's r_max = the largest positive r̃ (the paper's bound on the rewards
+  of admissible actions), fixed for the whole run.
 * **ReInit.** Arrival rates, bids, σ and requested resources come from all arrivals of the phase. Duration, energy
   and costs come from the admitted jobs only. Types with no admitted job carry the previous phase's values, then
   Phase 0's. The carbon price stays Phase 0's.

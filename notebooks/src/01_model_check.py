@@ -108,6 +108,36 @@ plt.tight_layout(); plt.show()
 display(J["impact"])
 
 # %% [markdown]
+# ## 1b. What the job limits leave out
+#
+# The quota and the 24 h cap, on ALL 300,000 jobs of the file. The duration here is the effective duration
+# (CPU-hours / CPU request) with the 1-minute floor and NO cap. Q is the fixed point at the configured f.
+
+# %% [markdown]
+# **Quota: requests and work.** (a) CPU vs RAM request; the kept jobs are below both quota lines. (b) CPU-hours vs
+# RAM-hours per job. Kept jobs are solid; jobs over the quota on either resource are faded.
+
+# %%
+fig, QTAB = dg.plot_quota(RAW, DS.limit_report.quota, CFG)
+plt.show()
+display(QTAB)
+
+# %% [markdown]
+# **Reading.**
+
+# %% [markdown]
+# **24 h cap: durations.** (a) The effective duration of every job, counted by jobs. (b) The same bins weighted by
+# CPU-hours, i.e. where the work is. Bars above 24 h are faded: the cap cuts those jobs to 24 h.
+
+# %%
+fig, CTAB = dg.plot_cap(RAW, CFG)
+plt.show()
+display(CTAB)
+
+# %% [markdown]
+# **Reading.**
+
+# %% [markdown]
 # ## 2. Bid and U0 calibration
 #
 # D2: cost_base_j = (U0 (1 + ln q_j) + γ1 cores_j + γ2 GB_j) d_j, and the bid v_j is lognormal with mean
@@ -279,6 +309,10 @@ display(pd.Series(summ, name="value").to_frame())
 
 # %% [markdown]
 # ## 8. Phase 0 output and the 9 checks
+#
+# The row "r_max (Tests 2-3 reward unit, $)" is the paper's bound on the rewards of admissible actions: the LARGEST r̃
+# over Phase 0's populated types with r̃ > 0 (negative types are never admitted). With γ forced to 1, Tests 2 and 3
+# divide every reward by it. It is fixed for the whole run (not changed at ReInit).
 
 # %%
 TAB0 = dg.phase0_table(DS, ST, CFG)
@@ -334,6 +368,7 @@ display(pd.Series({"jobs": WEEK["n_jobs"], "MILP candidates": WEEK["n_candidates
 #
 # The theoretical model with the default config (seed 42): frozen oracle, thinning after the LP decision, physical
 # gate, Tests 1–3, ReInit, threshold payments. The run is cached. The tables below check each decision on the logs.
+# Tests 2 and 3 work in units of Phase 0's r_max = the largest positive r̃ (section 8), fixed for the whole run.
 
 # %%
 show(dg.checks_run(RUN, CFG),

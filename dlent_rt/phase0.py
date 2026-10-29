@@ -179,7 +179,7 @@ class PhaseState:
     norm_info: Optional[dict] = None      # q, Q_cv, Q_abs_pi, D_q, K_q, s_C
     A_type: Optional[np.ndarray] = None   # (n_types, |I|) request of the type volume (type_request)
     u0: float = 0.0                       # $ per hour per job, calibrated on H (bid.calibrate_u0), then fixed
-    r_max: float = 1.0                    # p-weighted quantile of |r~| over H's types: Tests 2-3 reward unit
+    r_max: float = 1.0                    # Tests 2-3 reward unit: max r~ over H's types with r~ > 0 (reward_unit)
 
 
 
@@ -206,6 +206,17 @@ def _system_constants(
                      drop_EF=cfg.tests.drop_dual_learning_terms)
     return float(gamma), float(xi), float(ep.eps_D)
 
+
+
+def reward_unit(r_tilde: np.ndarray, p: np.ndarray) -> float:
+    """
+    The reward unit of Tests 2 and 3 (paper definition): rewards of admissible actions are bounded by gamma (forced
+    gamma = 1), so r_max = the MAXIMUM of r~ over the populated types (p > 0) with r~ > 0. Types with r~ <= 0 are
+    never admitted, so they do not count. 1.0 if no populated type has r~ > 0.
+    """
+    r, p = np.asarray(r_tilde, float), np.asarray(p, float)
+    pos = (p > 0) & (r > 0)
+    return float(r[pos].max()) if pos.any() else 1.0
 
 
 # Per-type statistics
@@ -357,5 +368,5 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         n_assigned=stats["n_assigned"],
         n_types_hw_degenerate=n_types_hw_degenerate,
         carbon_price=float(carbon_price), norm_info=norm_info, A_type=A_vol,
-        u0=float(u0), r_max=float(r_max),
+        u0=float(u0), r_max=reward_unit(r_tilde, p),
     )

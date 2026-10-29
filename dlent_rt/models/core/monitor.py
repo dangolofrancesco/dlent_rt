@@ -21,8 +21,9 @@ Between two arrivals the window counts are constant, so for every tick:
 Windows (s+1 : u-1) that contain no arrival have lam_hat = 0 and cannot fail.
 
 Units (D5): the thresholds of Tests 2 and 3 (error_params, Appendix A) are written for rewards bounded by gamma.
-gamma is forced to 1, so the monitor works with rewards in units of r_unit = Phase 0's r_max (the p-weighted
-quantile of |r~|, constants.r_max_quantile): r~ / r_unit in the window LPs and R / r_unit in Test 2's sum. Test 1
+gamma is forced to 1, so the monitor works with rewards in units of r_unit = Phase 0's r_max, the paper's bound on
+the rewards of admissible actions: the MAXIMUM r~ over Phase 0's populated types with r~ > 0 (phase0.reward_unit;
+fixed for the whole run, never changed at ReInit): r~ / r_unit in the window LPs and R / r_unit in Test 2's sum. Test 1
 compares occupancies with capacities (both in machines).
 """
 from __future__ import annotations

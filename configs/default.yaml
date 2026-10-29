@@ -117,7 +117,7 @@ logging:
 constants:
   xi_override: 0.001
   gamma_override: 1.0
-  r_max_quantile: 0.8         # r_max = this p-weighted quantile of |r~| over H's types (Tests 2-3 reward unit)
+  r_max_quantile: 0.8         # quantile of |r~| in the DATA gamma only; Tests 2-3 unit = max positive r~ of Phase 0
 
 tests:
   drop_dual_learning_terms: true   # exact LP-RS: eps_E = eps_F = 0

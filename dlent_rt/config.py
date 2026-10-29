@@ -172,8 +172,8 @@ class ConstantsCfg:
     # Test 1 uses a_max,i = xi * c_i; the physical gate always uses the true A of each job.
     xi_override: Optional[float] = 0.001
     gamma_override: Optional[float] = 1.0
-    # r_max = the p-weighted quantile of |r~| over H's types. It enters the data gamma, and it is the reward unit of
-    # Tests 2 and 3 (rewards / r_max, so that they are in the units of the thresholds, where gamma bounds r).
+    # The p-weighted quantile of |r~| over H's types that enters the DATA gamma only. (The reward unit of Tests 2-3 is
+    # the maximum positive r~ of Phase 0, phase0.reward_unit.)
     r_max_quantile: float = 0.8
 
 
