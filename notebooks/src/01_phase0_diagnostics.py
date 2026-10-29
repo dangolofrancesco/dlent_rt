@@ -5,8 +5,9 @@
 # duration cap, the quota tied to the cluster, and the cluster = f × mean demand of H. Phase 0 and the configs are
 # not changed here. The logic is in `dlent_rt/diagnostics.py`; this notebook calls it and plots.
 #
-# `CONFIG_PATH` (default `configs/v5_theory.yaml`, f = 0.5). Sections marked **[both f]** also show
-# `configs/v5_size_bid.yaml` (f = 1.25). Every plot of bids, grid and objectives uses H, the Phase 0 history.
+# `CONFIG_PATH` (default `configs/v6_theory.yaml`: size_u0 bid, f = 0.4). Sections marked **[both f]** also show
+# `OTHER_PATH` (default `configs/v6_size_bid.yaml`, f = 1.25). The v5 run (size bid) is in git history and in
+# `reports/week32/phase0_diagnostics.md`. Every plot of bids, grid and objectives uses H, the Phase 0 history.
 # Build and run: `python notebooks/src/build.py 01_phase0_diagnostics --execute`.
 
 # %%
@@ -25,8 +26,8 @@ warnings.simplefilter("ignore")
 pd.set_option("display.max_columns", 30, "display.width", 250, "display.max_colwidth", 120)
 BLUE, ORANGE, GREY, INK = "#2a78d6", "#eb6834", "#52514e", "#0b0b0b"
 
-CONFIG_PATH = os.environ.get("DLENT_CONFIG", "configs/v5_theory.yaml")
-OTHER_PATH = "configs/v5_size_bid.yaml"
+CONFIG_PATH = os.environ.get("DLENT_CONFIG", "configs/v6_theory.yaml")
+OTHER_PATH = os.environ.get("DLENT_CONFIG_OTHER", "configs/v6_size_bid.yaml")
 OUT = ROOT / "reports" / "week32"
 
 
@@ -106,13 +107,16 @@ plt.tight_layout(); plt.show()
 display(dg.stats_table(J))
 
 # %% [markdown]
-# ## 2. Bids (size mode)
+# ## 2. Bids
 #
 # The bid grows with the requested resources and the duration. The markup bid / cost base is the known lognormal
 # with σ = 0.3 (mean 1). Its virtual value φ is negative for low markups.
 
 # %%
-print("cost_base = (1 + ln q) * (gamma1 * cores + gamma2 * GB) * d    (dlent_rt/bid.py, synthesize_lognormal, mode 'size')")
+FORMULA = {"size": "cost_base = (1 + ln q) * (gamma1 * cores + gamma2 * GB) * d",
+           "size_u0": f"cost_base = (u0 * r + gamma1 * cores + gamma2 * GB) * d, u0 = {cfg.bid.u0_per_machine_hour} $/machine-h, no priority",
+           "base_utility": "cost_base = (u0 * (1 + ln q) + gamma1 * cores + gamma2 * GB) * d"}
+print(FORMULA[cfg.bid.mode], f"   (dlent_rt/bid.py, synthesize_lognormal, mode '{cfg.bid.mode}')")
 print("bid = lognormal(mu = ln(cost_base) - sigma^2 / 2, sigma)        so E[bid] = cost_base;  "
       f"sigma = {cfg.bid.sigma}, gamma1 = {cfg.bid.gamma1} $/core-h, gamma2 = {cfg.bid.gamma2} $/GB-h")
 bf = dg.bid_frame(ds, st, cfg)
@@ -197,8 +201,8 @@ print(json.dumps(dg.grid_coverage(ds, cfg), indent=1))
 
 # %%
 tab1, tab2 = dg.phase0_table(ds, st, cfg), dg.phase0_table(ds2, st2, cfg2)
-dg.save_table(tab1, OUT / "phase0_summary_f050.json")
-dg.save_table(tab2, OUT / "phase0_summary_f125.json")
+dg.save_table(tab1, OUT / f"phase0_summary_{cfg.run.name}.json")
+dg.save_table(tab2, OUT / f"phase0_summary_{cfg2.run.name}.json")
 show = lambda t: {k: (json.dumps(v, default=float) if isinstance(v, (dict, list)) else v) for k, v in t.items() if not k.startswith("_")}
 display(pd.DataFrame({TAG[CONFIG_PATH]: show(tab1), TAG[OTHER_PATH]: show(tab2)}))
 

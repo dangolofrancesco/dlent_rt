@@ -65,7 +65,8 @@ def milp_table(W):
     return pd.DataFrame(rows)
 
 
-def summary(cfg, week):
+def summary(cfg, week=None):
+    """The f-summary table; week = the 1-week window_models result for the discretization cost (None = skipped)."""
     r = te.evaluate_f(cfg, cfg.capacity.f, seed=cfg.run.seed)
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
@@ -73,8 +74,6 @@ def summary(cfg, week):
     s = r["static"]
     w24, w6 = r["windows"][24], r["windows"][6]
     em = cfg.energy_model
-    best = week["bucketed_believed"]
-    bound = min(week["bucketed_dual_bound"], week["bucketed_lp_believed"])
     rows = [
         ("f", f"{cfg.capacity.f}"),
         ("C, CPU / RAM (machines)", f"{r['C'][0]:.3f} / {r['C'][1]:.3f} ({r['C'][0] * em.machine_cores:,.0f} cores / "
@@ -94,11 +93,16 @@ def summary(cfg, week):
         ("decomposition: Phase 0 LP -> stream statistics (Phase 0 grid) -> fluid OPT $",
          f"{h['phase0_expected']:,.0f} -> {h['stream_stats_phase0_grid_opt']:,.0f} -> {h['fluid_opt']:,.0f}"),
         ("static policy / fluid OPT", pct(s["split"]["reward"] / r["fluid"]["split"]["reward"])),
-        ("discretization cost, one week (fluid feasible - bucketed MILP)",
-         f"{week['fluid_feasible'] - best:,.0f} .. {week['fluid_feasible'] - bound:,.0f} $ "
-         f"({100 * (week['fluid_feasible'] - best) / week['fluid_feasible']:.1f}% .. "
-         f"{100 * (week['fluid_feasible'] - bound) / week['fluid_feasible']:.1f}%; MILP gap {pct(week['gap'], 2)})"),
     ]
+    if week is not None:
+        best = week["bucketed_believed"]
+        bound = min(week["bucketed_dual_bound"], week["bucketed_lp_believed"])
+        rows.append(("discretization cost, one week (fluid feasible - bucketed MILP)",
+                     f"{week['fluid_feasible'] - best:,.0f} .. {week['fluid_feasible'] - bound:,.0f} $ "
+                     f"({100 * (week['fluid_feasible'] - best) / week['fluid_feasible']:.1f}% .. "
+                     f"{100 * (week['fluid_feasible'] - bound) / week['fluid_feasible']:.1f}%; MILP gap {pct(week['gap'], 2)})"))
+    else:
+        rows.append(("discretization cost, one week", "skipped (MILP not run)"))
     return pd.DataFrame(rows, columns=["quantity", "value"])
 
 

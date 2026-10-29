@@ -64,7 +64,10 @@ class BidCfg:
     # bid model: ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1). The cost base (bid.mode):
     #   "base_utility" (default): (u0 * g(q) + gamma1 * cores + gamma2 * GB) * duration, g = base_utility_mode
     #   "size":                   (1 + ln q) * (gamma1 * cores + gamma2 * GB) * duration   (u0 not used)
+    #   "size_u0":                (u0_per_machine_hour * r + gamma1 * cores + gamma2 * GB) * duration, r = CPU request
+    #                             (machines); no priority in the bid (priority enters only the customer value q x bid)
     mode: str = "base_utility"
+    u0_per_machine_hour: float = 23.93   # $ per CPU machine-hour, bid.mode size_u0 only
     # Base utility rate ($/hour): minimum hourly value a user derives from
     # job completion, independent of resource footprint. Multiplied by
     # duration. Ref: reinterpretation suggested by advisor — demand-side
@@ -368,7 +371,8 @@ class Config:
                 "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
             assert self.bid.sigma > 0
         assert self.bid.base_utility_mode in ("linear", "log")
-        assert self.bid.mode in ("base_utility", "size")
+        assert self.bid.mode in ("base_utility", "size", "size_u0")
+        assert self.bid.u0_per_machine_hour >= 0
         assert self.policy.unseen_types in ("reject", "dual_rule")
         assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.machine_cores > 0
