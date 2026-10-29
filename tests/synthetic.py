@@ -48,14 +48,19 @@ def write_synthetic(tmpdir: Path, n_jobs: int = 3000, hours: float = 36.0,
     return b, g
 
 
-def synthetic_config(tmpdir: Path, n0: int = 1000, **kw):
-    b, g = write_synthetic(tmpdir, **kw)
+def synthetic_config(tmpdir: Path, n0: int = 1000, n_jobs: int = 3000, hours: float = 36.0, **kw):
+    """The default config on a synthetic trace. H = about the first n0 jobs (data.h_days = the span of n0 uniform
+    arrivals); durations are cut at 10% of the stream span so that d_max << T. f = 2: on this trace the quota fixed
+    point collapses at small f."""
+    b, g = write_synthetic(tmpdir, n_jobs=n_jobs, hours=hours, **kw)
     cfg = default_config()
+    h_hours = hours * n0 / n_jobs
     return replace(
         cfg,
-        data=replace(cfg.data, batch_csv=str(b), grid_csv=str(g), n0=n0),
+        data=replace(cfg.data, batch_csv=str(b), grid_csv=str(g), h_days=h_hours / 24.0),
         grid=replace(cfg.grid, k_star=16),
         hardware=replace(cfg.hardware, n_profiles=6),
-        time=replace(cfg.time, d_max_horizon_fraction=0.10, d_max_ratio_abort=0.2),
+        capacity=replace(cfg.capacity, f=2.0),
+        time=replace(cfg.time, d_cap_hours=0.10 * (hours - h_hours), d_max_ratio_abort=0.2),
         normalization=replace(cfg.normalization, quantile=0.90),
-    )
+    ).validate()

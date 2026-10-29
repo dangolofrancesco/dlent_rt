@@ -5,14 +5,13 @@ Regression snapshot (week 30): Phase 0 outputs + online run summary, compared BI
     dlent_venv/bin/python -m tests.regression_snapshot check synthetic
     dlent_venv/bin/python -m tests.regression_snapshot save  real        # real trace (minutes)
 
-Phase 0: p, r_tilde, v, tau, s_C, util_opt (= sum_j p_j v_ij x*_j / c_i), lambda_star.
-Online:  phase table (start, end, reason, arrivals, admitted, k_hat, thinned, phys rejects, R, tau per phase),
-         admission counts per decision reason, R_total.
+Phase 0: p, r_tilde, v, tau, s_C, util_opt (= sum_j p_j v_ij x*_j / c_i), lambda_star, (U0, sigma, r_max).
+Online:  phase table (start, end, reason, arrivals, admitted, k_hat, thinned, phys rejects, R, tau, sigma, rho per
+         phase), admission counts per decision reason, R_total, per-arrival R, payment and admission.
 """
 from __future__ import annotations
 
 import sys, tempfile, warnings
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +24,7 @@ from dlent_rt.models.theory import TheoryModel
 
 DATA = Path(__file__).parent / "data"
 PHASE_COLS = ["tau_start", "tau_end", "n_arrivals", "n_admitted", "n_khat", "n_thinned", "n_phys_reject",
-              "R", "tau_cpu", "tau_ram", "lam_hat_start"]
+              "R", "tau_cpu", "tau_ram", "lam_hat_start", "sigma", "rho"]
 REASONS = ("test1", "test2", "test3", "timeout", "horizon")
 
 
@@ -33,8 +32,7 @@ def _config(which: str, tmp: Path):
     if which == "synthetic":
         from tests.synthetic import synthetic_config
         return synthetic_config(tmp, n0=400, n_jobs=3000, drift=True)
-    cfg = default_config()
-    return replace(cfg, bid=replace(cfg.bid, sigma=0.3)).validate()
+    return default_config()
 
 
 def snapshot(which: str) -> dict:
@@ -48,11 +46,12 @@ def snapshot(which: str) -> dict:
         x[lp.support_idx] = lp.x
         res = TheoryModel(ds, st, cfg).run()
     A, ph = res.arrivals, res.phases
-    dec = np.array([[a["admit"], a["ir_reject"], a["k_hat"], a["U"], a["phys_reject"]] for a in A], bool)
+    dec = np.array([[a["admit"], not a["ir"], a["k_hat"], a["U"], a["phys_reject"]] for a in A], bool)
     return {
         "p0_p": st.p, "p0_r_tilde": st.r_tilde, "p0_v": st.v, "p0_tau": st.tau,
         "p0_s_C": np.array([st.carbon_price]), "p0_util_opt": (st.p * x) @ st.v / ds.capacity,
         "p0_lambda_star": np.array([st.lam_star]),
+        "p0_u0_sigma_rmax": np.array([st.u0, st.myerson.sigma, st.r_max]),
         "on_phases": np.array([[float(p[k]) for k in PHASE_COLS] for p in ph]),
         "on_reasons": np.array([sum(p["reason"] == r for p in ph) for r in REASONS]),
         "on_decisions": np.array([dec[:, 0].sum(), dec[:, 1].sum(), (~dec[:, 2]).sum(),
@@ -60,6 +59,7 @@ def snapshot(which: str) -> dict:
         "on_R_total": np.array([res.summary["R_total"]]),
         "on_R": np.array([a["R"] for a in A]),
         "on_admit": dec[:, 0],
+        "on_payment": np.array([a["payment"] for a in A]),
     }
 
 

@@ -13,7 +13,7 @@ from tests.synthetic import synthetic_config
 
 
 def _manual_static(S, c, st, U):
-    j = assign_type_ids(st.type_space, st.grid.assign(S.v, st.myerson), S.priority, S.hw_idx)
+    j = assign_type_ids(st.type_space, st.grid.assign(S.v), S.priority, S.hw_idx)
     jj = np.maximum(j, 0)
     khat = np.where(j >= 0, st.r_tilde[jj] - st.v[jj] @ st.tau, -np.inf) > 0
     occ = Occupancy(c, record=False)

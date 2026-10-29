@@ -4,9 +4,8 @@ Offline Pareto-front tools (thesis scope: non-convex Pareto fronts).
 The augmented Chebyshev scalarization reaches non-convex regions of the
 (customer value, profit, carbon) front that a weighted sum cannot, but it
 produces a reward <= 0 by construction: used as the online LP-RS reward it
-makes the oracle admit nothing. It is therefore kept OUT of the online loop
-(TheoryModel refuses scalarization.method != "linear"); Phase 0 accepts it
-with a warning so the offline analysis can build Chebyshev type rewards.
+makes the oracle admit nothing. It is therefore kept OUT of the online loop and
+of Phase 0 (both use the linear reward of dlent_rt.reward); it lives only here.
 """
 from __future__ import annotations
 
@@ -32,7 +31,7 @@ def scalarize_chebyshev(
 # Pareto frontier over the objective weights lambda (week 30, offline only)
 # --------------------------------------------------------------------------- #
 # Objectives, all from dlent_rt.reward (no reward is re-implemented):
-#     CV = q * v               customer value     (maximised)
+#     CV = v                   customer value     (maximised)
 #     PR = phi_job - C_elec    profit             (maximised)
 #     CO = s_C * K             carbon cost [$]    (minimised; s_C frozen in Phase 0)
 #     R(lambda) = l1 * CV + l2 * PR - l3 * CO
@@ -75,9 +74,7 @@ def job_components(stream, state) -> Components:
 
 def type_components(state) -> Components:
     """CV, PR, CO of every type from the state's per-type means, as reward.type_reward forms them."""
-    from .phase0 import type_arrays
-    _, prio, _ = type_arrays(state.type_space, state.grid)
-    return Components(CV=prio * state.v_bar, PR=state.phi_bar - state.C_elec_bar,
+    return Components(CV=state.v_bar, PR=state.phi_bar - state.C_elec_bar,
                       CO=state.C_carbon_bar * state.carbon_price)
 
 

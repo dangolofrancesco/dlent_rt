@@ -2,22 +2,16 @@
 Phase 0 — Offline Bootstrap
 
 Computes everything the online loop needs to start its first phase:
-  - Bid synthesis (lognormal, on-the-fly)
-  - Myerson model and valuation grid
+  - U0 calibration (median H job) and bid synthesis (lognormal, on-the-fly)
+  - sigma refit on H's markups (bid.refit_sigma) and the geometric bid grid
   - Energy model (power draw from CPU/RAM/scheduling_class)
   - Grid-data lookup (electricity price + carbon intensity at request_time)
   - Per-type statistics (p, d_bar, v_bar, phi_bar, energy, costs)
-  - Carbon price s_C (quantile_linear), additive dollar reward
-  - Scalarized reward r_tilde
+  - Carbon price s_C, additive linear dollar reward r_tilde (dlent_rt.reward)
   - LP-RS -> shadow prices tau* and benchmark lambda*
 
-RAW OBJECTIVES USE PER-TYPE SAMPLE MEANS:
-  Raw objectives use PER-TYPE SAMPLE MEANS of v and phi(v), NOT the bin floor
-  L. Using phi(L) causes systematically negative raw_prof because bin floors
-  are small (geometric grid -> many tiny L values -> phi(L) << 0). Using
-  phi_bar = mean(phi(v)) over the jobs in each type reflects the actual job
-  values.
-  The bin floor L is retained only for the payment rule (phi_tilde).
+The type reward uses PER-TYPE SAMPLE MEANS of v and phi(v), not the bin floor L. L is kept for the threshold
+payment (models.theory: the lower edge of the lowest admitted bin).
 
 The output `PhaseState` is the object the online model reads.
 """
@@ -35,10 +29,7 @@ from .lp_oracle import solve_lp_rs, LPResult
 from .reward import type_reward, type_mean, weighted_quantile, electricity_cost, carbon_kg
 from .models.core.error_params import ErrorParams
 from .energy import EnergyParams, compute_energy_kwh, compute_power_kw
-from .bid import (
-    MyersonModel, bid_model, compute_phi_tilde,
-    LognormalBidParams, BidResult, synthesize_lognormal,
-)
+from .bid import MyersonModel, BidResult, bid_model, calibrate_u0, synthesize_bids
 
 # Bid and energy helpers
 def _make_energy_params(cfg: Config) -> EnergyParams:
@@ -51,24 +42,9 @@ def _make_energy_params(cfg: Config) -> EnergyParams:
     )
 
 
-def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int) -> BidResult:
-    """Generate bids on the fly from resource requests."""
-    rng = np.random.default_rng(seed)
-    params = LognormalBidParams(
-        sigma=cfg.bid.sigma,
-        base_utility_u0=cfg.bid.base_utility_u0,
-        base_utility_mode=cfg.bid.base_utility_mode,
-        mode=cfg.bid.mode,
-        u0_per_machine_hour=cfg.bid.u0_per_machine_hour,
-        gamma1=cfg.bid.gamma1,
-        gamma2=cfg.bid.gamma2,
-        machine_cores=cfg.energy_model.machine_cores,
-        machine_ram_gb=cfg.energy_model.machine_ram_gb,
-    )
-    return synthesize_lognormal(
-        jobs.A[:, 0], jobs.A[:, 1],
-        jobs.duration_hours, jobs.priority, params, rng,
-    )
+def _synthesize_bids(jobs: JobArrays, cfg: Config, seed: int, u0: float) -> BidResult:
+    """Generate bids on the fly from resource requests (bid.synthesize_bids)."""
+    return synthesize_bids(jobs, cfg, u0, seed)
 
 
 def _compute_job_energy(jobs: JobArrays, cfg: Config) -> np.ndarray:
@@ -125,22 +101,21 @@ class TypeSpace:
 def assign_type_ids(
     ts: TypeSpace, k_arr: np.ndarray, priority: np.ndarray, hw_idx: np.ndarray,
 ) -> np.ndarray:
-    """type_id = ((k - 1) * |Q| + q_idx) * |A| + hw_idx, vectorised; -1 where k < 1 (legacy phi-space reject)."""
+    """type_id = ((k - 1) * |Q| + q_idx) * |A| + hw_idx, vectorised (k in 1..K*)."""
     k_arr = np.asarray(k_arr, dtype=np.int64)
     qi = np.searchsorted(ts.priorities, np.asarray(priority, float)).astype(np.int64)
-    tid = ((k_arr - 1) * len(ts.priorities) + qi) * ts.n_hw + np.asarray(hw_idx, np.int64)
-    return np.where(k_arr >= 1, tid, -1)
+    return ((k_arr - 1) * len(ts.priorities) + qi) * ts.n_hw + np.asarray(hw_idx, np.int64)
 
 
 def type_arrays(ts: TypeSpace, grid: ValuationGrid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-type (L = bid-space bin floor, priority, hardware profile A)."""
+    """Per-type (L = lower edge of the type's bid bin, 0 for bin 1 (grid.lower_edges), priority, hardware profile A)."""
     n = ts.n_types
     ids = np.arange(n)
     ai = ids % ts.n_hw
     rest = ids // ts.n_hw
     qi = rest % len(ts.priorities)
     ki = rest // len(ts.priorities)
-    L = np.asarray(grid.bnd_v)[ki]
+    L = grid.lower_edges[ki]
     return L, ts.priorities[qi].astype(float), ts.hw_profiles[ai]
 
 
@@ -185,9 +160,7 @@ class PhaseState:
     C_elec_bar: np.ndarray                # mean electricity cost per type
     C_carbon_bar: np.ndarray              # mean carbon emissions per type (kgCO2)
     v: np.ndarray                         # (n_types, |I|) expected resource volume = A_type * d_bar
-    L: np.ndarray                         # bid-space bin floor (for payment rule)
-    phi_tilde: np.ndarray                 # phi(L): virtual value at floor (payment rule);
-                                          # NaN under known_distribution (per job: phi_job(L, c_j))
+    L: np.ndarray                         # lower edge of the type's bid bin (threshold payment)
 
     # LP-RS output
     tau: np.ndarray
@@ -199,14 +172,14 @@ class PhaseState:
     eps_D: float
 
     n_types: int
-    norm_strategy: str = "quantile_linear"
-    n_ir_rejected: int = 0
     n_assigned: int = 0
     n_types_hw_degenerate: int = 0
-    # $/kgCO2 applied to C_carbon_bar: s_C (quantile_linear), frozen at Phase 0
+    # $/kgCO2 applied to C_carbon_bar: s_C, frozen at Phase 0
     carbon_price: float = 0.0             # always overwritten in run_phase0
-    norm_info: Optional[dict] = None      # quantile_linear: q, Q_cv, Q_abs_pi, D_q, K_q, s_C
+    norm_info: Optional[dict] = None      # q, Q_cv, Q_abs_pi, D_q, K_q, s_C
     A_type: Optional[np.ndarray] = None   # (n_types, |I|) request of the type volume (type_request)
+    u0: float = 0.0                       # $ per hour per job, calibrated on H (bid.calibrate_u0), then fixed
+    r_max: float = 1.0                    # p-weighted quantile of |r~| over H's types: Tests 2-3 reward unit
 
 
 
@@ -240,7 +213,7 @@ def _per_type_stats(
     jobs: JobArrays, bids: BidResult, energy_kwh: np.ndarray,
     power_kw: np.ndarray, elec_price: np.ndarray, carbon_intensity: np.ndarray,
     grid: ValuationGrid, ts: TypeSpace, ds: Dataset, cfg: Config,
-    n_total_for_p: int, myerson: MyersonModel, phi_job: np.ndarray,
+    n_total_for_p: int, phi_job: np.ndarray,
 ) -> dict:
     """
     Compute per-type empirical statistics.
@@ -251,17 +224,13 @@ def _per_type_stats(
     """
     n_types = ts.n_types
 
-    k_arr = np.asarray(grid.assign(bids.v_rate, myerson))
-    valid = k_arr >= 1
-    n_ir_rejected = int((~valid).sum())
-    type_ids = assign_type_ids(ts, k_arr, jobs.priority, jobs.hw_idx)
+    tid = assign_type_ids(ts, grid.assign(bids.v_rate), jobs.priority, jobs.hw_idx)
 
-    # per-type sample means over the assigned jobs (reward.type_mean, bincount)
-    tid = type_ids[valid]
+    # per-type sample means over the jobs (reward.type_mean, bincount)
     N = np.bincount(tid, minlength=n_types).astype(np.int64)
 
     def _mean(x: np.ndarray) -> np.ndarray:
-        return type_mean(tid, N, np.asarray(x, float)[valid])
+        return type_mean(tid, N, np.asarray(x, float))
 
     d_bar        = _mean(jobs.duration_steps)
     v_bar        = _mean(bids.v_rate)            # mean bid per type
@@ -275,8 +244,7 @@ def _per_type_stats(
     return dict(N=N, p=p, d_bar=d_bar, v_bar=v_bar, phi_bar=phi_bar,
                 energy_bar=energy_bar, power_bar=power_bar,
                 C_elec_bar=C_elec_bar, C_carbon_bar=C_carbon_bar,
-                type_ids=type_ids, n_ir_rejected=n_ir_rejected,
-                n_assigned=int(valid.sum()))
+                type_ids=tid, n_assigned=int(tid.size))
 
 
 
@@ -284,23 +252,17 @@ def _per_type_stats(
 def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     H = ds.H
 
-    # 1. Synthesize bids on-the-fly
-    bids = _synthesize_bids(H, cfg, seed=cfg.run.seed)
+    # 1. U0 from H's median job, then the bids
+    u0 = calibrate_u0(H, cfg)
+    bids = _synthesize_bids(H, cfg, seed=cfg.run.seed, u0=u0)
 
-    # 2. Bid model. known_distribution (default): the markup distribution is
-    #    known (sigma = bid.sigma, never fit) and the per-job phi is the
-    #    mechanism's phi_job(v, c_j), the same function ReInit and the online
-    #    reward use. known_distribution=false (ablation): pooled MLE fit, and the
-    #    type reward keeps the legacy generator phi (bids.phi_rate).
-    myerson = bid_model(cfg, bids.v_rate)
-    phi_job = (np.asarray(myerson.phi_job(bids.v_rate, bids.cost_base))
-               if myerson.known else bids.phi_rate)
+    # 2. Bid model: sigma refit on H's markups (bid.refit_sigma) or bid.sigma; phi_job(v, c_j) per job, the same
+    #    function ReInit and the online reward use
+    myerson = bid_model(cfg, bids.v_rate, bids.cost_base)
+    phi_job = np.asarray(myerson.phi_job(bids.v_rate, bids.cost_base))
 
-    # 3. Build valuation grid
-    grid = build_valuation_grid(
-        bids.v_rate, myerson, cfg.grid.k_star,
-        cfg.grid.space, cfg.grid.phi_floor,
-    )
+    # 3. Geometric bid grid between the smallest and the largest bid
+    grid = build_valuation_grid(bids.v_rate, cfg.grid.k_star)
 
     # 4. Build type space
     ts = build_type_space(H, ds, cfg)
@@ -317,8 +279,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
 
     stats = _per_type_stats(
         H, bids, energy_kwh, power_kw, elec_price, carbon_intensity,
-        grid, ts, ds, cfg, n_total_for_p=p_normaliser, myerson=myerson,
-        phi_job=phi_job,
+        grid, ts, ds, cfg, n_total_for_p=p_normaliser, phi_job=phi_job,
     )
     p              = stats["p"]
     d_bar          = stats["d_bar"]
@@ -329,27 +290,16 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     C_elec_bar     = stats["C_elec_bar"]
     C_carbon_bar   = stats["C_carbon_bar"]
 
-    # 7. Bin floors per type for the PAYMENT RULE only
-    L, priority_of_type, A_of_type = type_arrays(ts, grid)
-    phi_tilde = compute_phi_tilde(L, myerson)
+    # 7. Bin floors per type (threshold payment)
+    L, _, A_of_type = type_arrays(ts, grid)
 
     # 8. Expected resource volume: the mean real request of the type's jobs x its mean duration
-    tid_ok = stats["type_ids"] >= 0
-    A_vol = type_request(stats["type_ids"][tid_ok], H.A[tid_ok], A_of_type)
+    A_vol = type_request(stats["type_ids"], H.A, A_of_type)
     v = A_vol * d_bar[:, None]
 
-    # 9-11. Raw objectives (per-type SAMPLE MEANS), normalization, scalarization
-    if cfg.scalarization.method == "chebyshev":
-        import warnings
-        warnings.warn(
-            "Chebyshev scalarization produces reward <= 0 by construction; the "
-            "LP-RS will likely reject all types. Use 'linear' for the online "
-            "admission reward, or use Chebyshev only in offline Pareto-"
-            "enumeration notebooks.",
-            RuntimeWarning,
-        )
+    # 9. Linear dollar reward from the per-type SAMPLE MEANS, with the carbon price s_C computed here
     r_tilde, r_nocarbon, norm_info = type_reward(
-        priority_of_type, v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar, p, cfg,
+        v_bar_arr, phi_bar_arr, C_elec_bar, C_carbon_bar, p, cfg,
     )
     carbon_price = norm_info["s_C"]
 
@@ -400,12 +350,12 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         energy_bar=energy_bar_arr, power_bar=power_bar_arr,
         r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=C_elec_bar, C_carbon_bar=C_carbon_bar,
-        v=v, L=L, phi_tilde=phi_tilde,
+        v=v, L=L,
         tau=tau, lam_star=lp.optimum,
         gamma=gamma, xi=xi, eps_D=eps_D,
         n_types=n_types,
-        n_ir_rejected=stats["n_ir_rejected"],
         n_assigned=stats["n_assigned"],
         n_types_hw_degenerate=n_types_hw_degenerate,
         carbon_price=float(carbon_price), norm_info=norm_info, A_type=A_vol,
+        u0=float(u0), r_max=float(r_max),
     )

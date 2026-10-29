@@ -1,6 +1,6 @@
 """
-Type / average ("theoretical") models over a capacity scan (week 32). No online model (DLENT-RT) and no job-level
-benchmark is run here.
+Type / average ("theoretical") models over a capacity scan. No online model (DLENT-RT) and no job-level benchmark is
+run here.
 
   * fluid OPT                 Benchmarks.fluid_opt: the full-stream LP-RS on the stream's own type rates and means
                               (hindsight), lambda_hat_ref x T.
@@ -8,7 +8,9 @@ benchmark is run here.
   * bucketed MILP             Benchmarks.job_opt_bucketed (reference buckets, true durations); run only when its
                               constraint matrix is small enough (max_milp_nonzeros), else reported as skipped.
   * static Phase 0            the Phase 0 LP solution x (learned on H) applied to the stream after H: each arrival is
-                              admitted with probability x of its type (models.policy.FractionPolicy), real gate.
+                              admitted with probability x of its type (models.policy.FractionPolicy), real gate;
+                              types with no job in H by the dual rule with fallback estimates.
+  * no-learning model         the same, then the theoretical model's thinning (models.policy.NoLearningPolicy).
   * window LPs                the fluid LP on each window of the stream (its own type rates; reinit.build_window_state
                               without fallback), for the share of windows where capacity binds (tau > 0).
 
@@ -26,9 +28,11 @@ from .data import _occupancy_stats, _OccupancyBasis, load_dataset
 from .lp_oracle import solve_lp_rs
 from .models.core.occupancy import Occupancy
 from .models.core.reinit import build_window_state
-from .models.policy import FractionPolicy, simulate
-from .phase0 import (_compute_job_energy, _lookup_grid, _synthesize_bids, assign_type_ids, run_phase0,
+from .models.core.error_params import make_error_params
+from .models.policy import FractionPolicy, NoLearningPolicy, simulate
+from .phase0 import (_compute_job_energy, _lookup_grid, assign_type_ids, run_phase0,
                      type_arrays)
+from .reward import social_welfare
 from .reward import carbon_kg, electricity_cost, type_reward
 
 FULL = 0.95
@@ -47,9 +51,9 @@ def unseen_type_estimates(st0, ds, cfg) -> dict:
     Seen types keep Phase 0's values.
     """
     H = ds.H
-    b = _synthesize_bids(H, cfg, seed=cfg.run.seed)               # the same bids as run_phase0
-    phi = np.asarray(st0.myerson.phi_job(b.v_rate, b.cost_base)) if st0.myerson.known else b.phi_rate
-    k = np.asarray(st0.grid.assign(b.v_rate, st0.myerson))
+    b = st0.bids                                                  # Phase 0's bids of H
+    phi = np.asarray(st0.myerson.phi_job(b.v_rate, b.cost_base))
+    k = np.asarray(st0.grid.assign(b.v_rate))
     E = _compute_job_energy(H, cfg)
     pr, ci = _lookup_grid(H, ds)
     ts = st0.type_space
@@ -67,8 +71,8 @@ def unseen_type_estimates(st0, ds, cfg) -> dict:
                v_bar=group_mean(k, b.v_rate, n_k)[k_t], phi_bar=group_mean(k, phi, n_k)[k_t])
     seen = np.asarray(st0.p) > 0
     full = {key: np.where(seen, getattr(st0, key), est[key]) for key in est}
-    _, prio, A_prof = type_arrays(ts, st0.grid)
-    r, _, _ = type_reward(prio, full["v_bar"], full["phi_bar"], full["C_elec_bar"], full["C_carbon_bar"],
+    _, _, A_prof = type_arrays(ts, st0.grid)
+    r, _, _ = type_reward(full["v_bar"], full["phi_bar"], full["C_elec_bar"], full["C_carbon_bar"],
                           np.asarray(st0.p), cfg, s_C=st0.carbon_price)
     A_t = np.where(seen[:, None], st0.A_type, A_prof)
     v = np.where(seen[:, None], st0.v, A_t * full["d_bar"][:, None])
@@ -88,9 +92,8 @@ def lp_x(state, c, cfg, p=None) -> tuple[np.ndarray, object]:
 def type_split(state, x, T, lam, p=None) -> dict:
     """Expected reward over T ticks of admitting fraction x of each type, split into its three terms [$]."""
     p = state.p if p is None else p
-    _, prio, _ = type_arrays(state.type_space, state.grid)
     w = p * x * T
-    out = {"customer value": float(w @ (lam.lambda1 * prio * state.v_bar)),
+    out = {"customer value": float(w @ (lam.lambda1 * state.v_bar)),
            "profit": float(w @ (lam.lambda2 * (state.phi_bar - state.C_elec_bar))),
            "carbon": float(-(w @ (lam.lambda3 * state.carbon_price * state.C_carbon_bar)))}
     out["reward"] = sum(out.values())
@@ -145,16 +148,23 @@ def window_taus(B, window_ticks: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # One capacity value
 # --------------------------------------------------------------------------- #
-def static_run(B, st0, x0, cfg, seed, admit_unseen=None) -> dict:
-    """The Phase 0 static policy (FractionPolicy) on B's stream with the real gate: realised split and occupancy."""
+def static_run(B, st0, x0, cfg, seed, admit_unseen=None, no_learning: bool = False) -> dict:
+    """The Phase 0 static policy (FractionPolicy) on B's stream with the real gate: realised split and occupancy.
+    no_learning: the no-learning model (NoLearningPolicy: + the theoretical model's thinning, same u_rand)."""
     S, c = B.S, B.c
-    pol = FractionPolicy(st0, S, x0, seed=seed, admit_unseen=admit_unseen)
+    if no_learning:
+        ep = make_error_params(st0, B.ds, cfg)
+        u_rand = np.random.default_rng(cfg.run.seed + cfg.online.thinning_seed_offset).random(S.n)
+        pol = NoLearningPolicy(st0, S, x0, ep, u_rand, W0=int(B.ds.d_max_steps), seed=seed, admit_unseen=admit_unseen)
+    else:
+        pol = FractionPolicy(st0, S, x0, seed=seed, admit_unseen=admit_unseen)
     sim = simulate(S, Occupancy(c, record=False), pol)
     adm, terms = sim.admit, B.terms
     _, lev, w = occupancy_series(S.tick, S.D, S.A, adm)
     split = {"customer value": float(terms.cv[adm].sum()), "profit": float(terms.profit[adm].sum()),
              "carbon": float(-terms.carbon_usd[adm].sum())}
     split["reward"] = sum(split.values())
+    split["social welfare"] = social_welfare(terms, adm)
     big = np.any(S.A > c[None, :], axis=1)
     return dict(split=split, full_time=float((w * (lev >= FULL * c[None, :]).any(1)).sum() / w.sum()),
                 n_admitted=int(adm.sum()), rejected_space=float(sim.phys_reject.mean()), wanted=int(sim.want.sum()),
@@ -169,9 +179,11 @@ def static_run(B, st0, x0, cfg, seed, admit_unseen=None) -> dict:
                 occupancy=(S.tick, S.D, S.A, adm))
 
 
-def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_nonzeros: int = 5_000_000,
-               milp_time_limit: float = 600.0, unseen_options=None) -> dict:
-    """Every type / average model at capacity.f = f (same jobs when limits.quota_from_f is set)."""
+def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_nonzeros: int = 0,
+               milp_time_limit: float = 600.0, no_learning: bool = True) -> dict:
+    """Every type / average model at capacity.f = f (the quota fixed point is at this f, so the jobs change with f).
+    The full-stream bucketed MILP runs only if its constraint matrix has <= max_milp_nonzeros nonzeros (0 = never;
+    the one-week MILP is window_models)."""
     cfg = replace(base_cfg, capacity=replace(base_cfg.capacity, f=f)).validate()
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
@@ -187,14 +199,13 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     res["phase0_lp"] = dict(tau=np.asarray(lp0.tau).tolist(), counts=admit_counts(x0, st0.p),
                             fill=lp_fill(st0, x0, c).tolist(), expected=type_split(st0, x0, T, lam),
                             lam_star_T=float(lp0.optimum) * T)
-    options = unseen_options or (cfg.policy.unseen_types,)
-    res["static_by_option"] = {}
-    for opt in options:
-        admit_unseen = unseen_type_estimates(st0, ds, cfg)["admit"] if opt == "dual_rule" else None
-        res["static_by_option"][opt] = static_run(B, st0, x0, cfg, seed, admit_unseen)
-    first = res["static_by_option"][options[0]]
-    res["static"] = {k: v for k, v in first.items() if k != "occupancy"}
-    res["occupancy"] = first["occupancy"]
+    admit_unseen = unseen_type_estimates(st0, ds, cfg)["admit"]          # the dual rule
+    st = static_run(B, st0, x0, cfg, seed, admit_unseen)
+    res["static"] = {k: v for k, v in st.items() if k != "occupancy"}
+    res["occupancy"] = st["occupancy"]
+    if no_learning:
+        nl = static_run(B, st0, x0, cfg, seed, admit_unseen, no_learning=True)
+        res["no_learning"] = {k: v for k, v in nl.items() if k != "occupancy"}
 
     # fluid OPT and fluid on feasible types (reference = hindsight state of the whole stream)
     ref = B.reference_state
@@ -226,13 +237,30 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     return res
 
 
-def select_f(results, band=(0.20, 0.30), target=0.25, option=None):
-    """The f whose static-policy '% time >= 95% full' is closest to the band (0 inside), ties to the target
-    (option: the unseen-type option of static_by_option; None = the config's)."""
-    def key(r):
-        x = (r["static_by_option"][option] if option else r["static"])["full_time"]
-        return (max(band[0] - x, 0.0, x - band[1]), abs(x - target))
-    return min(results, key=key)["f"]
+F_SCAN = (0.3, 0.35, 0.4, 0.45, 0.5)
+
+
+def tau_positive(r) -> bool:
+    """Condition (a) of the f rule: tau > 0 (CPU or RAM) in BOTH the Phase 0 LP and fluid OPT."""
+    return bool(np.any(np.asarray(r["phase0_lp"]["tau"]) > 0) and np.any(np.asarray(r["fluid"]["tau"]) > 0))
+
+
+def band_distance(r, band=(0.20, 0.30)) -> float:
+    x = r["static"]["full_time"]
+    return max(band[0] - x, 0.0, x - band[1])
+
+
+def select_f(results, band=(0.20, 0.30), target=0.25):
+    """
+    The f rule (D3), in priority order:
+      (a) REQUIRED: tau > 0 in both the Phase 0 LP and fluid OPT (CPU or RAM);
+      (b) among the f that pass (a): the static policy's '% time >= 95% full' closest to the band (0 inside), ties
+          to the target 25%.
+    """
+    ok = [r for r in results if tau_positive(r)]
+    if not ok:
+        raise ValueError("f rule: no f of the scan has tau > 0 in both the Phase 0 LP and fluid OPT")
+    return min(ok, key=lambda r: (band_distance(r, band), abs(r["static"]["full_time"] - target)))["f"]
 
 
 # --------------------------------------------------------------------------- #
@@ -249,7 +277,7 @@ def job_distributions(cfg) -> dict:
     eff = np.divide(df[col.cpu_hours_real].to_numpy(float), cpu, out=span.copy(), where=cpu > 0)
     ds = load_dataset(cfg)
     Q = np.array(ds.limit_report.quota, float)
-    cap = cfg.limits.d_cap_hours
+    cap = cfg.time.d_cap_hours
     in_H = t < t.min() + np.timedelta64(int(round(cfg.data.h_days * 86400)), "s")
     kept = (cpu <= Q[0]) & (ram <= Q[1])
     d_cap = np.minimum(np.maximum(eff, cfg.time.duration_floor_hours), cap)
@@ -289,7 +317,7 @@ def _wq(x, w, q):
 
 
 # --------------------------------------------------------------------------- #
-# Figures (matplotlib; used by scripts/week32/theory_models.py and notebook 05)
+# Figures (matplotlib; used by notebooks/01_model_check)
 # --------------------------------------------------------------------------- #
 BLUE, ORANGE, INK, INK2, GRID = "#2a78d6", "#eb6834", "#0b0b0b", "#52514e", "#e5e4e0"
 
@@ -383,16 +411,16 @@ def fig_reward_vs_f(results, ax):
     ax.legend(frameon=False, fontsize=8)
 
 
-def fig_occupancy(r, axs, tick_seconds=1.0, option=None):
-    st = r["static_by_option"][option] if option else r["static"]
-    tick, D, A, adm = r["static_by_option"][option]["occupancy"] if option else r["occupancy"]
+def fig_occupancy(r, axs, tick_seconds=1.0):
+    st = r["static"]
+    tick, D, A, adm = r["occupancy"]
     t, lev, w = occupancy_series(tick, D, A, adm)
     days = (t - t[0]) * tick_seconds / 86400
     for ax, i, nm in zip(axs, (0, 1), ("CPU", "RAM")):
         ax.step(days, lev[:, i], where="post", color=BLUE, lw=0.7)
         ax.axhline(r["C"][i], color=ORANGE, ls="--", lw=1.2)
         ax.text(days[-1], r["C"][i], f" C = {r['C'][i]:.2f}", color=ORANGE, fontsize=8, va="bottom", ha="right")
-        ax.set_title(f"{nm}: static Phase 0 policy{' (' + option + ')' if option else ''}, f = {r['f']:g} "
+        ax.set_title(f"{nm}: static Phase 0 policy, f = {r['f']:g} "
                      f"(>= 95% full {100 * st['full_time']:.1f}% of the time)", loc="left", fontsize=10, color=INK)
         _style(ax, "days since the start of the stream", f"{nm} (machines)", log=False)
 
@@ -418,17 +446,15 @@ def h_vs_stream(B, st0, cfg) -> dict:
     S, T, c, lam = B.S, B.T, B.c, cfg.objective
     per_h = 3600.0 / cfg.time.tick_seconds
     H = B.ds.H
-    kH = st0.grid.assign(_synthesize_bids(H, cfg, seed=cfg.run.seed).v_rate, st0.myerson)
+    kH = st0.grid.assign(st0.bids.v_rate)
     jH = assign_type_ids(st0.type_space, np.asarray(kH), H.priority, H.hw_idx)
-    jS = assign_type_ids(st0.type_space, np.asarray(st0.grid.assign(S.v, st0.myerson)), S.priority, S.hw_idx)
+    jS = assign_type_ids(st0.type_space, np.asarray(st0.grid.assign(S.v)), S.priority, S.hw_idx)
     n = st0.n_types
     rdH, rdS = H.A[:, 0] * H.duration_hours, S.A[:, 0] * S.duration_hours
 
     def per_type(j, rd, span):
-        ok = j >= 0
-        N = np.bincount(j[ok], minlength=n)
-        return N / span * per_h, np.divide(np.bincount(j[ok], weights=rd[ok], minlength=n), N,
-                                           out=np.zeros(n), where=N > 0)
+        N = np.bincount(j, minlength=n)
+        return N / span * per_h, np.divide(np.bincount(j, weights=rd, minlength=n), N, out=np.zeros(n), where=N > 0)
     lamH, mH = per_type(jH, rdH, B.ds.H_span_steps)
     lamS, mS = per_type(jS, rdS, T)
     both = (lamH > 0) & (lamS > 0)
@@ -472,14 +498,17 @@ def sub_stream(S, mask):
     return type(S)(n=int(mask.sum()), **kw)
 
 
-def window_models(base_cfg, f: float, days=(0.0, 7.0), seed: int = 0, milp_time_limit: float = 900.0,
-                  tail_hours: float | None = 1.0) -> dict:
-    """Fluid OPT, fluid on feasible types and the bucketed MILP (reference buckets, true durations) on the stream
-    arrivals of days [days[0], days[1]) after H; T = the window length. tail_hours: the MILP's capacity checks after
-    the last arrival (None = the old behaviour). Also 'fluid_window': fluid OPT with each type's volume counted only
-    inside the window (mean of min(D_j, window end - t_j) over its jobs), the end-of-window diagnostic."""
+def window_models(cfg, days=(0.0, 7.0), milp_time_limit: float = 3600.0, tail_hours: float | None = 1.0) -> dict:
+    """
+    The models on the stream arrivals of days [days[0], days[1]) after H, T = the window length (D6):
+      fluid (window)          the fluid LP with each type's volume counted only INSIDE the window
+                              (mean of min(D_j, window end - t_j) over its jobs);
+      fluid feasible (window) the same with the types whose request exceeds C removed;
+      fluid (whole volume)    the usual fluid LP (each type's whole volume A x d_bar), for comparison;
+      bucketed MILP           reference buckets, true durations, its own HiGHS instance and time limit; capacity
+                              checks also every tail_hours after the last arrival.
+    """
     import time
-    cfg = replace(base_cfg, capacity=replace(base_cfg.capacity, f=f)).validate()
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
     S = Benchmarks(ds, st0, cfg).S
@@ -489,23 +518,25 @@ def window_models(base_cfg, f: float, days=(0.0, 7.0), seed: int = 0, milp_time_
     Bw = Benchmarks(ds, st0, cfg, stream=Sw)
     Bw.T = int(t1 - t0)
     t = time.perf_counter()
-    fluid = Bw.fluid_opt()
-    ff = Bw.fluid_opt_feasible_types()
-    t_lp = time.perf_counter() - t
+    fluid_whole = Bw.fluid_opt()
     ref = Bw.reference_state
     j = Bw.bucket_types("reference")["type"]
-    ok = j >= 0
     inside = np.minimum(Sw.D, Bw.T - (Sw.tick - t0) + 1).astype(float)          # ticks of each job inside the window
-    N = np.bincount(j[ok], minlength=ref.n_types)
-    d_in = np.divide(np.bincount(j[ok], weights=inside[ok], minlength=ref.n_types), N, out=np.zeros(ref.n_types),
+    N = np.bincount(j, minlength=ref.n_types)
+    d_in = np.divide(np.bincount(j, weights=inside, minlength=ref.n_types), N, out=np.zeros(ref.n_types),
                      where=N > 0)
-    lp_w = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=ref.A_type * d_in[:, None], c=Bw.c, presolve=cfg.lp.presolve)
+    v_in = ref.A_type * d_in[:, None]
+    feas = ~np.any(ref.A_type > Bw.c[None, :], axis=1)
+    lp_w = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=v_in, c=Bw.c, presolve=cfg.lp.presolve)
+    lp_wf = solve_lp_rs(p=ref.p * feas, r=ref.r_tilde, v=v_in, c=Bw.c, presolve=cfg.lp.presolve)
+    t_lp = time.perf_counter() - t
     n_cand, nnz = milp_nonzeros(Bw, "reference")
     tail = None if tail_hours is None else int(round(tail_hours * 3600 / cfg.time.tick_seconds))
     o = Bw.job_opt_bucketed("reference", "true", time_limit=milp_time_limit, tail_step=tail)
-    return dict(f=f, days=days, n_jobs=int(Sw.n), C=Bw.c.tolist(), fluid=fluid, fluid_feasible=ff["value"],
-                fluid_window=float(lp_w.optimum) * Bw.T, tail_hours=tail_hours, n_tail_checks=o["n_tail_checks"],
+    return dict(f=cfg.capacity.f, days=days, n_jobs=int(Sw.n), C=Bw.c.tolist(),
+                fluid=float(lp_w.optimum) * Bw.T, fluid_feasible=float(lp_wf.optimum) * Bw.T,
+                fluid_whole_volume=fluid_whole, tail_hours=tail_hours, n_tail_checks=o["n_tail_checks"],
                 bucketed_believed=o["R_believed"], bucketed_realised=o["R_real"], bucketed_lp_believed=o["R_lp_believed"],
                 bucketed_dual_bound=o["dual_bound"], status=o["status"], gap=o["gap"], milp_runtime_s=o["runtime_s"],
                 milp_lp_runtime_s=o["lp_runtime_s"], lp_runtime_s=t_lp, n_candidates=n_cand, nonzeros=o["nonzeros"],
-                feasible_true=o["feasible_true"])
+                feasible_true=o["feasible_true"], milp_time_limit=milp_time_limit)

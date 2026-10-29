@@ -1,6 +1,6 @@
 """Reward accounting (week 30): type-level vs job-level identity, logged == re-scored, shadow prices.
 
-With a known phi, the type reward r~_j is the mean of the job reward over the type's jobs, so admitting
+With one phi (the state's sigma), the type reward r~_j is the mean of the job reward over the type's jobs, so admitting
 every reference type with r_ref > 0 gives, in sample, sum_j N_j r_ref_j^+ == sum of R_job over those jobs
 (== lambda_hat_ref * T when tau* = 0)."""
 import tempfile, warnings
@@ -19,7 +19,7 @@ from dlent_rt.models.core.reinit import build_window_state
 from dlent_rt.models.core.stream import build_stream
 from tests.synthetic import synthetic_config
 
-REAL_SLICE_N0 = 24_000          # real trace, |stream| ~ 1.3k: identity + Phase 0 checks in seconds
+REAL_SLICE_H_DAYS = 29.5       # real trace, H = 29.5 days, so the stream is short: identity + Phase 0 checks quickly
 
 
 class _Recording(TheoryModel):
@@ -46,7 +46,8 @@ def _real_slice():
     cfg = default_config()
     if not resolve_path(cfg.data.batch_csv).is_file():
         pytest.skip("real trace not available")
-    return replace(cfg, data=replace(cfg.data, n0=REAL_SLICE_N0))
+    return replace(cfg, data=replace(cfg.data, h_days=REAL_SLICE_H_DAYS),
+                   time=replace(cfg.time, d_cap_hours=2.0)).validate()
 
 
 def _load(cfg):
@@ -65,16 +66,15 @@ def _assert_tau(st):
 def test_type_job_identity(which):
     cfg = _synthetic() if which == "synthetic" else _real_slice()
     ds, st0 = _load(cfg)
-    assert cfg.bid.known_distribution
     S = build_stream(ds, cfg)
     T = int(ds.T)
     idx = np.arange(S.n)
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
     st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, fallback=False)
-    tid = assign_type_ids(st_ref.type_space, st_ref.grid.assign(S.v, st_ref.myerson), S.priority, S.hw_idx)
-    assert (tid >= 0).all()
+    tid = assign_type_ids(st_ref.type_space, st_ref.grid.assign(S.v), S.priority, S.hw_idx)
     N = np.bincount(tid, minlength=st_ref.n_types).astype(float)
-    R = job_reward(S, st0, cfg)
+    # the job reward under the reference state's own bid model (sigma refit on the stream) and Phase 0's s_C
+    R = reward.job_terms(S.v, S.cost_base, S.C_elec, S.C_carbon, st_ref.myerson, st0.carbon_price, cfg.objective).R
     # every type reward is the mean of the job reward over its jobs
     mean_R = np.divide(np.bincount(tid, weights=R, minlength=st_ref.n_types), N, out=np.zeros_like(N), where=N > 0)
     np.testing.assert_allclose(st_ref.r_tilde[N > 0], mean_R[N > 0], rtol=1e-9, atol=1e-9)

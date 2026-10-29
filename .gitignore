@@ -28,3 +28,6 @@ reports/**
 archive/reports/**
 !archive/reports/**/
 !archive/reports/**/*.md
+
+# week 33: model-check cache (scripts/model_check_cache.py; large, rebuilt on demand)
+reports/week33/cache/

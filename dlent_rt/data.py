@@ -7,7 +7,7 @@ again.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +17,7 @@ import pandas as pd
 from .energy import load_grid_data
 
 from .config import Config, resolve_path
-from .preprocess import HardwareCatalogue, LimitReport, apply_r_max, fit_hardware_catalogue
+from .preprocess import HardwareCatalogue, LimitReport, apply_quota, fit_hardware_catalogue
 
 
 @dataclass
@@ -56,7 +56,8 @@ class Dataset:
     d_max_diag: dict
     xi: float
     grid_data: object              # GridData from energy.py (or None)
-    # capacity.mode mean_demand: lambda_hat (jobs / h), mean_rd and D_bar (machines, per resource), H span (h), f
+    # lambda_hat (jobs / h), mean_rd and D_bar (machines, per resource), H span (h), f, and the job-level
+    # enlargement factor (1 = none; benchmarks.enlarge_for_job_models)
     capacity_diag: Optional[dict] = None
 
     @property
@@ -242,55 +243,9 @@ def _occupancy_stats(jobs) -> dict:
     return dict(peak=peak, times=times, occ=occ, levels=levels, weights=weights)
 
 
-def _time_weighted_quantile(
-    levels: np.ndarray, weights: np.ndarray, q: float
-) -> np.ndarray:
-    """
-    Per-resource time-weighted quantile of the occupancy step function.
-    levels: (m, |I|), weights: (m,) durations each level is held.
-    """
-    n_res = levels.shape[1]
-    out = np.zeros(n_res)
-    total = weights.sum()
-    for i in range(n_res):
-        order = np.argsort(levels[:, i], kind="stable")
-        vals = levels[order, i]
-        w = weights[order]
-        cw = np.cumsum(w) / max(total, 1e-12)
-        idx = int(np.searchsorted(cw, q, side="left"))
-        idx = min(idx, len(vals) - 1)
-        out[i] = vals[idx]
-    return out
-
-
-def _size_capacity(basis: _OccupancyBasis, cfg: Config) -> np.ndarray:
-    """
-    Size cluster capacity from `basis`'s resource-request/occupancy profile.
-
-    Capacity is sized on the FULL historical dataset (H + stream), not on
-    stream alone. Sizing on stream alone can misrepresent typical
-    concurrency if the stream window happens to capture a
-    non-representative slice of load (verified empirically: stream-only
-    concurrency was ~3x the full-dataset concurrency in one configuration).
-    `basis` must therefore be H and stream COMBINED on one shared absolute
-    timeline (see load_dataset), not `stream` by itself -- passing `stream`
-    alone silently reproduces the old, biased sizing.
-    """
-    if cfg.capacity.mode == "exceeded_share":
-        # the concurrent-request level exceeded `exceeded_share` of the time when every job is admitted
-        stats = _occupancy_stats(basis)
-        if stats.get("weights") is None:
-            return stats["peak"]
-        return _time_weighted_quantile(stats["levels"], stats["weights"], 1.0 - cfg.capacity.exceeded_share)
-    else:  # absolute
-        return np.array(
-            [cfg.capacity.absolute.cpu, cfg.capacity.absolute.ram], dtype=float
-        )
-
-
 def mean_demand(A: np.ndarray, d_hours: np.ndarray, span_hours: float) -> dict:
     """
-    Mean demand of a job history (capacity.mode mean_demand), per resource:
+    Mean demand of a job history, per resource:
         lambda_hat = n / span_hours            (jobs per hour)
         mean_rd    = (1/n) sum_j r_j d_j       (machine-hours per job)
         D_bar      = lambda_hat * mean_rd      (machines) = total work / span
@@ -302,30 +257,32 @@ def mean_demand(A: np.ndarray, d_hours: np.ndarray, span_hours: float) -> dict:
 
 
 def _n_history(df: pd.DataFrame, cfg: Config) -> int:
-    """Number of jobs in H: the first data.n0 rows, or (data.h_days) the rows that arrive in the first h_days days."""
-    if cfg.data.h_days is None:
-        return cfg.data.n0
+    """Number of jobs in H: the rows that arrive in the first data.h_days days."""
     t = df[cfg.data.columns.datetime].to_numpy()
     return int(np.searchsorted(t, t[0] + np.timedelta64(int(round(cfg.data.h_days * 86400)), "s"), side="left"))
 
 
-def _quota_fixed_point(df: pd.DataFrame, cfg: Config, a_cols: list[str],
-                       tol: float = 0.01, max_iter: int = 50) -> tuple[np.ndarray, list]:
+def _capped_hours(df: pd.DataFrame, cfg: Config) -> np.ndarray:
+    """The one duration of every job: effective duration, floored at 1 minute, cut at time.d_cap_hours."""
+    d = df[cfg.data.columns.duration_hours].to_numpy(dtype=float)
+    return np.minimum(np.maximum(d, cfg.time.duration_floor_hours), cfg.time.d_cap_hours)
+
+
+def _quota_fixed_point(df: pd.DataFrame, cfg: Config, a_cols: list[str], max_iter: int = 50) -> tuple[np.ndarray, list]:
     """
-    limits.job_quota_rule = share_of_C: Q = quota_share * C, C = capacity.f * D_bar(H after the quota Q).
-    Start from Q = the 99th percentile of H's requests (df after R_max, no quota); repeat until Q moves by < tol
-    on every resource. H, its span and the capped durations follow the same rules as load_dataset.
+    Q = quota_share * C, C = capacity.f * D_bar(H after the quota Q). Start from Q = the 99th percentile of H's
+    requests (no quota); repeat until Q moves by < limits.quota_tol on every resource. H, its span and the capped
+    durations follow the same rules as load_dataset.
     """
     col, lim = cfg.data.columns, cfg.limits
     A = df[a_cols].to_numpy(dtype=float)
     t = df[col.datetime].to_numpy()
-    d = np.minimum(np.maximum(df[col.duration_hours].to_numpy(dtype=float), cfg.time.duration_floor_hours),
-                   lim.d_cap_hours)
+    d = _capped_hours(df, cfg)
     Q = np.quantile(A[:_n_history(df, cfg)], 0.99, axis=0)
     its = []
     for k in range(max_iter):
         idx = np.flatnonzero((A <= Q[None, :]).all(axis=1))
-        h = idx[:_n_history(df.iloc[idx], cfg)]
+        h = idx[:_n_history(df.iloc[idx], cfg)] if idx.size else idx
         if not np.all(Q > 0) or h.size < 2:
             raise ValueError(f"quota fixed point collapsed (Q = {Q.tolist()}, {h.size} jobs in H after {k} steps): "
                              f"Q = {lim.quota_share} x f x D_bar(Q) has no positive solution at f = {cfg.capacity.f}")
@@ -337,39 +294,20 @@ def _quota_fixed_point(df: pd.DataFrame, cfg: Config, a_cols: list[str],
         its.append(dict(iteration=k, Q=Q.tolist(), n_kept=int(idx.size), n_H=int(h.size), D_bar=md["D_bar"].tolist(),
                         C=C.tolist(), Q_next=Q_new.tolist(), change=change.tolist()))
         Q = Q_new
-        if np.all(change < tol):
+        if np.all(change < lim.quota_tol):
             break
     return Q, its
 
 
 def _compute_d_max_steps(T: int, cfg: Config) -> tuple[int, dict]:
-    """d_max = min(time.d_max_hours, d_max_horizon_fraction * T) in steps; d_max_hours None -> the ceiling.
-    limits.d_cap_hours set -> d_max = the cap (the ceiling rule is not used; the abort check still applies)."""
-    ceiling = max(int(cfg.time.d_max_horizon_fraction * T), 1)
-    if cfg.limits.d_cap_hours is not None:
-        ceiling = max(int(np.rint(cfg.limits.d_cap_hours * 3600.0 / cfg.time.tick_seconds)), 1)
-        candidate = ceiling
-    elif cfg.time.d_max_hours is not None:
-        candidate = max(int(np.rint(cfg.time.d_max_hours * 3600.0 / cfg.time.tick_seconds)), 1)
-    else:
-        candidate = ceiling
-    d_max = min(candidate, ceiling)
-
+    """d_max = time.d_cap_hours in steps; abort if d_max / T exceeds time.d_max_ratio_abort."""
+    d_max = max(int(np.rint(cfg.time.d_cap_hours * 3600.0 / cfg.time.tick_seconds)), 1)
     ratio = d_max / max(T, 1)
-    diag = dict(
-        d_max_hours=cfg.time.d_max_hours,
-        candidate=candidate,
-        horizon_ceiling=ceiling,
-        chosen=d_max,
-        ratio_to_T=ratio,
-        clamped_by_ceiling=candidate > ceiling,
-    )
+    diag = dict(d_cap_hours=cfg.time.d_cap_hours, chosen=d_max, ratio_to_T=ratio)
     if ratio > cfg.time.d_max_ratio_abort:
         raise ValueError(
-            f"d_max/T = {ratio:.3f} exceeds abort threshold "
-            f"{cfg.time.d_max_ratio_abort}. d_max={d_max}, T={T}. "
-            f"The theory requires d_max << T. Lower time.d_max_hours or "
-            f"time.d_max_horizon_fraction."
+            f"d_max/T = {ratio:.3f} exceeds abort threshold {cfg.time.d_max_ratio_abort}. d_max={d_max}, T={T}. "
+            f"The theory requires d_max << T. Lower time.d_cap_hours."
         )
     return d_max, diag
 
@@ -381,22 +319,13 @@ def load_dataset(cfg: Config) -> Dataset:
     resources = ["cpu", "ram"]
     a_cols = [col.requested_cpu, col.requested_ram]
 
-    if cfg.limits.job_quota_rule == "share_of_C":
-        df_r, _ = apply_r_max(df, cfg, a_cols, quota_values=(None, None))
-        cfg_q = cfg if cfg.limits.quota_from_f is None else replace(
-            cfg, capacity=replace(cfg.capacity, f=cfg.limits.quota_from_f))
-        Q, its = _quota_fixed_point(df_r, cfg_q, a_cols)
-        df, limit_report = apply_r_max(df, cfg, a_cols, quota_values=(float(Q[0]), float(Q[1])))
-        limit_report.quota_iterations = its
-    else:
-        df, limit_report = apply_r_max(df, cfg, a_cols)
+    Q, its = _quota_fixed_point(df, cfg, a_cols)
+    df, limit_report = apply_quota(df, a_cols, (float(Q[0]), float(Q[1])))
+    limit_report.quota_iterations = its
 
     n0 = _n_history(df, cfg)
     if n0 >= len(df):
-        raise ValueError(
-            f"n0={n0} >= rows after the size limit ({len(df)}). "
-            "Lower n0 or raise limits.r_max_machines."
-        )
+        raise ValueError(f"H has {n0} jobs = every job after the quota ({len(df)}): lower data.h_days.")
 
     dts = df[col.datetime].to_numpy()
 
@@ -446,41 +375,11 @@ def load_dataset(cfg: Config) -> Dataset:
     stream = _build_job_arrays(df_stream, cfg, resources,
                                d_max_steps, catalogue, steps_stream)
 
-    # Capacity is sized on H + stream COMBINED, on the shared absolute
-    # timeline (steps_H, steps_stream_abs) -- NOT on stream.arrival_step,
-    # which is re-based to 0 and would misalign with steps_H. See
-    # _size_capacity's docstring for why stream alone is not used.
-    capacity_diag = None
-    if cfg.capacity.mode == "mean_demand":
-        # Phase 0 information only: H's jobs (after the limits), capped durations, H's span
-        capacity_diag = mean_demand(H.A, H.duration_hours, H_span_steps * cfg.time.tick_seconds / 3600.0)
-        capacity_diag["f"] = float(cfg.capacity.f)
-        capacity = cfg.capacity.f * capacity_diag["D_bar"]
-    else:
-        capacity_basis = _OccupancyBasis(
-            arrival_step=all_steps,
-            duration_steps=np.concatenate([H.duration_steps, stream.duration_steps]),
-            A=np.concatenate([H.A, stream.A], axis=0),
-        )
-        capacity = _size_capacity(capacity_basis, cfg)
-
-        # Regression check: H+stream now partition the filtered dataset with no
-        # gaps (positional split, no stratified pool), so capacity computed from
-        # the H+stream basis must equal capacity computed directly on the WHOLE
-        # filtered dataset's timeline in one shot.
-        full_jobs = _build_job_arrays(df, cfg, resources, d_max_steps, catalogue, all_steps)
-        full_basis = _OccupancyBasis(
-            arrival_step=full_jobs.arrival_step,
-            duration_steps=full_jobs.duration_steps,
-            A=full_jobs.A,
-        )
-        capacity_full = _size_capacity(full_basis, cfg)
-        assert np.allclose(capacity, capacity_full), (
-            f"capacity from H+stream basis ({capacity}) does not match capacity "
-            f"computed directly on the full filtered dataset's timeline "
-            f"({capacity_full}) -- the H/stream split should partition df with "
-            f"no gaps or reordering."
-        )
+    # C = f x D_bar: Phase 0 information only (H's jobs after the quota, capped durations, H's span)
+    capacity_diag = mean_demand(H.A, H.duration_hours, H_span_steps * cfg.time.tick_seconds / 3600.0)
+    capacity_diag["f"] = float(cfg.capacity.f)
+    capacity_diag["enlargement"] = 1.0
+    capacity = cfg.capacity.f * capacity_diag["D_bar"]
 
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))

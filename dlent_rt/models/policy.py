@@ -16,8 +16,12 @@ Policies:
   * StaticPolicy: the FROZEN (r~, tau, v) of one PhaseState (e.g. Phase 0 or the full-stream
     hindsight state), want = 1[r~_j - tau^T v_j > 0] (optionally thinned with the online run's
     common random numbers); no learning, no tests, no restarts.
-  * Greedy policies: two myopic first-come rules under the same gate, to measure what the
-    shadow prices, thinning and the phase structure add. No tau, no LP, no thinning, no tests.
+  * FractionPolicy: the static Phase 0 policy (D6 benchmark): each arrival admitted with its type's LP-RS fraction
+    x_j; types with no job in H by the dual rule with fallback estimates (D4).
+  * NoLearningPolicy: the no-learning model (D5) = the Phase 0 state forever: FractionPolicy, then the
+    theoretical model's Bernoulli thinning of phase 1 (p_U(W^(0), t)), never re-estimated.
+  * Greedy policies (practical only: code kept, not run in the model check): two myopic first-come
+    rules under the same gate. No tau, no LP, no thinning, no tests.
       G1 TypeGreedyPolicy  type-level: want = 1[r~_j > 0] for the arrival's type j (Phase-0 grid
           and types, never refit); r~_j starts at Phase 0's value (H) and is the cumulative
           running mean of R_job over H and ALL stream arrivals seen so far (admitted or not),
@@ -73,7 +77,7 @@ class StaticPolicy:
 
     def __init__(self, state: PhaseState, stream, thin_p: Optional[float] = None,
                  u_rand: Optional[np.ndarray] = None):
-        k = state.grid.assign(stream.v, state.myerson)
+        k = state.grid.assign(stream.v)
         j = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
         jj = np.maximum(j, 0)
         self.khat = np.where(j >= 0, state.r_tilde[jj] - state.v[jj] @ state.tau, -np.inf) > 0
@@ -133,7 +137,7 @@ class TypeGreedyPolicy:
                    update: bool = True) -> "TypeGreedyPolicy":
         """Phase-0 types (grid of `state`, not refit), r0 = state.r_tilde, n0 = H counts
         (p_j = N_j / H_span_steps, as in Phase 0)."""
-        k = state.grid.assign(stream.v, state.myerson)
+        k = state.grid.assign(stream.v)
         tid = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
         n0 = np.rint(np.asarray(state.p) * H_span_steps).astype(np.int64)
         return cls(tid, R, state.r_tilde, n0, update=update)
@@ -191,15 +195,15 @@ def run_policy(stream, capacity, policy) -> SimResult:
 
 
 class FractionPolicy:
-    """Static policy with the LP's admission FRACTIONS (week 32): want_i = 1[u_i < x_j] for the arrival's type j
-    under `state`'s grid (u_i uniform, fixed seed). x_j in [0, 1] is the LP-RS solution of that state; a type with
-    no observation (p = 0) or no type gets x = 0. No learning, no tests; the physical gate is applied by simulate."""
+    """Static policy with the LP's admission FRACTIONS: want_i = 1[u_i < x_j] for the arrival's type j under
+    `state`'s grid (u_i uniform, fixed seed). x_j in [0, 1] is the LP-RS solution of that state. No learning, no
+    tests; the physical gate is applied by simulate."""
 
     def __init__(self, state: PhaseState, stream, x: np.ndarray, seed: int = 0,
                  admit_unseen: Optional[np.ndarray] = None):
-        """admit_unseen (policy.unseen_types = dual_rule): per-type bool, used for the arrivals whose type has no
-        job in the state (p = 0); None = reject them."""
-        k = state.grid.assign(stream.v, state.myerson)
+        """admit_unseen: per-type bool of the dual rule (theory_eval.unseen_type_estimates), used for the arrivals
+        whose type has no job in the state (p = 0); None = reject them."""
+        k = state.grid.assign(stream.v)
         j = assign_type_ids(state.type_space, k, stream.priority, stream.hw_idx)
         jj = np.maximum(j, 0)
         seen = (j >= 0) & (np.asarray(state.p)[jj] > 0)
@@ -217,3 +221,17 @@ class FractionPolicy:
 
     def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
         pass
+
+
+class NoLearningPolicy(FractionPolicy):
+    """The no-learning model: FractionPolicy of the Phase 0 state, then Bernoulli thinning with p_U(W0, t) of the
+    theoretical model's first phase (tau^(0) = 0, W^(0) = W0 = d_max) and its common random numbers u_rand. No
+    tests, no ReInit: the Phase 0 state (grid, sigma = bid.sigma, r~, tau, x) is kept for the whole stream."""
+
+    def __init__(self, state: PhaseState, stream, x: np.ndarray, ep, u_rand: np.ndarray, W0: int,
+                 seed: int = 0, admit_unseen: Optional[np.ndarray] = None):
+        super().__init__(state, stream, x, seed=seed, admit_unseen=admit_unseen)
+        self.ep, self.u_rand, self.W0 = ep, np.asarray(u_rand), int(W0)
+
+    def want(self, i: int, t: int) -> bool:
+        return super().want(i, t) and bool(self.u_rand[i] < self.ep.p_U(self.W0, t))

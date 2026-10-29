@@ -5,8 +5,9 @@ from dlent_rt.models.core.monitor import ScanResult, geometric_offsets
 
 
 class BruteMonitor:
-    def __init__(self, ep, r_tilde, v, capacity, a_max_eff, tau_prev, W_prev, d_max, cfg):
-        self.ep, self.r, self.v = ep, np.asarray(r_tilde), np.asarray(v)
+    def __init__(self, ep, r_tilde, v, capacity, a_max_eff, tau_prev, W_prev, d_max, cfg, r_unit=1.0):
+        self.r_unit = float(r_unit)
+        self.ep, self.r, self.v = ep, np.asarray(r_tilde) / self.r_unit, np.asarray(v)
         self.c, self.amax = np.asarray(capacity, float), np.asarray(a_max_eff, float)
         self.tau_prev, self.W_prev, self.tau_bar = tau_prev, W_prev, tau_prev + d_max
         self.base = cfg.test3.geometric_base
@@ -20,7 +21,7 @@ class BruteMonitor:
 
     def register_arrival(self, t, type_id, R, admitted, job, A, D):
         assert t == self.last + 1
-        self.ticks.append(t); self.types.append(type_id); self.R[t] = R
+        self.ticks.append(t); self.types.append(type_id); self.R[t] = R / self.r_unit
         if admitted and t >= self.tau_bar + 1:
             self.adm.append((t, np.asarray(A, float), D))
 

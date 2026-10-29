@@ -1,6 +1,6 @@
 """
-LP-RS solver and scalarization. The online loop uses the linear scalarization
-only; augmented Chebyshev lives in dlent_rt.pareto (offline Pareto fronts).
+LP-RS solver. The type reward is the linear sum of dlent_rt.reward; augmented Chebyshev lives only in
+dlent_rt.pareto (offline Pareto fronts).
 """
 from __future__ import annotations
 
@@ -8,26 +8,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import highspy
-
-
-def scalarize_linear(f: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """
-    Linear scalarization: weighted sum. f is (n_types, 3), weights is (3,).
-    Returns (n_types,).
-    """
-    return f @ weights
-
-
-def scalarize(
-    f: np.ndarray, method: str, weights: np.ndarray, rho: float,
-) -> np.ndarray:
-    if method == "linear":
-        return scalarize_linear(f, weights)
-    if method == "chebyshev":
-        from .pareto import scalarize_chebyshev       # offline Pareto enumeration only
-        return scalarize_chebyshev(f, weights, rho)
-    raise ValueError(f"unknown scalarization method: {method}")
-
 
 
 # LP-RS
@@ -42,7 +22,7 @@ class LPResult:
 
 def solve_lp_rs(
     p: np.ndarray,              # type probabilities (n_types,)
-    r: np.ndarray,              # scalarized reward per type (n_types,)
+    r: np.ndarray,              # type reward r~ per type (n_types,)
     v: np.ndarray,              # expected resource volume (n_types, |I|)
     c: np.ndarray,              # capacity (|I|,)
     presolve: bool = True,

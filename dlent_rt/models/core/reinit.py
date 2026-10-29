@@ -2,27 +2,20 @@
 EndPhaseAndReinitialize (write-up Alg. 3) and the hindsight benchmark LP.
 
 Both build a PhaseState from a window of stream jobs with the SAME reward
-construction as Phase 0 (dlent_rt.reward.type_reward), with three week-28
-decisions:
-  1. phi from the mechanism's bid model, MyersonModel.phi_job(v, cost_base):
-     bid.known_distribution=true (default) -> the known markup distribution of
-     the previous state, never refit (the grid edges are still refit);
-     false (ablation) -> F_hat^(m+1), lognormal MLE on the phase's bids.
-  2. Thin types (count < n_type_min, INCLUDING types unseen in the phase):
-     conditional means (v_bar, phi_bar, d_bar, costs -> r~_j, v_ij) fall back
-     to the previous phase's value, which itself falls back to Phase 0
-     (carry-forward chain). Without this, an arrival whose type did not occur
-     in the previous phase would have r~ = 0 and never be admitted. p_j stays
-     the empirical N_j / W (p_j = 0 if the type did not arrive), so the LP
-     support is unchanged; only the oracle's per-type score uses the carried
-     stats.
-  3. The quantile_linear carbon price s_C (prev.carbon_price) is frozen at
-     Phase 0's value and never recomputed on the stream, so r~ (in $) lives on
-     one scale across phases (lambda_hat comparable across phases).
-
-Theory model: durations are observed at admission only (Version P), so
-d_bar / energy / cost statistics use ADMITTED jobs of the phase ("obs"),
-while p, v_bar, phi_bar use ALL arrivals of the phase.
+construction as Phase 0 (dlent_rt.reward.type_reward):
+  1. Statistics source (D5): arrival rates p, bids v_bar, phi_bar, sigma and the
+     requested resources (A_type) come from ALL arrivals of the window; duration,
+     energy and costs (d_bar, energy_bar, power_bar, C_elec_bar, C_carbon_bar) from
+     the ADMITTED jobs only ("obs": the theory model observes D at admission).
+  2. Grid and sigma (D2, D4): the geometric bid grid is rebuilt on the window's
+     bids, and sigma is refit on its markups if bid.refit_sigma (both only when
+     the window has >= phase_transition.n_min arrivals; else the previous ones).
+  3. Thin types (count < n_type_min, INCLUDING types unseen in the window): the
+     conditional means fall back to the previous phase's value, which itself falls
+     back to Phase 0 (carry-forward chain). Types that arrived but were never
+     observed anywhere get the mean over the observed jobs with the same hardware
+     profile. p_j stays the empirical N_j / W.
+  4. The carbon price s_C is Phase 0's (frozen), so r~ (in $) lives on one scale.
 """
 from __future__ import annotations
 
@@ -30,7 +23,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...bid import BidResult, compute_phi_tilde
+from ...bid import BidResult, bid_model
 from ...grid import build_valuation_grid
 from ...lp_oracle import solve_lp_rs
 from ...phase0 import PhaseState, assign_type_ids, type_arrays, type_request
@@ -44,6 +37,8 @@ class ReinitDiag:
     n_observed: int
     W: int
     grid_refit: bool
+    rho: float                 # grid ratio of the new state
+    sigma: float               # sigma of the new state's bid model
     n_types_seen: int
     n_value_fallback: int      # types with N_j < n_type_min (incl. 0) using carried v/phi stats
     n_dur_fallback: int        # types with M_j < n_type_min (incl. 0) using carried duration/cost stats
@@ -68,35 +63,27 @@ def build_window_state(
     idx_obs = np.asarray(idx_obs, np.int64)
     v_arr = stream.v[idx_arr]
 
-    # grid / F_hat refit (write-up Alg. 3 lines 2-6; reuse if too few arrivals)
-    # refit_grid=False (ablation A3, cfg.ablation.fixed_grid): keep the previous phase's grid
+    # grid and sigma refit on the window's arrivals (write-up Alg. 3 lines 2-6; reuse if too few arrivals)
+    # refit_grid=False: keep the previous phase's grid and sigma
+    c_arr = stream.cost_base[idx_arr]
     refit = refit_grid and idx_arr.size >= cfg.phase_transition.n_min and idx_arr.size >= 2
     if refit:
-        if prev.myerson.known:
-            myerson = prev.myerson
-        else:                                    # legacy pooled-MLE refit (audit L2)
-            from ...legacy.pooled_mle import fit_myerson
-            myerson = fit_myerson(v_arr)
-        grid = build_valuation_grid(v_arr, myerson, cfg.grid.k_star, cfg.grid.space,
-                                    cfg.grid.phi_floor)
+        myerson = bid_model(cfg, v_arr, c_arr) if cfg.bid.refit_sigma else prev.myerson
+        grid = build_valuation_grid(v_arr, cfg.grid.k_star)
     else:
         myerson, grid = prev.myerson, prev.grid
 
     def types_of(idx):
-        k = grid.assign(stream.v[idx], myerson) if idx.size else np.zeros(0, np.int64)
+        k = grid.assign(stream.v[idx]) if idx.size else np.zeros(0, np.int64)
         return assign_type_ids(ts, k, stream.priority[idx], stream.hw_idx[idx])
 
     tid_arr = types_of(idx_arr)
-    ok = tid_arr >= 0
-    phi_arr = (np.asarray(myerson.phi_job(v_arr, stream.cost_base[idx_arr]))
-               if idx_arr.size else np.zeros(0))
-    N, mv = _means(tid_arr[ok], n_types, dict(
-        v_bar=v_arr[ok], phi_bar=phi_arr[ok]))
+    phi_arr = np.asarray(myerson.phi_job(v_arr, c_arr)) if idx_arr.size else np.zeros(0)
+    N, mv = _means(tid_arr, n_types, dict(v_bar=v_arr, phi_bar=phi_arr))
 
     tid_obs = types_of(idx_obs)
-    oko = tid_obs >= 0
-    o = idx_obs[oko]
-    M, md = _means(tid_obs[oko], n_types, dict(
+    o = idx_obs
+    M, md = _means(tid_obs, n_types, dict(
         d_bar=stream.D[o], energy_bar=stream.energy_kwh[o], power_bar=stream.power_kw[o],
         C_elec_bar=stream.C_elec[o], C_carbon_bar=stream.C_carbon[o]))
 
@@ -127,31 +114,28 @@ def build_window_state(
                 md[k] = np.where(hole, hw_mean[hw_of_type], md[k])
 
     p = N / max(W, 1)
-    L, prio, A_type = type_arrays(ts, grid)
-    phi_tilde = compute_phi_tilde(L, myerson)
-    A_vol = type_request(tid_arr[ok], stream.A[idx_arr][ok], A_type)
+    L, _, A_type = type_arrays(ts, grid)
+    A_vol = type_request(tid_arr, stream.A[idx_arr], A_type)
     v = A_vol * md["d_bar"][:, None]
     r_tilde, r_nocarbon, _ = type_reward(
-        prio, mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
+        mv["v_bar"], mv["phi_bar"], md["C_elec_bar"], md["C_carbon_bar"],
         p, cfg, s_C=prev.carbon_price,
     )
     lp = solve_lp_rs(p=p, r=r_tilde, v=v, c=ds.capacity, presolve=cfg.lp.presolve)
     tau = lp.tau if lp.tau.size == ds.n_resources else np.zeros(ds.n_resources)
 
-    bids = BidResult(v_rate=v_arr, phi_rate=phi_arr,
-                     bid_high=stream.bid_high[idx_arr],
-                     cost_base=stream.cost_base[idx_arr])
+    bids = BidResult(v_rate=v_arr, phi_rate=phi_arr, cost_base=c_arr)
     st = replace(
         prev, myerson=myerson, grid=grid, bids=bids, p=p, d_bar=md["d_bar"],
         v_bar=mv["v_bar"], phi_bar=mv["phi_bar"], energy_bar=md["energy_bar"],
         power_bar=md["power_bar"], r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=md["C_elec_bar"], C_carbon_bar=md["C_carbon_bar"], v=v, L=L, A_type=A_vol,
-        phi_tilde=phi_tilde, tau=tau, lam_star=lp.optimum,
-        n_assigned=int(ok.sum()), n_ir_rejected=int((~ok).sum()),
+        tau=tau, lam_star=lp.optimum, n_assigned=int(idx_arr.size),
     )
     diag = ReinitDiag(
         n_arrivals=int(idx_arr.size), n_observed=int(idx_obs.size), W=int(W),
-        grid_refit=bool(refit), n_types_seen=int((N > 0).sum()),
+        grid_refit=bool(refit), rho=float(grid.ratio), sigma=float(myerson.sigma),
+        n_types_seen=int((N > 0).sum()),
         n_value_fallback=n_vfb, n_dur_fallback=n_dfb, n_last_resort=n_lr,
         lam_hat=float(lp.optimum), tau=tau, lp_status=lp.status,
     )
@@ -161,7 +145,7 @@ def build_window_state(
 def hindsight_lambda(stream, idx, W, prev, ds, cfg) -> tuple[float, ReinitDiag]:
     """
     Hindsight benchmark on a window: full information (every arrival's true D
-    observed, no fallback, F_hat refit on the window). Returns lam_hat per tick.
+    observed, no fallback, grid and sigma refit on the window). Returns lam_hat per tick.
     """
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
     st, dg = build_window_state(stream, idx, idx, W, prev, ds, cfg_h, fallback=False)

@@ -1,11 +1,11 @@
-"""policy.unseen_types (week 32): the static FractionPolicy rejects arrivals of types without jobs in H, or (dual_rule)
-admits them iff r~_u - tau . v_u > 0, with r~_u, v_u from theory_eval.unseen_type_estimates. Seen types unchanged."""
+"""Unseen types (D4): the static FractionPolicy admits arrivals of types without jobs in H by the dual rule, iff
+r~_u - tau . v_u > 0, with r~_u, v_u from theory_eval.unseen_type_estimates (admit_unseen=None rejects them). Seen
+types unchanged."""
 import warnings
 
 import numpy as np
 import pytest
 
-from dlent_rt.config import default_config
 from dlent_rt.data import load_dataset
 from dlent_rt.models.core.stream import build_stream
 from dlent_rt.models.policy import FractionPolicy
@@ -24,10 +24,6 @@ def world(tmp_path_factory):
         return cfg, ds, st, build_stream(ds, cfg)
 
 
-def test_default_is_reject():
-    assert default_config().policy.unseen_types == "reject"
-
-
 def test_estimates_keep_seen_types_and_fill_unseen(world):
     cfg, ds, st, S = world
     e = unseen_type_estimates(st, ds, cfg)
@@ -44,7 +40,7 @@ def test_dual_rule_only_changes_unseen_arrivals(world):
     e = unseen_type_estimates(st, ds, cfg)
     rej = FractionPolicy(st, S, x, seed=3)
     dual = FractionPolicy(st, S, x, seed=3, admit_unseen=e["admit"])
-    j = assign_type_ids(st.type_space, np.asarray(st.grid.assign(S.v, st.myerson)), S.priority, S.hw_idx)
+    j = assign_type_ids(st.type_space, np.asarray(st.grid.assign(S.v)), S.priority, S.hw_idx)
     unseen = (j >= 0) & (st.p[np.maximum(j, 0)] <= 0)
     assert unseen.any()
     w_rej = np.array([rej.want(i, 0) for i in range(S.n)])

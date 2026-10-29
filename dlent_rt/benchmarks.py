@@ -1,7 +1,9 @@
 """
-Benchmarks for the regret of an online run (week-30 Stage D). Every number is scored with the
-single job-level reward dlent_rt.reward (R_job, $ per job), on the online STREAM (the
-jobs after H, within the size limit R_max), with Phase 0's bid model and frozen s_C.
+Benchmarks for the regret of an online run (D6). Every number is scored with the single job-level reward
+dlent_rt.reward (R_job, $ per job), on the online STREAM (the jobs after H, within the job quota), with Phase 0's
+bid model and frozen s_C. Kept for the theoretical model: fluid OPT, fluid on feasible types, the bucketed MILP,
+the static Phase 0 policy and the no-learning model (models.policy). Practical only (code kept, not run in the
+model check): the job-level MILP, Greedy-Pos (G2) and the type greedy (G1).
 
     b = Benchmarks(ds, state0, cfg)          # or Benchmarks.from_model(theory_model)
     b.score(admitted_mask)    sum of R_job over the admitted stream jobs                 [$ per run]
@@ -171,8 +173,8 @@ class Benchmarks:
     # ------------------------------------------------------------------ #
     @cached_property
     def reference_state(self):
-        """Full-stream hindsight state (ORACLE): every arrival, true D, no fallback, F refit on the
-        whole stream when the bid distribution is not known. tau* and lambda_hat_ref come from it."""
+        """Full-stream hindsight state (ORACLE): every arrival, true D, no fallback, grid and sigma refit on the
+        whole stream. tau* and lambda_hat_ref come from it."""
         cfg_h = replace(self.cfg, phase_transition=replace(self.cfg.phase_transition, n_min=2))
         idx = np.arange(self.S.n)
         st, _ = build_window_state(self.S, idx, idx, self.T, self.state0, self.ds, cfg_h, fallback=False)
@@ -202,7 +204,7 @@ class Benchmarks:
         """
         st = {"phase0": self.state0, "reference": self.reference_state}[source]
         S = self.S
-        k = st.grid.assign(S.v, st.myerson)
+        k = st.grid.assign(S.v)
         j = assign_type_ids(st.type_space, np.asarray(k), S.priority, S.hw_idx)
         jj = np.maximum(j, 0)
         seen = (j >= 0) & (np.asarray(st.p)[jj] > 0)
@@ -293,3 +295,42 @@ class Benchmarks:
                     bucketed={s: {k: v for k, v in o.items() if k != "x"} for s, o in buck.items()},
                     fluid_feasible=ff, p_cap=float(p_cap),
                     g1_decision_error=float(np.mean(np.sign(R[ok]) != np.sign(g1.r_dec[ok]))) if ok.any() else 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Job-level enlargement (D3): a check, and a config option that is off by default
+# --------------------------------------------------------------------------- #
+def job_level_space_check(B: Benchmarks) -> dict:
+    """
+    Share of the positive-reward stream jobs (R_job > 0) that a job-level model rejects for lack of space. The
+    job-level model is Greedy-Pos (G2: admit every R_job > 0 job that fits); it is run only as a capacity probe.
+    """
+    from .models.policy import JobGreedyPolicy, run_policy
+    R = B.R
+    pos = R > 0
+    sim = run_policy(B.S, B.c, JobGreedyPolicy(R))
+    n_pos = int(pos.sum())
+    share = float(sim.phys_reject[pos].sum() / max(n_pos, 1))
+    return dict(n_positive=n_pos, n_rejected_space=int(sim.phys_reject[pos].sum()), share_rejected_space=share,
+                threshold=float(B.cfg.capacity.job_level_reject_max),
+                exceeds=bool(share > B.cfg.capacity.job_level_reject_max))
+
+
+def enlarge_for_job_models(ds, state0, cfg, max_steps: int = 30):
+    """
+    capacity.job_level_enlarge: multiply C by capacity.job_level_enlarge_step until job_level_space_check passes
+    (the quota and the jobs stay those of f), re-running Phase 0 on the larger cluster. Off (the default): only the
+    check. Returns (ds, state0, info), info = the checks in order and the final enlargement factor.
+    """
+    from dataclasses import replace as dc_replace
+    from .phase0 import run_phase0
+    checks = [job_level_space_check(Benchmarks(ds, state0, cfg))]
+    factor = 1.0
+    while cfg.capacity.job_level_enlarge and checks[-1]["exceeds"] and len(checks) <= max_steps:
+        factor *= cfg.capacity.job_level_enlarge_step
+        c = np.asarray(ds.capacity, float) * cfg.capacity.job_level_enlarge_step
+        diag = dict(ds.capacity_diag, enlargement=factor)
+        ds = dc_replace(ds, capacity=c, xi=float(np.max(np.asarray(ds.a_max) / c)), capacity_diag=diag)
+        state0 = run_phase0(ds, cfg)
+        checks.append(job_level_space_check(Benchmarks(ds, state0, cfg)))
+    return ds, state0, dict(enabled=bool(cfg.capacity.job_level_enlarge), checks=checks, factor=factor)

@@ -1,5 +1,10 @@
 """
-Configuration layer for DLENT-RT.
+Configuration layer for DLENT-RT. One configuration: configs/default.yaml = the final model (week 33). The model
+variants are switches inside it:
+
+    theoretical model   oracle.kind frozen, ablation.thinning_off false, bid.refit_sigma true   (the default)
+    practical model     oracle.kind live,   ablation.thinning_off true
+    no-learning model   the Phase 0 state forever (models.policy.NoLearningPolicy); sigma = bid.sigma, never refit
 """
 from __future__ import annotations
 
@@ -32,12 +37,10 @@ class ColumnsCfg:
 
 @dataclass(frozen=True)
 class DataCfg:
-    batch_csv: str = "data/batch_v2_30k.csv"   # scripts/data/fetch_v2.py + scripts/data/build_v2.py
-    grid_csv: str = "data/grid_data_may_2019.csv"
-    n0: int = 10000
+    batch_csv: str = "data/batch_v2_300k.csv"            # scripts/data/fetch_v2.py + scripts/data/build_v2.py
+    grid_csv: str = "data/grid_data_may_2019_filled.csv"  # 1-3 June filled by scripts/data/fill_grid.py
     columns: ColumnsCfg = field(default_factory=ColumnsCfg)
-    # H = the jobs that arrive in the first h_days days (None = the first n0 jobs)
-    h_days: Optional[float] = None
+    h_days: float = 7.0                                   # H = the jobs that arrive in the first h_days days
 
 
 @dataclass(frozen=True)
@@ -54,63 +57,31 @@ class EnergyModelCfg:
 
 @dataclass(frozen=True)
 class NormalizationCfg:
-    # quantile_linear (the only normalization): q of the weighted quantiles
-    # Q_q(CV), Q_q(|Pi|), Q_q(K) that set the carbon price s_C = D_q / K_q
-    # (frozen at Phase 0). The reward stays in dollars (no divisor).
+    # The carbon map, the only normalization: s_C = D_q / K_q with D_q = (Q_q(V) + Q_q(|Pi|)) / 2, K_q = Q_q(K),
+    # p-weighted quantiles over H's types, computed once in Phase 0. The reward stays in dollars (no divisor).
     quantile: float = 0.90
+
 
 @dataclass(frozen=True)
 class BidCfg:
-    # bid model: ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1). The cost base (bid.mode):
-    #   "base_utility" (default): (u0 * g(q) + gamma1 * cores + gamma2 * GB) * duration, g = base_utility_mode
-    #   "size":                   (1 + ln q) * (gamma1 * cores + gamma2 * GB) * duration   (u0 not used)
-    #   "size_u0":                (u0_per_machine_hour * r + gamma1 * cores + gamma2 * GB) * duration, r = CPU request
-    #                             (machines); no priority in the bid (priority enters only the customer value q x bid)
-    mode: str = "base_utility"
-    u0_per_machine_hour: float = 23.93   # $ per CPU machine-hour, bid.mode size_u0 only
-    # Base utility rate ($/hour): minimum hourly value a user derives from
-    # job completion, independent of resource footprint. Multiplied by
-    # duration. Ref: reinterpretation suggested by advisor — demand-side
-    # utility rather than supply-side fee.
-    # U_0: the single free parameter of base_utility_mode. Calibrated via
-    # scripts/calibrate_u0.py (bisection on Phase 0's pos_reward_types,
-    # target_pos_frac=0.90) at sigma=0.3: if sigma (or gamma1/gamma2) is
-    # changed, this value no longer hits that 90% target; recalibrate.
-    base_utility_u0: float = 23.926
-    # How U_base(q) scales with priority q in {1,...,5}:
-    #   "linear" -> U_base(q) = u0 * q
-    #   "log"    -> U_base(q) = u0 * (1 + ln(q))
-    base_utility_mode: str = "log"
-    # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
-    # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
-    # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.
-    # base_utility_u0 was calibrated WITH these values (scripts/calibrate_u0.py):
-    # changing gamma1/gamma2 requires recalibrating base_utility_u0.
-    gamma1: float = 0.0332          # $/core-hour reserve price
-    gamma2: float = 0.00445         # $/GB-hour reserve price
-    # lognormal params
-    sigma: float = 0.3              # bid dispersion (log-space std of the markup)
-    # true  -> the bid distribution is KNOWN a priori: markup v / cost_base ~
-    #          LogNormal(-sigma^2/2, sigma) with sigma above; phi_v(v | c) = c * phi_m(v / c).
-    #          Never refit (Phase 0, ReInit, online). Requires grid.space="v".
-    # false -> legacy ablation: pooled lognormal MLE on the bids (refit at every ReInit).
-    known_distribution: bool = True
-    
+    # cost_base_j = (U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j) d_j, v_j ~ lognormal with mean cost_base_j.
+    # U0 ($ per hour per job) = gamma1 cores + gamma2 GB of the median H job by that rate (bid.calibrate_u0, Phase 0).
+    gamma1: float = 0.0332          # $ per vCPU-hour
+    gamma2: float = 0.00445         # $ per GiB-hour
+    sigma: float = 0.3              # log-space std of the markup v / cost_base (the generator)
+    # true (theoretical model): the mechanism's sigma is refit on the markups (H in Phase 0, the previous phase's
+    # arrivals at every ReInit). false (no-learning model): the mechanism keeps sigma above, never refit.
+    refit_sigma: bool = True
 
 
 @dataclass(frozen=True)
 class TimeCfg:
     tick_seconds: float = 1.0           # wall-clock length of one step (real-tick time model)
-    # Durations longer than d_max are cut (not removed); the one capped duration is used for the time in the
-    # cluster, the bids and the energy. d_max = min(d_max_hours, d_max_horizon_fraction * T); None -> the ceiling.
-    d_max_hours: Optional[float] = None
-    d_max_horizon_fraction: float = 0.05
-    d_max_ratio_abort: float = 0.10
-    # Minimum job duration for allocation purposes. Jobs shorter than this
-    # are treated as lasting this long, matching cloud billing minimums
-    # (GCP/AWS bill 1 min minimum) and preventing near-zero resource
-    # volumes from inflating gamma.
-    duration_floor_hours: float = 0.016667    # ~1 minute (the YAML value in use, not exactly 1/60)
+    # Effective durations are cut at d_cap_hours (jobs kept, only shortened) and floored at duration_floor_hours.
+    # The one capped duration is used for the time in the cluster, the bids and the energy. d_max = d_cap_hours.
+    d_cap_hours: float = 24.0
+    duration_floor_hours: float = 0.016667    # 1 minute (cloud billing minimum)
+    d_max_ratio_abort: float = 0.10           # abort if d_max / T exceeds this (the theory needs d_max << T)
 
 
 @dataclass(frozen=True)
@@ -121,55 +92,32 @@ class HardwareCfg:
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
     fit_on: str = "full"            # "full" | "H"
-    # Minimum value for any hardware profile component (CPU or RAM).
-    # Centroids from k-means clustering can occasionally collapse a
-    # component near zero on heavy-tailed resource-request distributions;
-    # such degenerate profiles produce near-zero expected resource volume
-    # v_ij, which inflates gamma's r_max/v_min term by orders of magnitude
-    # when used in the system-constant calculation. This is NOT a filter
-    # on which types are served -- only on which types contribute to
-    # gamma's v_min term.
+    # Minimum hardware-profile component that may enter gamma's v_min term (degenerate k-means centroids are
+    # left out of that term only; it is NOT a filter on which types are served).
     hw_floor: float = 1.0e-5
 
 
 @dataclass(frozen=True)
 class LimitsCfg:
-    # Jobs with a CPU or RAM request larger than r_max_machines are removed (None = no limit).
-    r_max_machines: Optional[float] = 0.1
-    xi_warn_threshold: float = 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this
-    # Duration cap (None = off): d_j = min(effective duration, d_cap_hours); jobs are kept, only shortened. When set,
-    # d_max = d_cap_hours (the time.d_max_hours / horizon-ceiling rule is not used; the abort check still applies).
-    d_cap_hours: Optional[float] = None
-    # Job quota (None = off): a job with a CPU request > job_quota_machines OR a RAM request > job_quota_mem
-    # (machines) is rejected before the market: it never enters Phase 0 or the online run.
-    job_quota_machines: Optional[float] = None
-    job_quota_mem: Optional[float] = None
-    # "fixed": the two values above. "share_of_C": Q_i = quota_share * C_i, C = capacity.f * D_bar on H after the
-    # quota, found by a fixed point that starts from Q = the 99th percentile of H's requests and stops when Q moves
-    # by < 1% on both resources (needs capacity.mode mean_demand and d_cap_hours).
-    job_quota_rule: str = "fixed"
+    # Job quota: a job with a CPU request > Q_cpu or a RAM request > Q_ram is rejected before the market. Q_i =
+    # quota_share x C_i of the cluster actually used (capacity.f), by a fixed point on H that starts from the 99th
+    # percentile of H's requests and stops when Q moves by < quota_tol on both resources.
     quota_share: float = 0.2
-    # share_of_C only: compute the fixed point at this f instead of capacity.f (None = capacity.f). C = capacity.f x
-    # D_bar still uses the config's own f, so a scan over capacity.f keeps the same jobs.
-    quota_from_f: Optional[float] = None
-
-
-@dataclass(frozen=True)
-class AbsoluteCapCfg:
-    cpu: Optional[float] = None
-    ram: Optional[float] = None
+    quota_tol: float = 0.01
+    xi_warn_threshold: float = 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this
 
 
 @dataclass(frozen=True)
 class CapacityCfg:
-    mode: str = "exceeded_share"   # "exceeded_share" | "mean_demand" | "absolute"
-    # exceeded_share: c_i = the demand level of resource i exceeded this share of the time when every job is
-    # admitted (time-weighted, on the same A and duration_steps the model uses).
-    exceeded_share: float = 0.25
-    absolute: AbsoluteCapCfg = field(default_factory=AbsoluteCapCfg)   # mode "absolute": c in machines
-    # mean_demand: C_i = f * D_bar_i, D_bar_i = lambda_hat * mean_j(r_ij d_j) = sum_{j in H} r_ij d_j / |H|
-    # (machines; on H only, after the limits, with the capped durations; |H| = H's span in hours)
-    f: Optional[float] = None
+    # C_i = f * D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H| (machines; H only, after the quota, capped durations).
+    # ONE cluster for every model.
+    f: float = 0.5
+    # Job-level enlargement (off by default): if a job-level model rejects more than job_level_reject_max of the
+    # positive-reward jobs for lack of space (benchmarks.job_level_space_check), C is multiplied by
+    # job_level_enlarge_step until it does not. The quota and the jobs stay those of f.
+    job_level_enlarge: bool = False
+    job_level_reject_max: float = 0.5
+    job_level_enlarge_step: float = 1.25
 
 
 @dataclass(frozen=True)
@@ -181,20 +129,10 @@ class ObjectiveCfg:
 
 @dataclass(frozen=True)
 class GridCfg:
+    # Geometric grid on bids: L_k = v_min rho^k, rho = (v_max / v_min)^(1 / k_star), v_min / v_max = the smallest /
+    # largest bid. Types = (bid bin, priority, hardware profile).
     k_star: int = 128
-    phi_floor: float = 1.0e-6
     priority_classes: tuple = (1, 2, 3, 4, 5)
-    # WHICH SPACE the valuation grid is built in:
-    #   "v"          -> grid over bids directly. Always positive, so EVERY job
-    #                   receives a type; rejection is left to the oracle, which
-    #                   uses the full multi-objective reward. RECOMMENDED.
-    #   "phi"        -> grid over Myerson virtual values (legacy). Cannot span
-    #                   phi<=0, so jobs with negative virtual value are dropped
-    #                   upstream of the optimisation.
-    #   "phi_shifted"-> grid over (phi - min(phi) + eps): keeps phi ordering but
-    #                   makes all values positive, so nothing is dropped.
-    space: str = "v"
-    # bin edges are always geometric (multiplicative) in that space
 
 
 @dataclass(frozen=True)
@@ -204,26 +142,10 @@ class ConfidenceCfg:
 
 
 @dataclass(frozen=True)
-class ModelCfg:
-    kind: str = "theory"          # only "theory" (the practical model is not implemented)
-
-
-@dataclass(frozen=True)
-class ScalarizationCfg:
-    # "linear" (default) -> weighted sum; the reward keeps an absolute sign, which
-    #                       is what the online LP-RS admission oracle expects.
-    # "chebyshev"        -> augmented Chebyshev distance-to-ideal. Still available,
-    #                       but it produces reward <= 0 by construction, so as a
-    #                       direct LP-RS reward it makes the oracle admit nothing.
-    #                       Intended for offline Pareto-front enumeration in the
-    #                       analysis notebooks, NOT for the online loop.
-    method: str = "linear"
-    rho: float = 1.0e-3
-
-
-@dataclass(frozen=True)
 class OracleCfg:
-    kind: str = "frozen"          # only "frozen" (phase-averaged costs, preserves Lemma 1)
+    # "frozen" (theoretical model): r~ and tau of the phase (Lemma 1). "live" (practical model): the type's value
+    # terms with the job's own electricity cost and carbon at arrival.
+    kind: str = "frozen"
 
 
 @dataclass(frozen=True)
@@ -233,7 +155,7 @@ class LpCfg:
 
 @dataclass(frozen=True)
 class Test3Cfg:
-    s_grid: str = "geometric"     # "geometric" | "full"
+    s_grid: str = "geometric"     # the exact event-driven monitor supports only the geometric grid
     geometric_base: int = 2
 
 
@@ -245,28 +167,21 @@ class PhaseTransitionCfg:
 
 @dataclass(frozen=True)
 class ConstantsCfg:
-    # System constants of Zhang & Cheung (2025, Appendix A). null -> the
-    # data-derived value from Phase 0. The defaults are FORCED, NOT
-    # DATA-JUSTIFIED: the data-derived gamma/xi make every threshold vacuous
-    # and p_U ~ 0 (week-28 notes); the forced values are an open decision. When xi is forced,
-    # Test 1 uses the implied a_max,i = xi * c_i so that xi = max_i a_max,i/c_i
-    # still holds; the physical gate always uses the true A of each job.
+    # System constants of Zhang & Cheung (2025, Appendix A). null -> the data-derived value from Phase 0. The
+    # defaults are FORCED, NOT DATA-JUSTIFIED (the data gamma / xi make every threshold vacuous). When xi is forced,
+    # Test 1 uses a_max,i = xi * c_i; the physical gate always uses the true A of each job.
     xi_override: Optional[float] = 0.001
     gamma_override: Optional[float] = 1.0
-    # r_max entering the data-derived gamma: p-weighted quantile of |r~| over
-    # populated types. 1.0 = max (original definition).
+    # r_max = the p-weighted quantile of |r~| over H's types. It enters the data gamma, and it is the reward unit of
+    # Tests 2 and 3 (rewards / r_max, so that they are in the units of the thresholds, where gamma bounds r).
     r_max_quantile: float = 0.8
 
 
 @dataclass(frozen=True)
 class TestsCfg:
-    # Exact-LP variant (week 17): shadow prices come from the exact LP-RS, not
-    # from the stochastic dual-learning Algorithm 2, so the dual-learning error
-    # terms eps_E^(m) (A.8) and eps_F^(m) (A.9) are set to 0 in p_U and Test 2.
-    # All other Appendix-A terms are kept (paper-faithful).
+    # Exact LP-RS in place of the dual-learning Algorithm 2: eps_E (A.8) and eps_F (A.9) are 0.
     drop_dual_learning_terms: bool = True
-    # relative tolerance of the Eisner-Severance parametric-LP reconstruction
-    piecewise_tol: float = 1e-7
+    piecewise_tol: float = 1e-7   # relative tolerance of the parametric-LP reconstruction
 
 
 @dataclass(frozen=True)
@@ -277,29 +192,8 @@ class OnlineCfg:
 
 @dataclass(frozen=True)
 class AblationCfg:
-    """
-    Ablations of the theory model (week 30, round 1). Every default is OFF: with all of them off the model is the
-    theory run, bit-identical. They change only the quantity named here.
-      thinning_off           A1a: p_U(t) = 1 (no Bernoulli thinning); the oracle and the physical gate stay.
-      thinning_delta_power   A1b: eps_D INSIDE p_U is computed with delta = 1/T^k (None = the run's delta);
-                             the tests keep the run's delta (confidence.*).
-      thinning_eps_D_zero    A1c: eps_D = 0 INSIDE p_U only (cap (1 - xi)); Test 2 keeps 1 - eps_D - xi.
-      fixed_grid             A3: ReInit never refits the valuation grid; every phase keeps the previous phase's
-                             grid, i.e. Phase 0's (the per-type statistics are still re-estimated).
-    """
+    # thinning_off (practical model): p_U(t) = 1; the oracle and the physical gate stay.
     thinning_off: bool = False
-    thinning_delta_power: Optional[int] = None
-    thinning_eps_D_zero: bool = False
-    fixed_grid: bool = False
-
-
-@dataclass(frozen=True)
-class PolicyCfg:
-    # Static policies of dlent_rt.theory_eval (week 32). Arrivals of a type with no job in H:
-    #   "reject"    -> never admitted (x = 0)
-    #   "dual_rule" -> admitted iff r~_u - tau . v_u > 0 (Phase 0 tau), r~_u and v_u from fallback estimates
-    #                  (theory_eval.unseen_type_estimates); then the capacity gate
-    unseen_types: str = "reject"
 
 
 @dataclass(frozen=True)
@@ -307,7 +201,10 @@ class LoggingCfg:
     per_step: bool = True
     per_phase: bool = True
     short_phase_log: bool = True
-
+    # progress lines on stdout during an online run: one every progress_every of the arrivals (0 = off) and one at
+    # every phase end, each with the elapsed time and an estimate of the time left
+    progress_every: float = 0.10
+    progress_phases: bool = True
 
 
 # Top-level config
@@ -325,8 +222,6 @@ class Config:
     objective: ObjectiveCfg = field(default_factory=ObjectiveCfg)
     grid: GridCfg = field(default_factory=GridCfg)
     confidence: ConfidenceCfg = field(default_factory=ConfidenceCfg)
-    model: ModelCfg = field(default_factory=ModelCfg)
-    scalarization: ScalarizationCfg = field(default_factory=ScalarizationCfg)
     oracle: OracleCfg = field(default_factory=OracleCfg)
     lp: LpCfg = field(default_factory=LpCfg)
     test3: Test3Cfg = field(default_factory=Test3Cfg)
@@ -336,59 +231,31 @@ class Config:
     tests: TestsCfg = field(default_factory=TestsCfg)
     online: OnlineCfg = field(default_factory=OnlineCfg)
     ablation: AblationCfg = field(default_factory=AblationCfg)
-    policy: PolicyCfg = field(default_factory=PolicyCfg)
 
-    #  validation 
+    #  validation
     def validate(self) -> "Config":
         assert self.time.tick_seconds > 0
-        assert self.model.kind == "theory", "model.kind: only 'theory' is implemented"
-        assert self.scalarization.method in ("chebyshev", "linear")
-        assert self.oracle.kind == "frozen", "oracle.kind: only 'frozen' is implemented"
-        assert self.capacity.mode in ("exceeded_share", "mean_demand", "absolute")
-        if self.capacity.mode == "mean_demand":
-            assert self.capacity.f is not None and self.capacity.f > 0
-        for x in (self.limits.d_cap_hours, self.limits.job_quota_machines, self.limits.job_quota_mem, self.data.h_days):
-            assert x is None or x > 0
-        assert self.limits.job_quota_rule in ("fixed", "share_of_C")
-        if self.limits.job_quota_rule == "share_of_C":
-            assert self.capacity.mode == "mean_demand" and self.limits.d_cap_hours is not None
-            assert 0 < self.limits.quota_share <= 1
-            assert self.limits.quota_from_f is None or self.limits.quota_from_f > 0
-        assert 0.0 <= self.capacity.exceeded_share < 1.0
-        assert self.time.d_max_hours is None or self.time.d_max_hours > 0
-        assert self.limits.r_max_machines is None or self.limits.r_max_machines > 0
-        ab = self.ablation
-        assert ab.thinning_delta_power is None or int(ab.thinning_delta_power) >= 1
-        assert not (ab.thinning_eps_D_zero and ab.thinning_delta_power is not None), \
-            "ablation: thinning_eps_D_zero and thinning_delta_power both set the thinning eps_D"
+        assert self.time.d_cap_hours > 0 and self.time.duration_floor_hours > 0
+        assert self.data.h_days > 0
+        assert self.oracle.kind in ("frozen", "live")
+        assert self.capacity.f > 0
+        assert 0 < self.capacity.job_level_reject_max < 1 and self.capacity.job_level_enlarge_step > 1
+        assert 0 < self.limits.quota_share <= 1 and 0 < self.limits.quota_tol < 1
         assert self.grid.k_star >= 2
-        assert 0.0 < self.time.d_max_horizon_fraction <= 1.0
         assert self.hardware.fit_on in ("full", "H")
         assert self.hardware.n_profiles >= 1
-        assert self.grid.space in ("v", "phi", "phi_shifted")
-        if self.bid.known_distribution:
-            assert self.grid.space == "v", \
-                "bid.known_distribution=true requires grid.space='v' (phi depends on c_j)"
-            assert self.bid.sigma > 0
-        assert self.bid.base_utility_mode in ("linear", "log")
-        assert self.bid.mode in ("base_utility", "size", "size_u0")
-        assert self.bid.u0_per_machine_hour >= 0
-        assert self.policy.unseen_types in ("reject", "dual_rule")
+        assert self.bid.sigma > 0
         assert 0.0 < self.normalization.quantile < 1.0
         assert self.energy_model.machine_cores > 0
         assert self.energy_model.machine_ram_gb > 0
-        assert self.test3.s_grid in ("geometric", "full")
+        assert self.test3.s_grid == "geometric"
         assert self.test3.geometric_base >= 2
         if self.constants.xi_override is not None:
             assert 0.0 < self.constants.xi_override < 1.0
         if self.constants.gamma_override is not None:
             assert self.constants.gamma_override > 0.0
         assert 0.0 < self.constants.r_max_quantile <= 1.0
-        if self.capacity.mode == "absolute":
-            assert self.capacity.absolute.cpu is not None
-            assert self.capacity.absolute.ram is not None
         return self
-
 
 
 # Recursive dict -> dataclass with strict unknown-key checking
@@ -432,14 +299,13 @@ def _resolve_dataclass_type(ftype: Any) -> Optional[type]:
 _DATACLASS_REGISTRY = {
     "RunCfg": RunCfg, "ColumnsCfg": ColumnsCfg, "DataCfg": DataCfg,
     "TimeCfg": TimeCfg, "HardwareCfg": HardwareCfg, "LimitsCfg": LimitsCfg,
-    "AbsoluteCapCfg": AbsoluteCapCfg, "CapacityCfg": CapacityCfg,
-    "ObjectiveCfg": ObjectiveCfg, "GridCfg": GridCfg, "ConfidenceCfg": ConfidenceCfg,
-    "ModelCfg": ModelCfg, "ScalarizationCfg": ScalarizationCfg, "OracleCfg": OracleCfg,
+    "CapacityCfg": CapacityCfg, "ObjectiveCfg": ObjectiveCfg, "GridCfg": GridCfg,
+    "ConfidenceCfg": ConfidenceCfg, "OracleCfg": OracleCfg,
     "LpCfg": LpCfg, "Test3Cfg": Test3Cfg, "PhaseTransitionCfg": PhaseTransitionCfg,
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
     "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
-    "AblationCfg": AblationCfg, "PolicyCfg": PolicyCfg,
+    "AblationCfg": AblationCfg,
 }
 
 

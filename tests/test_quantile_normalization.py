@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import run_phase0, type_arrays
+from dlent_rt.phase0 import run_phase0
 from dlent_rt.reward import type_reward, carbon_price, weighted_quantile
 from dlent_rt.models.core.reinit import build_window_state
 from dlent_rt.models.core.stream import build_stream
@@ -30,21 +30,20 @@ def setup():
 
 
 def _raw(st):
-    _, prio, _ = type_arrays(st.type_space, st.grid)
-    return prio * st.v_bar, st.phi_bar - st.C_elec_bar, st.C_carbon_bar, prio
+    return st.v_bar, st.phi_bar - st.C_elec_bar, st.C_carbon_bar
 
 
 # (a) s_C * K_q == D_q, and the Phase-0 state carries s_C
 def test_scale_maps_Kq_onto_Dq(setup):
     cfg, ds, st = setup
     info = st.norm_info
-    assert info["strategy"] == "quantile_linear" and info["q"] == cfg.normalization.quantile
+    assert info["q"] == cfg.normalization.quantile
     assert info["s_C"] > 0
     assert np.isclose(info["s_C"] * info["K_q"], info["D_q"], rtol=1e-12)
     assert np.isclose(info["D_q"], 0.5 * (info["Q_cv"] + info["Q_abs_pi"]), rtol=1e-12)
     assert st.carbon_price == info["s_C"]
     # reward in dollars, no divisor
-    cv, prof, carb, _ = _raw(st)
+    cv, prof, carb = _raw(st)
     lam = cfg.objective
     exp = lam.lambda1 * cv + lam.lambda2 * prof - lam.lambda3 * info["s_C"] * carb
     np.testing.assert_allclose(st.r_tilde, exp, rtol=1e-12, atol=1e-15)
@@ -53,12 +52,12 @@ def test_scale_maps_Kq_onto_Dq(setup):
 # (b) changing q changes only s_C (raw objectives and the non-carbon part are unchanged)
 def test_q_changes_only_carbon_price(setup):
     cfg, ds, st = setup
-    cv, prof, carb, prio = _raw(st)
+    cv, prof, carb = _raw(st)
     out = {}
     for q in (0.5, 0.75, 0.9, 0.99):
         cfg_q = _with(cfg, quantile=q)
         r, r_nocarbon, info = type_reward(
-            prio, st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, cfg_q)
+            st.v_bar, st.phi_bar, st.C_elec_bar, st.C_carbon_bar, st.p, cfg_q)
         out[q] = (r, r_nocarbon, info)
         lam = cfg.objective
         np.testing.assert_allclose(r_nocarbon, lam.lambda1 * cv + lam.lambda2 * prof, rtol=1e-12)
@@ -85,7 +84,7 @@ def test_reinit_uses_frozen_carbon_price(setup):
         new, _ = build_window_state(S, idx, idx, W, st, ds, cfg)
     assert new.carbon_price == st.carbon_price
     assert new.norm_info == st.norm_info
-    cv, prof, carb, _ = _raw(new)
+    cv, prof, carb = _raw(new)
     lam = cfg.objective
     np.testing.assert_allclose(
         new.r_tilde, lam.lambda1 * cv + lam.lambda2 * prof - lam.lambda3 * st.carbon_price * carb,
@@ -119,10 +118,9 @@ def testweighted_quantile_toy():
 # (f) m(0) = 0: a type with K = 0 has no carbon term
 def test_zero_carbon_has_no_carbon_term(setup):
     cfg, ds, st = setup
-    _, _, _, prio = _raw(st)
     C0 = st.C_carbon_bar.copy()
     j = int(np.flatnonzero(st.p > 0)[0])
     C0[j] = 0.0
     r, r_nocarbon, _ = type_reward(
-        prio, st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, cfg, s_C=st.carbon_price)
+        st.v_bar, st.phi_bar, st.C_elec_bar, C0, st.p, cfg, s_C=st.carbon_price)
     assert r[j] == r_nocarbon[j]

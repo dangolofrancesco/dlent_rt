@@ -1,5 +1,5 @@
 """
-Trace preprocessing: hardware profiles (they build the type id only) and the size limit R_max.
+Trace preprocessing: hardware profiles (they build the type id only) and the job quota.
 """
 from __future__ import annotations
 
@@ -78,36 +78,22 @@ def fit_hardware_catalogue(A_fit: np.ndarray, cfg: Config) -> HardwareCatalogue:
 
 
 # --------------------------------------------------------------------------- #
-# Size limit R_max
+# Job quota
 # --------------------------------------------------------------------------- #
 @dataclass
 class LimitReport:
-    """What the size limit R_max and the job quota did, for logging and diagnostics."""
-    r_max_machines: Optional[float]     # None = no limit
-    n_removed: int                      # removed by R_max
+    """What the job quota did, for logging and diagnostics."""
     n_before: int
     n_after: int
-    n_quota_rejected: int = 0           # rejected by the job quota (after R_max)
-    quota: Optional[tuple] = None       # (job_quota_machines, job_quota_mem)
-    quota_iterations: Optional[list] = None   # limits.job_quota_rule share_of_C: one dict per fixed-point step
+    n_quota_rejected: int = 0           # rejected by the job quota
+    quota: Optional[tuple] = None       # (Q_cpu, Q_ram), machines
+    quota_iterations: Optional[list] = None   # one dict per fixed-point step
 
 
-def apply_r_max(df: pd.DataFrame, cfg: Config, a_cols: list[str],
-                quota_values: Optional[tuple] = None) -> tuple[pd.DataFrame, LimitReport]:
-    """Remove the jobs with any request (CPU or RAM, machines) larger than limits.r_max_machines, then reject the
-    jobs over the job quota (CPU > Q_cpu or RAM > Q_mem); quota_values overrides limits.job_quota_*."""
-    lim = cfg.limits
-    q_cpu, q_mem = quota_values if quota_values is not None else (lim.job_quota_machines, lim.job_quota_mem)
+def apply_quota(df: pd.DataFrame, a_cols: list[str], quota: tuple) -> tuple[pd.DataFrame, LimitReport]:
+    """Reject the jobs over the job quota (CPU > Q_cpu or RAM > Q_ram)."""
     A = df[a_cols].to_numpy(dtype=float)
-    over = np.zeros(len(df), bool) if lim.r_max_machines is None else (A > lim.r_max_machines).any(axis=1)
-    quota = np.zeros(len(df), bool)
-    if q_cpu is not None:
-        quota |= A[:, 0] > q_cpu
-    if q_mem is not None:
-        quota |= A[:, 1] > q_mem
-    quota &= ~over
-    keep = ~(over | quota)
-    report = LimitReport(r_max_machines=lim.r_max_machines, n_removed=int(over.sum()), n_before=len(df),
-                         n_after=int(keep.sum()), n_quota_rejected=int(quota.sum()),
-                         quota=(q_cpu, q_mem))
-    return df.loc[keep].reset_index(drop=True), report
+    over = (A[:, 0] > quota[0]) | (A[:, 1] > quota[1])
+    report = LimitReport(n_before=len(df), n_after=int((~over).sum()), n_quota_rejected=int(over.sum()),
+                         quota=(float(quota[0]), float(quota[1])))
+    return df.loc[~over].reset_index(drop=True), report

@@ -19,6 +19,11 @@ Between two arrivals the window counts are constant, so for every tick:
     "LHS(first u) <= RHS(last u)" certifies the whole gap (1 LP per s); only
     if that screen fails we reconstruct the gap exactly, tick by tick.
 Windows (s+1 : u-1) that contain no arrival have lam_hat = 0 and cannot fail.
+
+Units (D5): the thresholds of Tests 2 and 3 (error_params, Appendix A) are written for rewards bounded by gamma.
+gamma is forced to 1, so the monitor works with rewards in units of r_unit = Phase 0's r_max (the p-weighted
+quantile of |r~|, constants.r_max_quantile): r~ / r_unit in the window LPs and R / r_unit in Test 2's sum. Test 1
+compares occupancies with capacities (both in machines).
 """
 from __future__ import annotations
 
@@ -50,18 +55,19 @@ def geometric_offsets(base: int, max_off: int) -> np.ndarray:
 
 class PhaseMonitor:
     def __init__(self, ep: ErrorParams, r_tilde, v, capacity, a_max_eff,
-                 tau_prev: int, W_prev: int, d_max: int, cfg):
+                 tau_prev: int, W_prev: int, d_max: int, cfg, r_unit: float = 1.0):
         if cfg.test3.s_grid != "geometric":
             raise NotImplementedError(
                 "test3.s_grid='full' needs O(n) LPs per tick; the exact event-driven "
                 "monitor supports the geometric grid only.")
         self.ep = ep
+        self.r_unit = float(r_unit)
         self.c = np.asarray(capacity, float)
         self.a_max_eff = np.asarray(a_max_eff, float)
         self.tau_prev, self.W_prev = int(tau_prev), int(W_prev)
         self.tau_bar = self.tau_prev + int(d_max)
         self.base = cfg.test3.geometric_base
-        self.wlp = WindowLP(r_tilde, v, capacity, tol=cfg.tests.piecewise_tol)
+        self.wlp = WindowLP(np.asarray(r_tilde, float) / self.r_unit, v, capacity, tol=cfg.tests.piecewise_tol)
         self.fac = 1.0 - ep.eps_D - ep.xi
         self.arr_ticks: list[int] = []
         self.arr_types: list[int] = []
@@ -78,7 +84,7 @@ class PhaseMonitor:
         assert t == self.last + 1, "scan() must commit all ticks before the arrival"
         self.arr_ticks.append(int(t))
         self.arr_types.append(int(type_id))
-        self.R[int(t)] = float(R)
+        self.R[int(t)] = float(R) / self.r_unit
         if admitted and t >= self.tau_bar + 1:
             self.t1.add(job, A, t, D)
 

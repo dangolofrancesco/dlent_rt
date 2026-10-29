@@ -1,14 +1,18 @@
-# DLENT-RT default configuration
+# DLENT-RT, the final model (week 33, decisions D1-D6; reports/week33/model_check.md).
+# The ONE configuration. The model variants are switches inside it:
+#   theoretical model  oracle.kind frozen, ablation.thinning_off false, bid.refit_sigma true   (as written here)
+#   practical model    oracle.kind live,   ablation.thinning_off true
+#   no-learning model  the Phase 0 state forever (models.policy.NoLearningPolicy); sigma = bid.sigma, never refit
 run:
   name: "default"
   seed: 42                    # single seed controls every stochastic element
   output_dir: "runs"          # where per-step logs and summaries are written
 
-# Data ingestion (week 32: scripts/data/fetch_v2.py -> scripts/data/build_v2.py)
+# Data (scripts/data/fetch_v2.py -> scripts/data/build_v2.py; the grid file is filled by scripts/data/fill_grid.py)
 data:
-  batch_csv: "data/batch_v2_30k.csv"          # relative paths: to the repository root
-  grid_csv: "data/grid_data_may_2019.csv"     # hourly price / carbon, UTC
-  n0: 10000
+  batch_csv: "data/batch_v2_300k.csv"              # relative paths: to the repository root
+  grid_csv: "data/grid_data_may_2019_filled.csv"   # hourly price / carbon, UTC
+  h_days: 7.0                                      # D3: H = the jobs that arrive in the first 7 days
   columns:
     collection_id: "collection_id"
     datetime: "arrival_utc"                   # UTC with its time zone (the grid's time base)
@@ -19,158 +23,110 @@ data:
     duration_hours: "duration"                # job span; used only where the CPU request is 0
     cpu_hours_real: "CPU_hours_real"          # effective duration = CPU_hours_real / CPU request
 
-# Time model. One duration per job (the effective duration, floored at 1 minute, cut at d_max), used for the time
-# in the cluster, the bids and the energy.
+# D3: one duration per job = the effective duration, floored at 1 minute, cut at 24 h (jobs kept). No outlier
+# filters. Used for the time in the cluster, the bids and the energy. d_max = 24 h.
 time:
-  tick_seconds: 1.0           # wall-clock seconds per step (real-tick time model, the only one)
-  d_max_hours: null           # provisional, week 32: null -> d_max = d_max_horizon_fraction * T (0.05 T)
-  d_max_horizon_fraction: 0.05  # HARD ceiling: d_max <= this * T (theory needs d_max << T)
-  d_max_ratio_abort: 0.10     # abort with diagnostic if final d_max/T still exceeds this
-  duration_floor_hours: 0.016667  # 1 minute = 1/60 hour
+  tick_seconds: 1.0
+  d_cap_hours: 24.0
+  duration_floor_hours: 0.016667  # 1 minute
+  d_max_ratio_abort: 0.10         # abort if d_max / T exceeds this (the theory needs d_max << T)
 
-
-# Hardware profiles: they build ONLY the type id. Every request stays the real request; the type volume uses the
-# mean real request of the type's jobs.
+# Hardware profiles: they build ONLY the type id. Every request stays the real request.
 hardware:
   n_profiles: 32
-  log_space: true             # k-means++ in log-space (requests span orders of magnitude)
-  fit_on: "full"              # "full" (H+stream) | "H"
-  hw_floor: 1.0e-5            # min hardware profile component; excludes degenerate
-                              # k-means centroids from gamma's v_min term only
+  log_space: true             # k-means++ in log space
+  fit_on: "full"              # "full" (H + stream) | "H"
+  hw_floor: 1.0e-5            # only for gamma's v_min term
 
-
-# Size limit
+# D3: job quota Q_i = 0.2 x C_i of the cluster actually used (fixed point on H until Q moves by < 1%)
 limits:
-  r_max_machines: 0.1         # provisional, week 32: jobs with a CPU or RAM request > 0.1 machine are removed
-  xi_warn_threshold: 0.10     # warn if the data xi = max_i a_max,i / c_i exceeds this (~ 1/log T)
+  quota_share: 0.2
+  quota_tol: 0.01
+  xi_warn_threshold: 0.10
 
-# Cluster capacity, sized on H + stream combined, on one shared timeline (data._size_capacity)
+# D3: C_i = f x D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H|. ONE cluster for every model.
 capacity:
-  mode: "exceeded_share"      # "exceeded_share" | "absolute"
-  exceeded_share: 0.25        # provisional, week 32: c_i = the demand level exceeded 25% of the time
-  absolute:                   # used only when mode == "absolute" (machines)
-    cpu: null
-    ram: null
+  # f rule (week 33, made explicit after the notebook preview), over f in {0.3, 0.35, 0.4, 0.45, 0.5}:
+  #   (a) REQUIRED: tau > 0 (CPU or RAM) in both the Phase 0 LP and fluid OPT;
+  #   (b) among those, the static Phase 0 policy's "% time >= 95% full" closest to the 20-30% band.
+  # Every f of the scan passes (a); 0.5 is the closest to the band (44.6%; none is inside). See
+  # notebooks/01_model_check.ipynb, section 6, and reports/week33/model_check.md.
+  f: 0.5
+  job_level_enlarge: false    # off: enlarge C only if job-level models reject > 50% of positive-reward jobs for space
+  job_level_reject_max: 0.5
+  job_level_enlarge_step: 1.25
 
 energy_model:
   # DECLARED ASSUMPTION (not from Google): the largest machine of the trace (1.0) has 64 cores and 256 GB.
-  # Used only for bids and energy; requests and capacity stay in machines.
   machine_cores: 64
   machine_ram_gb: 256
   p_core: 15.0                # watts per physical core (Fan et al. 2007)
   p_gb: 0.35                  # watts per GB RAM
   pue: 1.10                   # power usage effectiveness
 
+# D2: cost_base = (U0 (1 + ln q) + gamma1 cores + gamma2 GB) d, v ~ lognormal with mean cost_base.
+# U0 = gamma1 cores + gamma2 GB of the median H job (by that rate), computed in Phase 0, then fixed.
 bid:
-  # bid model (the only one): ln v = ln cost_base - sigma^2/2 + sigma Z, Z ~ N(0, 1)
-  # Reserve prices ($/core-hour, $/GB-hour) in cost_base. CALIBRATED values, not
-  # list prices: they are ~3.3x the 2024 GCP Preemptible n1-standard prices
-  # (~$0.00996/core-hour, ~$0.00135/GB-hour), i.e. the same order of magnitude.
-  # base_utility_u0 was calibrated WITH these values (scripts/calibrate_u0.py):
-  # changing gamma1/gamma2 requires recalibrating base_utility_u0.
-  gamma1: 0.0332                # $/core-hour reserve price
-  gamma2: 0.00445               # $/GB-hour reserve price
-  sigma: 0.3                  # log-space std of the markup v / cost_base (generator and known distribution)
-  # Bid distribution KNOWN a priori (never refit): markup v / cost_base ~
-  # LogNormal(-sigma^2/2, sigma), phi_v(v | c) = c * phi_m(v / c), the same phi in
-  # Phase 0, ReInit and the online reward. false = legacy pooled-MLE ablation.
-  known_distribution: true
-  # Base utility rate ($/hour): minimum hourly value a user derives from job
-  # completion, independent of resource footprint. Multiplied by duration.
-  # Ref: reinterpretation suggested by advisor — demand-side utility rather
-  # than supply-side fee.
-  # U_0: the single free parameter of base_utility_mode. Calibrated via
-  # scripts/calibrate_u0.py (bisection on Phase 0's pos_reward_types,
-  # target_pos_frac=0.90) against sigma=0.3: if sigma is changed, this value
-  # no longer hits that 90% target and should be recalibrated.
-  base_utility_u0: 23.926
-  base_utility_mode: "log"    # "linear" | "log"
+  gamma1: 0.0332              # $ per vCPU-hour
+  gamma2: 0.00445             # $ per GiB-hour
+  sigma: 0.3                  # log-space std of the markup v / cost_base
+  refit_sigma: true           # theoretical model: sigma refit on the markups in Phase 0 and at every ReInit
 
+# D1: s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Pi|)) / 2, K_q = Q_0.9(K), over H's types, frozen at Phase 0
 normalization:
-  # quantile_linear (the only normalization): carbon K [kgCO2] -> s_C * K [$]
-  # (linear, through the origin; CV = customer value q*v), s_C = D_q / K_q with D_q = (Q_q(CV) + Q_q(|Pi|)) / 2,
-  # K_q = Q_q(K), weighted quantiles over populated types. Computed once in Phase 0
-  # and frozen. The reward stays in dollars (no divisor).
   quantile: 0.90
 
-# Mechanism / objective weights
+# D1: R = lambda1 V + lambda2 Pi - lambda3 s_C K, linear, all lambda = 1
 objective:
   lambda1: 1.0
   lambda2: 1.0
   lambda3: 1.0
 
-# Discretization grid
+# D4: geometric grid on bids, 128 bins between the smallest and the largest bid
 grid:
-  k_star: 128                  # fixed number of geometric bins (constant across phases)
-  phi_floor: 1.0e-6           # clip Phi_min to avoid geometric-ratio blowup
+  k_star: 128
   priority_classes: [1, 2, 3, 4, 5]
 
-# Confidence / error parameters
 confidence:
-  delta: null                 # if null, set to 1/T^3 at runtime (T = online horizon)
-  delta_power: 3              # delta = 1 / T^delta_power when delta is null
+  delta: null                 # null -> 1 / T^3
+  delta_power: 3
 
-# Online model: only "theory" is implemented (paper-faithful: true D at admission,
-# single counter, vanilla Bernoulli thinning). The practical ablations (delayed D,
-# admission buffer, revision, phantoms) will add their keys when they are built.
-model:
-  kind: "theory"
-
-scalarization:
-  # "linear"    -> weighted sum (default). Reward keeps an absolute sign, which is
-  #               what the online LP-RS admission oracle expects.
-  # "chebyshev" -> augmented Chebyshev distance-to-ideal. Reaches non-convex Pareto
-  #               regions, but produces reward <= 0 by construction: used directly
-  #               as the LP-RS reward it makes the oracle admit nothing. Intended
-  #               for offline Pareto-front enumeration in the analysis notebooks,
-  #               NOT for the online loop.
-  method: "linear"
-  rho: 1.0e-3                 # augmentation term for augmented Chebyshev
-
+# D5: frozen (theoretical) | live (practical: the job's own costs at arrival)
 oracle:
-  kind: "frozen"              # only "frozen": phase-averaged grid costs (preserves Lemma 1)
+  kind: "frozen"
 
-# LP solver (HiGHS via highspy)
 lp:
   presolve: true
 
-# Test 3 cost control
 test3:
-  s_grid: "geometric"         # "geometric" | "full"
-  geometric_base: 2           # s-checkpoints at tau_{m-1} + {0,1,2,4,8,...}
+  s_grid: "geometric"
+  geometric_base: 2           # s-checkpoints at tau_{m-1} + {0, 1, 2, 4, 8, ...}
 
-# Phase-transition fallback (thin types)
 phase_transition:
   n_type_min: 5               # min observations for a type's stats to be trusted
   n_min: 80                   # min phase-arrival count to refit the grid (else reuse)
-                              # (recommended: max(30, 5 * k_star))
 
-# Logging granularity
 logging:
-  per_step: true              # full per-step parquet log
-  per_phase: true             # per-phase summary
-  short_phase_log: true       # dedicated short-phase / consecutive-short log
+  per_step: true
+  per_phase: true
+  short_phase_log: true
+  progress_every: 0.10        # a progress line every 10% of the arrivals (0 = off)
+  progress_phases: true       # a line at every phase end
 
-# --------------------------------------------------------------------------- #
-# Online loop (week 28)
-# --------------------------------------------------------------------------- #
+# D5: xi and gamma FORCED (not data-justified). Test 1 threshold = (1 - xi) c.
 constants:
-  # System constants of Zhang & Cheung (2025, App. A). null = data-derived (Phase 0).
-  # xi_override and gamma_override are FORCED, NOT DATA-JUSTIFIED: they are set by
-  # hand so that the error parameters are not vacuous (eps_D = 0.50 and
-  # 1 - eps_D - xi > 0 at xi = 0.001). On the data, xi = 0.951 at the week-32 scope
-  # (reports/week32/limits_numbers.md; 0.5 on the week-30 data), so neither value
-  # follows from the data. Their values are a closed decision (week 32).
   xi_override: 0.001
   gamma_override: 1.0
-  # r_max in the data-derived gamma = p-weighted quantile of |r~| over populated
-  # types (1.0 = max). 0.8 keeps the extreme phi(v) tail from dominating gamma.
-  r_max_quantile: 0.8
+  r_max_quantile: 0.8         # r_max = this p-weighted quantile of |r~| over H's types (Tests 2-3 reward unit)
 
 tests:
-  drop_dual_learning_terms: true   # Exact-LP: eps_E = eps_F = 0 (week 17)
-  piecewise_tol: 1.0e-7   # ~ HiGHS default feasibility tolerance
+  drop_dual_learning_terms: true   # exact LP-RS: eps_E = eps_F = 0
+  piecewise_tol: 1.0e-7
 
 online:
   bid_seed_offset: 1
   thinning_seed_offset: 2
+
+# D5: practical model = thinning off (with oracle.kind live)
+ablation:
+  thinning_off: false

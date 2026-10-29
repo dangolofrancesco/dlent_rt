@@ -56,13 +56,14 @@ def run_online(cfg: Config, out_dir: Optional[Path] = None, ds=None, state0=None
         ds = load_dataset(cfg)
     if state0 is None:
         state0 = run_phase0(ds, cfg)
-    if cfg.model.kind == "theory":
-        model = TheoryModel(ds, state0, cfg)
-    else:
-        raise NotImplementedError("practical model: next step")
+    if cfg.capacity.job_level_enlarge:                  # D3 option (off by default)
+        from ..benchmarks import enlarge_for_job_models
+        ds, state0, _ = enlarge_for_job_models(ds, state0, cfg)
+    model = TheoryModel(ds, state0, cfg)
     res = model.run()
+    variant = "practical" if cfg.oracle.kind == "live" else "theory"
     if out_dir is None:
-        out_dir = Path(cfg.run.output_dir) / cfg.run.name / cfg.model.kind
+        out_dir = Path(cfg.run.output_dir) / cfg.run.name / variant
     write_results(res, Path(out_dir), cfg)
     return res
 
