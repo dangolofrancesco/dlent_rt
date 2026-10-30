@@ -64,11 +64,12 @@ class NormalizationCfg:
 
 @dataclass(frozen=True)
 class BidCfg:
-    # cost_base_j = (U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j) d_j, v_j ~ lognormal with mean cost_base_j.
+    # HOURLY bid: cost_base_j = U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j [$/h] (no duration),
+    # b_j ~ lognormal with mean cost_base_j [$/h].
     # U0 ($ per hour per job) = gamma1 cores + gamma2 GB of the median H job by that rate (bid.calibrate_u0, Phase 0).
     gamma1: float = 0.0332          # $ per vCPU-hour
     gamma2: float = 0.00445         # $ per GiB-hour
-    sigma: float = 0.3              # log-space std of the markup v / cost_base (the generator)
+    sigma: float = 0.3              # log-space std of the markup b / cost_base (the generator)
     # true (theoretical model): the mechanism's sigma is refit on the markups (H in Phase 0, the previous phase's
     # arrivals at every ReInit). false (no-learning model): the mechanism keeps sigma above, never refit.
     refit_sigma: bool = True
@@ -87,7 +88,7 @@ class TimeCfg:
 @dataclass(frozen=True)
 class HardwareCfg:
     # Hardware profiles build ONLY the type id (hw_idx). The request A of a job is always its real request, and the
-    # type volume v = A_type * d_bar uses the mean real request of the type's jobs (phase0.type_request).
+    # type volume v = A_type * d_bar uses the column's mean real request and mean duration (phase0.column_means).
     n_profiles: int = 32
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
@@ -129,7 +130,7 @@ class ObjectiveCfg:
 
 @dataclass(frozen=True)
 class GridCfg:
-    # Geometric grid on bids: L_k = v_min rho^k, rho = (v_max / v_min)^(1 / k_star), v_min / v_max = the smallest /
+    # Geometric grid on HOURLY bids: L_k = v_min rho^k, rho = (v_max / v_min)^(1 / k_star), v_min / v_max = the smallest /
     # largest bid. Types = (bid bin, priority, hardware profile).
     k_star: int = 128
     priority_classes: tuple = (1, 2, 3, 4, 5)
@@ -161,7 +162,6 @@ class Test3Cfg:
 
 @dataclass(frozen=True)
 class PhaseTransitionCfg:
-    n_type_min: int = 5
     n_min: int = 80
 
 

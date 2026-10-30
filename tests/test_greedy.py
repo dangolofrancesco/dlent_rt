@@ -63,14 +63,15 @@ def test_g1_frozen_is_not_updated_and_gate_applies():
 
 
 def test_g1_frozen_equals_static_policy_with_zero_tau(tmp_path):
-    """G1 on frozen H types == StaticPolicy of Phase 0 with tau = 0 (same types, same gate)."""
+    """G1 on frozen H types == StaticPolicy of Phase 0 with tau = 0 and r~ = 0 for the types with no job in H (G1
+    rejects them; Phase 0 gives them fallback estimates) (same types, same gate)."""
     cfg = synthetic_config(tmp_path, n0=400, n_jobs=3000, drift=True)
     ds = load_dataset(cfg)
     st = run_phase0(ds, cfg)
     S = build_stream(ds, cfg)
     R = job_reward(S, st, cfg.objective).R
     g1 = run_policy(S, ds.capacity, TypeGreedyPolicy.from_state(st, S, R, ds.H_span_steps, update=False))
-    st0 = replace(st, tau=np.zeros_like(st.tau))
+    st0 = replace(st, tau=np.zeros_like(st.tau), r_tilde=np.where(st.p > 0, st.r_tilde, 0.0))
     sp = run_policy(S, ds.capacity, StaticPolicy(st0, S))
     assert np.array_equal(g1.admit, sp.admit) and np.array_equal(g1.phys_reject, sp.phys_reject)
     # H counts recovered from p reproduce Phase 0's type counts

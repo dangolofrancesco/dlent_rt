@@ -12,7 +12,7 @@ from dlent_rt.bid import calibrate_u0, cost_base
 from dlent_rt.data import load_dataset, mean_demand
 from dlent_rt.energy import EnergyParams, compute_energy_kwh
 from dlent_rt.models.core.stream import build_stream
-from dlent_rt.phase0 import _compute_job_energy, assign_type_ids, run_phase0, type_request
+from dlent_rt.phase0 import _compute_job_energy, column_ids, column_means, run_phase0
 from tests.synthetic import synthetic_config
 
 
@@ -51,8 +51,7 @@ def test_one_request_one_duration(tmp_path):
     assert S.A is ds.stream.A and np.array_equal(S.D, ds.stream.duration_steps)
     assert np.array_equal(S.duration_hours, ds.stream.duration_hours)
     u0 = calibrate_u0(ds.H, cfg)
-    np.testing.assert_allclose(S.cost_base, cost_base(S.A[:, 0], S.A[:, 1], S.duration_hours, ds.stream.priority, u0, cfg),
-                               rtol=1e-12)
+    np.testing.assert_allclose(S.cost_base, cost_base(S.A[:, 0], S.A[:, 1], ds.stream.priority, u0, cfg), rtol=1e-12)
     em = cfg.energy_model
     params = EnergyParams(em.machine_cores, em.machine_ram_gb, em.p_core, em.p_gb, em.pue)
     assert np.array_equal(S.energy_kwh, compute_energy_kwh(S.A[:, 0], S.A[:, 1], ds.stream.scheduling_class,
@@ -115,20 +114,24 @@ def test_effective_duration_used_everywhere(tmp_path):
     assert np.array_equal(build_stream(ds, cfg).duration_hours, ds.stream.duration_hours)
 
 
-def test_type_request_real_mean():
-    prof = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-    tid = np.array([0, 0, 2])
+def test_column_means_real_mean():
+    cid = np.array([0, 0, 2])
     A = np.array([[0.5, 0.1], [1.5, 0.3], [9.0, 6.0]])
-    np.testing.assert_array_equal(type_request(tid, A, prof), [[1.0, 0.2], [2.0, 2.0], [9.0, 6.0]])
+    N, m = column_means(cid, 3, dict(A=A))
+    np.testing.assert_array_equal(N, [2, 0, 1])
+    np.testing.assert_array_equal(m["A"], [[1.0, 0.2], [0.0, 0.0], [9.0, 6.0]])
 
 
-def test_phase0_type_volume_is_mean_real_request(tmp_path):
+def test_phase0_volume_is_column_mean_request_times_mean_duration(tmp_path):
     cfg = _cfg(tmp_path)
     ds = load_dataset(cfg)
     st = run_phase0(ds, cfg)
-    tid = assign_type_ids(st.type_space, st.grid.assign(st.bids.v_rate), ds.H.priority, ds.H.hw_idx)
-    N = np.bincount(tid, minlength=st.n_types)
+    cid = column_ids(st.type_space, ds.H.priority, ds.H.hw_idx)
+    nc = st.type_space.n_cols
+    N = np.bincount(cid, minlength=nc)
     for i in range(ds.n_resources):
-        mean = np.bincount(tid, weights=ds.H.A[:, i], minlength=st.n_types)
-        np.testing.assert_allclose(st.A_type[N > 0, i], mean[N > 0] / N[N > 0], rtol=1e-12)
+        mean = np.bincount(cid, weights=ds.H.A[:, i], minlength=nc)
+        np.testing.assert_allclose(st.col(st.A_type)[N > 0, i], mean[N > 0] / N[N > 0], rtol=1e-12)
+    d = np.bincount(cid, weights=ds.H.duration_steps, minlength=nc)
+    np.testing.assert_allclose(st.col(st.d_bar)[N > 0], d[N > 0] / N[N > 0], rtol=1e-12)
     np.testing.assert_allclose(st.v, st.A_type * st.d_bar[:, None], rtol=1e-12)

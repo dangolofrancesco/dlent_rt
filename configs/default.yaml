@@ -64,12 +64,13 @@ energy_model:
   p_gb: 0.35                  # watts per GB RAM
   pue: 1.10                   # power usage effectiveness
 
-# D2: cost_base = (U0 (1 + ln q) + gamma1 cores + gamma2 GB) d, v ~ lognormal with mean cost_base.
+# D2: HOURLY bid. cost_base = U0 (1 + ln q) + gamma1 cores + gamma2 GB [$/h] (no duration), b ~ lognormal with
+# mean cost_base.
 # U0 = gamma1 cores + gamma2 GB of the median H job (by that rate), computed in Phase 0, then fixed.
 bid:
   gamma1: 0.0332              # $ per vCPU-hour
   gamma2: 0.00445             # $ per GiB-hour
-  sigma: 0.3                  # log-space std of the markup v / cost_base
+  sigma: 0.3                  # log-space std of the markup b / cost_base
   refit_sigma: true           # theoretical model: sigma refit on the markups in Phase 0 and at every ReInit
 
 # D1: s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Pi|)) / 2, K_q = Q_0.9(K), over H's types, frozen at Phase 0
@@ -82,7 +83,7 @@ objective:
   lambda2: 1.0
   lambda3: 1.0
 
-# D4: geometric grid on bids, 128 bins between the smallest and the largest bid
+# D4: geometric grid on HOURLY bids, 128 bins between the smallest and the largest hourly bid of H (fixed)
 grid:
   k_star: 128
   priority_classes: [1, 2, 3, 4, 5]
@@ -103,8 +104,7 @@ test3:
   geometric_base: 2           # s-checkpoints at tau_{m-1} + {0, 1, 2, 4, 8, ...}
 
 phase_transition:
-  n_type_min: 5               # min observations for a type's stats to be trusted
-  n_min: 80                   # min phase-arrival count to refit the grid (else reuse)
+  n_min: 80                   # min phase-arrival count to refit sigma (else keep it); fewer = a "short" phase
 
 logging:
   per_step: true

@@ -59,9 +59,8 @@ def test_bucketed_variant_A_bounded_by_job_opt(bench, source):
 def test_unseen_phase0_types_have_zero_reward(bench):
     b = bench.bucket_types("phase0")
     st = bench.state0
-    unpop = st.p == 0
-    assert np.all(st.r_tilde[unpop] == 0)                           # Phase 0 itself gives r~ = 0
-    assert np.all(b["r"][~b["seen"]] == 0)
+    assert np.all(np.isfinite(st.r_tilde[st.p == 0]))               # Phase 0 gives every type an r~...
+    assert np.all(b["r"][~b["seen"]] == 0)                          # ...but the bucketed MILP never picks them
 
 
 def test_bucketed_variant_B_runs(bench):

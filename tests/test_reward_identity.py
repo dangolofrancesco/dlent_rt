@@ -1,8 +1,9 @@
-"""Reward accounting (week 30): type-level vs job-level identity, logged == re-scored, shadow prices.
+"""Reward accounting: type terms vs job data, logged == re-scored, shadow prices.
 
-With one phi (the state's sigma), the type reward r~_j is the mean of the job reward over the type's jobs, so admitting
-every reference type with r_ref > 0 gives, in sample, sum_j N_j r_ref_j^+ == sum of R_job over those jobs
-(== lambda_hat_ref * T when tau* = 0)."""
+Since week 33 the type reward is built from the bin's lower edge (value) and the column means (costs, duration,
+volume), so it is no longer the mean of the job reward over the type's jobs. Checked here: on the reference state
+(every stream arrival observed) the column terms are the column means of the jobs' costs and durations, r~ follows
+the formula, and the fluid LP with tau* = 0 is sum_j N_j r_j^+."""
 import tempfile, warnings
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 from dlent_rt import reward
 from dlent_rt.config import default_config, resolve_path
 from dlent_rt.data import load_dataset
-from dlent_rt.phase0 import run_phase0, assign_type_ids
+from dlent_rt.phase0 import run_phase0, assign_type_ids, column_ids, column_means
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.models.core.reinit import build_window_state
 from dlent_rt.models.core.stream import build_stream
@@ -70,17 +71,23 @@ def test_type_job_identity(which):
     T = int(ds.T)
     idx = np.arange(S.n)
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
-    st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h, fallback=False)
-    tid = assign_type_ids(st_ref.type_space, st_ref.grid.assign(S.v), S.priority, S.hw_idx)
+    st_ref, _ = build_window_state(S, idx, idx, T, st0, ds, cfg_h)
+    ts = st_ref.type_space
+    tid = assign_type_ids(ts, st_ref.grid.assign(S.v), S.priority, S.hw_idx)
     N = np.bincount(tid, minlength=st_ref.n_types).astype(float)
-    # the job reward under the reference state's own bid model (sigma refit on the stream) and Phase 0's s_C
-    R = reward.job_terms(S.v, S.cost_base, S.C_elec, S.C_carbon, st_ref.myerson, st0.carbon_price, cfg.objective).R
-    # every type reward is the mean of the job reward over its jobs
-    mean_R = np.divide(np.bincount(tid, weights=R, minlength=st_ref.n_types), N, out=np.zeros_like(N), where=N > 0)
-    np.testing.assert_allclose(st_ref.r_tilde[N > 0], mean_R[N > 0], rtol=1e-9, atol=1e-9)
+    # the column terms are the column means of the jobs (every arrival observed)
+    cid = column_ids(ts, S.priority, S.hw_idx)
+    Nc, mc = column_means(cid, ts.n_cols, dict(C_elec=S.C_elec, K=S.C_carbon, D=S.D, c=S.cost_base))
+    s = Nc > 0
+    np.testing.assert_allclose(st_ref.col(st_ref.C_elec_bar)[s], mc["C_elec"][s], rtol=1e-12)
+    np.testing.assert_allclose(st_ref.col(st_ref.C_carbon_bar)[s], mc["K"][s], rtol=1e-12)
+    np.testing.assert_allclose(st_ref.col(st_ref.d_bar)[s], mc["D"][s], rtol=1e-12)
+    np.testing.assert_allclose(st_ref.c_col[s], mc["c"][s], rtol=1e-12)
+    # r~ = V + Pi - s_C K from the type terms
+    np.testing.assert_allclose(st_ref.r_tilde, st_ref.v_bar + st_ref.phi_bar - st_ref.C_elec_bar
+                               - st0.carbon_price * st_ref.C_carbon_bar, rtol=1e-12, atol=1e-12)
     pos = st_ref.r_tilde > 0
     lhs = float((N[pos] * st_ref.r_tilde[pos]).sum())
-    assert float(R[pos[tid]].sum()) == pytest.approx(lhs, rel=1e-9)
     if np.all(st_ref.tau == 0):          # capacity not binding: fluid OPT = sum_j N_j r_j^+
         assert st_ref.lam_star * T == pytest.approx(lhs, rel=1e-9)
     _assert_tau(st0)

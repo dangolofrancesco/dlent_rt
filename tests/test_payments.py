@@ -1,6 +1,6 @@
-"""Threshold payments (D6) and the grid edges (D4): the bins cover every bid (bin 1 = [0, L_1), bin K* =
-[L_K*-1, +inf)); allocation and payment use the same edges; every admitted job pays at most its bid (IR), also when
-its bid is below the previous phase's v_min or above its v_max."""
+"""Payments (D6) and the grid edges (D4): the bins cover every bid (bin 1 = [0, L_1), bin K* = [L_K*-1, +inf));
+allocation and payment use the same edges; every admitted job pays the hourly p = max(L_k*, reserve), 0 < p <= b (IR),
+also when its bid is below the grid's v_min or above its v_max, and p x the hours it runs in total."""
 import tempfile, warnings
 from pathlib import Path
 
@@ -42,12 +42,12 @@ def run():
 def test_every_admitted_job_pays_at_most_its_bid(run):
     adm = [a for a in run.arrivals if a["admit"]]
     assert adm
-    assert all(a["ir"] and a["payment"] <= a["v"] for a in adm)
-    assert all(a["payment"] == a["threshold_price"] for a in adm)
+    assert all(a["ir"] and 0 < a["payment_rate"] <= a["v"] for a in adm)
+    assert all(a["payment_rate"] == max(a["L_kstar"], a["reserve"]) for a in adm)
+    assert all(a["payment"] == a["payment_rate"] * a["duration_hours"] for a in adm)
     assert run.summary["n_ir_violations"] == 0
-    # bids outside the phase grid's [v_min, v_max] were admitted, and IR holds for them too
-    below = [a for a in adm if a["below_grid"]]
-    above = [a for a in adm if a["above_grid"]]
-    assert below and above
-    assert all(a["payment"] <= a["v"] for a in below + above)
-    assert all(a["k_bin"] == 1 for a in below)
+    # bids outside the grid's [v_min, v_max] (built on H) arrive in the stream; IR holds for every admitted one
+    off = [a for a in run.arrivals if a["below_grid"] or a["above_grid"]]
+    assert off
+    assert all(a["payment_rate"] <= a["v"] for a in off if a["admit"])
+    assert all(a["k_bin"] == 1 for a in off if a["below_grid"])

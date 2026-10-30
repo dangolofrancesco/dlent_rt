@@ -173,11 +173,11 @@ class Benchmarks:
     # ------------------------------------------------------------------ #
     @cached_property
     def reference_state(self):
-        """Full-stream hindsight state (ORACLE): every arrival, true D, no fallback, grid and sigma refit on the
-        whole stream. tau* and lambda_hat_ref come from it."""
+        """Full-stream hindsight state (ORACLE): every arrival, true D, Phase 0's grid, sigma refit on the whole
+        stream. tau* and lambda_hat_ref come from it (types without arrivals have p = 0)."""
         cfg_h = replace(self.cfg, phase_transition=replace(self.cfg.phase_transition, n_min=2))
         idx = np.arange(self.S.n)
-        st, _ = build_window_state(self.S, idx, idx, self.T, self.state0, self.ds, cfg_h, fallback=False)
+        st, _ = build_window_state(self.S, idx, idx, self.T, self.state0, self.ds, cfg_h)
         return st
 
     def fluid_opt(self) -> float:

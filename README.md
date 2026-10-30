@@ -28,57 +28,88 @@ Online admission of cloud jobs with a learned LP oracle (DLENT, Zhang & Cheung 2
 
 ```
 U0          = γ1 cores + γ2 GB of the median job of H (ranked by that rate)      [$ per hour per job]
-cost_base_j = (U0 (1 + ln q_j) + γ1 cores_j + γ2 GB_j) · d_j                    [$]
-v_j         ~ LogNormal(ln cost_base_j − σ²/2, σ),  σ = 0.3                      (mean = cost_base_j)
-φ_j         = cost_base_j · φ_m(v_j / cost_base_j),  φ_m(m) = m − (1 − F(m)) / f(m)
+c_j         = U0 (1 + ln q_j) + γ1 cores_j + γ2 GB_j                             [$ per hour]
+b_j         ~ LogNormal(ln c_j − σ²/2, σ),  σ = 0.3                              [$ per hour] (mean = c_j)
+φ_j         = c_j · φ_m(b_j / c_j),  φ_m(m) = m − (1 − F(m)) / f(m)               [$ per hour]
 ```
 
-γ1 = 0.0332 $/vCPU-h, γ2 = 0.00445 $/GiB-h, cores = CPU × 64, GB = RAM × 256 (a declared machine size). U0 is computed
-in Phase 0 and then fixed. The theoretical model refits σ on the markups v / cost_base (on H in Phase 0, then on
-the previous phase's arrivals at every ReInit). The no-learning model keeps σ = 0.3.
+**The bid is an hourly price.** It does not depend on the job's duration; c_j is known at arrival (priority and
+request). γ1 = 0.0332 $/vCPU-h, γ2 = 0.00445 $/GiB-h, cores = CPU × 64, GB = RAM × 256 (a declared machine size). U0
+is computed in Phase 0 and then fixed. The theoretical model refits σ on the markups b / c (on H in Phase 0, then on
+the previous phase's arrivals at every ReInit). The no-learning model keeps σ = 0.3. φ_m is computed in log space
+(m (1 − σ · Mills(z))) and floored at −10¹² for markups near 0.
 
 ## Reward (D1)
 
+Decisions use type terms. **The bin sets only the value; the column (priority, profile) sets the costs:**
+
 ```
-V_j  = v_j                       customer value (no priority factor; priority enters only the bid)
-Π_j  = φ_j − C_elec_j            profit, C_elec = energy × price
-K_j  = energy × carbon intensity [kg CO2]
-R_j  = λ1 V_j + λ2 Π_j − λ3 s_C K_j,   all λ = 1   (linear)
-s_C  = D_q / K_q,  D_q = (Q_0.9(V) + Q_0.9(|Π|)) / 2,  K_q = Q_0.9(K)   (p-weighted over H's types, Phase 0 only)
-SW   = Σ_admitted (v_j − C_elec_j − s_C K_j)    a metric only
+r̃_(k,q,h) = d̄_(q,h) · (L_k + φ_(q,h)(L_k)) − C̄elec_(q,h) − s_C · K̄_(q,h)       (λ = 1)
+v_(k,q,h)  = v̄_(q,h) = mean request × mean duration of the column
+φ_(q,h)(L) = c_(q,h) · φ_m(L / c_(q,h)),   c_(q,h) the column's hourly cost base
+s_C        = D_q / K_q,  D_q = (Q_0.9(V) + Q_0.9(|Π|)) / 2,  K_q = Q_0.9(K)   (on these type terms, p-weighted, Phase 0)
 ```
 
-The type reward r̃ is the mean of R over the type's jobs. Augmented Chebyshev is only in the offline Pareto code
-(`dlent_rt/pareto.py`). There is no carbon shadow price and no other normalization.
+L_k is the lower edge of bin k. d̄ is the column's ESTIMATED duration: every decision uses it, never the job's true
+duration and never a per-bin duration. None of d̄, C̄elec, K̄, v̄, c depends on the bid.
+
+The realised results use the job's true duration d_j (hours):
+
+```
+V_j  = b_j d_j                   customer value (no priority factor; priority enters only the bid)
+Π_j  = φ_j d_j − C_elec_j        profit, C_elec = energy × price
+K_j  = energy × carbon intensity [kg CO2]
+R_j  = λ1 V_j + λ2 Π_j − λ3 s_C K_j,   all λ = 1   (linear)
+SW   = Σ_admitted (b_j d_j − C_elec_j − s_C K_j)    a metric only
+```
+
+Augmented Chebyshev is only in the offline Pareto code (`dlent_rt/pareto.py`). There is no carbon shadow price and
+no other normalization.
 
 ## Types and grid (D4)
 
-Types = (bid bin, priority, hardware profile). The bid grid is geometric: L_k = v_min ρ^k,
-ρ = (v_max / v_min)^(1/128), with v_min / v_max the smallest / largest bid (no fixed floor). The bins cover every
-bid: bin 1 = [0, L_1), bin 128 = [L_127, +∞). Allocation and payment use the same edges. The theoretical model
-rebuilds it at every ReInit; the no-learning model keeps Phase 0's grid. Types with no job in H are scored by the
-dual rule with fallback estimates (hardware-profile means for duration and costs, bid-bin means for bid and φ).
+Types = (bid bin, priority, hardware profile); a column = (priority, hardware profile). The bid grid is geometric on
+HOURLY bids: L_k = v_min ρ^k, ρ = (v_max / v_min)^(1/128), with v_min / v_max the smallest / largest hourly bid of H
+(no fixed floor). The bins cover every bid: bin 1 = [0, L_1), bin 128 = [L_127, +∞). Allocation and payment use
+the same edges.
+
+**The grid and the types are fixed from Phase 0**, in every model (theoretical, practical, no-learning). Per type
+only the arrival rate p is estimated; the duration, energy, costs, request and cost base are column means. A column
+with no job in H starts from fallback estimates (hardware-profile means over H). So every type has an r̃ from the
+start.
 
 ## Online model (D5)
 
-* **Theoretical model** (the default): frozen oracle k̂ = 1[r̃_j − τᵀ v_j > 0] with the phase's (r̃, τ, v); then
-  Bernoulli thinning U(t) ~ Bern((1 − ξ)/(1 + ε̃_U(t))); then the physical gate. Tests 1–3 start d_max after the
+* **Threshold admission (Myerson: monotone admission + critical-value payment).** In a column, the margin
+  r̃ − τᵀ v grows with k (only the value L_k + φ(L_k) changes with the bin, and φ_m is increasing). So
+  k* = the lowest bin with margin > 0 (0 if none), and the admitted bins form an upper set. The code checks the upper
+  set and raises if it fails (`mechanism.threshold_kstar`).
+* **Reserve price per hour.** r_j = P_j · price(t_j): the job's power (kW, from its request, PUE included) times
+  the electricity price at arrival. It does not depend on the bid.
+* **Admission.** admit ⇔ bin(b_j) ≥ k* and b_j ≥ r_j and the thinning draw (theory only) and the job fits.
+* **Theoretical model** (the default): the frozen oracle with the phase's (r̃, τ, v); Bernoulli thinning
+  U(t) ~ Bern((1 − ξ)/(1 + ε̃_U(t))) after the decision; then the physical gate. Tests 1–3 start d_max after the
   phase start; the timeout is 2 × the previous phase length. ξ = 0.001 and γ = 1 are forced; Test 1's threshold is
-  (1 − ξ) c. Tests 2 and 3 use rewards in units of Phase 0's r_max = the largest positive r̃ (the paper's bound on the rewards
-  of admissible actions), fixed for the whole run.
-* **ReInit.** Arrival rates, bids, σ and requested resources come from all arrivals of the phase. Duration, energy
-  and costs come from the admitted jobs only. Types with no admitted job carry the previous phase's values, then
-  Phase 0's. The carbon price stays Phase 0's.
-* **Practical model** = switches: `oracle.kind: live` (the job's own electricity cost and carbon at arrival) and
-  `ablation.thinning_off: true`.
+  (1 − ξ) c. Tests 2 and 3 use rewards in units of Phase 0's r_max = the largest positive r̃ (the paper's bound on
+  the rewards of admissible actions), fixed for the whole run.
+* **ReInit.** It updates only the statistics; the grid and the types stay Phase 0's. p_j = N_j / W per type. Per
+  column: σ and the cost base c come from all arrivals of the phase; duration, energy, costs and the request of the
+  volume from the admitted jobs only. A column with no job in the phase keeps its previous values (carry-forward:
+  previous phase, then Phase 0); a column never seen since Phase 0 keeps the fallback estimates. The carbon price
+  stays Phase 0's.
+* **Practical model** = switches: `oracle.kind: live` (every bin scored with the job's own electricity cost and
+  carbon, estimated at arrival as its power × the column's d̄ × the price / carbon intensity at arrival; k* per job)
+  and `ablation.thinning_off: true`.
 * **No-learning model** = the Phase 0 state forever: the static Phase 0 policy and the thinning
   (`models.policy.NoLearningPolicy`).
 
 ## Payments and benchmarks (D6)
 
-* **Payment.** The threshold price: the lower edge of the lowest admitted bid bin for the same (priority, hardware
-  profile) at the current τ, 0 if that is bin 1. Logged per job: payment p, customer surplus v − p, realised profit p − C_elec and IR
-  (p ≤ v).
+* **Payment.** The hourly payment is p_j = max(L_k*, r_j), with L_k* the lower edge of bin k* (0 for bin 1). It is
+  the lowest hourly bid that would still be admitted, so 0 < p_j ≤ b_j and bidding the true hourly value is
+  optimal. The job pays p_j × the hours it runs. Logged per job: k*, r_j, the hourly and total payment, the customer
+  surplus V − payment, the realised profit payment − C_elec, IR (p_j ≤ b_j) and the rejection reason ("bin below
+  k*", "below reserve", "thinning", "no space").
 * **Benchmarks** (`dlent_rt/benchmarks.py`, `dlent_rt/theory_eval.py`): fluid OPT, fluid on feasible types, the
   bucketed MILP (one-week window, each MILP its own HiGHS instance; the fluid LP on a window counts only the volume
   inside the window), the static Phase 0 policy and the no-learning model. Practical only (code kept, not run in the

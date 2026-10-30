@@ -140,15 +140,16 @@ display(CTAB)
 # %% [markdown]
 # ## 2. Bid and U0 calibration
 #
-# D2: cost_base_j = (U0 (1 + ln q_j) + γ1 cores_j + γ2 GB_j) d_j, and the bid v_j is lognormal with mean
-# cost_base_j and σ = 0.3. U0 is in $ per hour per job. It is the cost rate γ1 cores + γ2 GB of the median job
+# D2: the bid is an HOURLY price. cost_base_j = U0 (1 + ln q_j) + γ1 cores_j + γ2 GB_j ($ per hour, no duration),
+# and the bid b_j is lognormal with mean cost_base_j and σ = 0.3. U0 is in $ per hour per job. It is the cost rate
+# γ1 cores + γ2 GB of the median job
 # of H, ranked by that rate. It is computed once in Phase 0 and then fixed for the stream. γ1 = 0.0332 $/vCPU-h,
 # γ2 = 0.00445 $/GiB-h, cores = CPU × 64, GB = RAM × 256.
 
 # %%
 tab, summ = dg.checks_bid(DS, ST, CFG, S)
-show(tab, {("D2", "cost_base = (U0 (1 + ln q) + g1 cores + g2 GB) d"): ["cost_base = (U0 (1 + ln q) + gamma1 cores + gamma2 GB) d, H",
-                                                                        "cost_base formula, stream"],
+show(tab, {("D2", "hourly cost_base = U0 (1 + ln q) + g1 cores + g2 GB (no d)"): [
+               "cost_base = U0 (1 + ln q) + gamma1 cores + gamma2 GB per hour, H", "cost_base formula, stream"],
            ("D2", "U0 = rate of the median H job"): ["U0 = gamma1 cores + gamma2 GB of the median H job",
                                                      "U0 is the same for H and the stream (fixed after Phase 0)"]})
 display(pd.Series(summ, name="value").to_frame())
@@ -158,10 +159,10 @@ display(dg.bid_tier_table(BF))
 # %%
 fig, axs = plt.subplots(1, 2, figsize=(12, 3.6))
 axs[0].hist(np.log(BF.markup), bins=80, color=BLUE)
-style(axs[0], "ln(markup v / cost_base), H", "jobs")
+style(axs[0], "ln(markup b / cost_base), H", "jobs")
 axs[0].set_title("Markups of H: normal in log space", loc="left", fontsize=10)
 axs[1].hist(np.log10(BF.cost_base), bins=80, color=BLUE)
-style(axs[1], "log10 cost_base ($), H", "jobs")
+style(axs[1], "log10 cost_base ($ per hour), H", "jobs")
 axs[1].set_title("Cost bases of H", loc="left", fontsize=10)
 plt.tight_layout(); plt.show()
 
@@ -172,7 +173,7 @@ plt.tight_layout(); plt.show()
 # %% [markdown]
 # ## 3. Virtual value
 #
-# φ_j = cost_base_j · φ_m(v_j / cost_base_j), with φ_m(m) = m − (1 − F(m)) / f(m) for the lognormal markup
+# φ_j = cost_base_j · φ_m(b_j / cost_base_j) ($ per hour), with φ_m(m) = m − (1 − F(m)) / f(m) for the lognormal markup
 # (μ = −σ²/2). Two facts must hold: E[φ_m] = 0 (exactly, by integration by parts) and φ_m increasing (a regular
 # distribution). The theoretical model refits σ on the markups: on H in Phase 0, and on the previous phase's
 # arrivals at every ReInit. The no-learning model keeps σ = 0.3.
@@ -182,7 +183,7 @@ RUN = cached("theory_run.pkl", "theory")
 tab, summ = dg.checks_phi(ST, CFG, phase_sigmas=RUN["phases"].sigma.to_numpy())
 show(tab, {("D2", "sigma refit in Phase 0"): ["sigma refit on H within 0.01 of 0.3"],
            ("D2", "sigma refit at ReInit"): ["sigma refit at every ReInit within 0.01 of 0.3"],
-           ("D2", "phi = cost_base phi_m(v / cost_base)"): ["E[phi_m] = 0 by quadrature (sigma = 0.1, 0.3, refit, 0.5)",
+           ("D2", "phi = cost_base phi_m(b / cost_base), per hour"): ["E[phi_m] = 0 by quadrature (sigma = 0.1, 0.3, refit, 0.5)",
                                                            "phi_m increasing (z in [-6, 6])"]})
 display(pd.Series(summ, name="value").to_frame())
 print(f"sample mean of phi / cost_base over H: {(BF.phi / BF.cost_base).mean():.3f} (positive: the negative mass that "
@@ -195,24 +196,27 @@ from dlent_rt.bid import MyersonModel
 for s, col, ls in ((CFG.bid.sigma, BLUE, "-"), (ST.myerson.sigma, ORANGE, "--")):
     ax.plot(m, MyersonModel.known_markup(s).phi_markup(m), color=col, ls=ls, lw=1.6, label=f"sigma = {s:.4f}")
 ax.axhline(0, color=INK2, lw=0.8)
-style(ax, "markup m = v / cost_base", "phi_m(m)")
+style(ax, "markup m = b / cost_base", "phi_m(m)")
 ax.set_title("Virtual value of the markup (generator sigma and refit sigma overlap)", loc="left", fontsize=10)
 ax.legend(frameon=False); plt.tight_layout(); plt.show()
 
 # %% [markdown]
 # ## 4. Objectives
 #
-# D1: customer value V = v (no priority factor), profit Π = φ − C_elec, carbon = s_C · K, and the reward
-# R = λ1 V + λ2 Π − λ3 s_C K with all λ = 1 (linear). s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Π|)) / 2,
-# K_q = Q_0.9(K), p-weighted over H's types, computed once in Phase 0. Social welfare is a metric only:
-# SW = Σ_admitted (v − C_elec − s_C K). Priority enters only the bid.
+# D1: decisions use type terms. The bin sets only the value, the column (priority, profile) sets the costs:
+# r̃_(k,q,h) = d̄_(q,h) (L_k + φ_(q,h)(L_k)) − C̄elec_(q,h) − s_C K̄_(q,h) (all λ = 1, linear), with d̄ the column's
+# estimated duration. s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Π|)) / 2, K_q = Q_0.9(K), on these type terms,
+# p-weighted over H's types, computed once in Phase 0. The realised results use the true duration d: customer value
+# V = b d (no priority factor), profit Π = φ d − C_elec, carbon = s_C · K. Social welfare is a metric only:
+# SW = Σ_admitted (b d − C_elec − s_C K). Priority enters only the bid.
 
 # %%
 tab, summ, TERMS = dg.checks_objectives(DS, ST, CFG, S)
-show(tab, {("D1", "V = v (no q factor); Pi = phi - C_elec; carbon = s_C K"): ["customer value V = v (no priority factor), stream"],
+show(tab, {("D1", "V = b d (results); Pi = phi d - C_elec; carbon = s_C K"): [
+               "customer value V = b d (hourly bid x true hours, results only), stream"],
            ("D1", "R = l1 V + l2 Pi - l3 s_C K, linear, all lambda = 1"): ["all lambda = 1", "r~ = V + Pi - s_C K (linear, per type)"],
            ("D1", "s_C = D_q / K_q over H's types, once in Phase 0"): ["s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Pi|)) / 2, recomputed"],
-           ("D1", "SW metric only"): ["SW = v - C_elec - s_C K per job (metric only)"]})
+           ("D1", "SW metric only"): ["SW = b d - C_elec - s_C K per job (metric only)"]})
 display(pd.Series(summ, name="value").to_frame())
 
 # %% [markdown]
@@ -222,10 +226,11 @@ display(pd.Series(summ, name="value").to_frame())
 # %% [markdown]
 # ## 5. Grid
 #
-# D4: a geometric grid on bids, L_k = v_min ρ^k, ρ = (v_max / v_min)^(1/128), with v_min / v_max the smallest /
-# largest bid. There is no fixed floor (only a guard against bids ≤ 0). The theoretical model rebuilds the grid at
-# every ReInit; the no-learning model keeps Phase 0's grid. Rounding a bid down to its bin edge loses at most
-# 1 − 1/ρ of it.
+# D4: a geometric grid on HOURLY bids, L_k = v_min ρ^k, ρ = (v_max / v_min)^(1/128), with v_min / v_max the
+# smallest / largest hourly bid of H. There is no fixed floor (only a guard against bids ≤ 0). The bins cover every
+# bid: bin 1 = [0, L_1), bin 128 = [L_127, +∞). The grid and the types are built ONCE here and never change, in
+# every model. Costs, duration and volume are column means; a column with no job in H starts from the fallback
+# estimates (hardware-profile means). Rounding a bid down to its bin edge loses at most 1 − 1/ρ of it.
 
 # %%
 tab, summ = dg.checks_grid(ST, CFG)
@@ -366,21 +371,27 @@ display(pd.Series({"jobs": WEEK["n_jobs"], "MILP candidates": WEEK["n_candidates
 # %% [markdown]
 # ## 10. One theoretical DLENT-RT run
 #
-# The theoretical model with the default config (seed 42): frozen oracle, thinning after the LP decision, physical
-# gate, Tests 1–3, ReInit, threshold payments. The run is cached. The tables below check each decision on the logs.
+# The theoretical model with the default config (seed 42). Per arrival: in the job's column (priority, profile) the
+# margin r̃ − τᵀv grows with the bin, so k* = the lowest bin with margin > 0 (a threshold; the upper set is checked).
+# The job is admitted iff bin(b) ≥ k*, b ≥ its hourly reserve r_j = power × electricity price, the thinning draw and
+# the physical gate allow it. It pays p = max(L_k*, r_j) per hour, times the hours it runs. ReInit updates only the
+# statistics (the grid is Phase 0's): per type p, per column the rest, with carry-forward and the fallback. The run
+# is cached. The tables below check each decision on the logs.
 # Tests 2 and 3 work in units of Phase 0's r_max = the largest positive r̃ (section 8), fixed for the whole run.
 
 # %%
 show(dg.checks_run(RUN, CFG),
-     {("D5", "frozen oracle; live switch"): ["frozen oracle: every score uses the phase's r~ (no live price)",
-                                            "frozen oracle: k_hat = 1[r~ - tau v > 0]"],
-      ("D5", "thinning after the LP decision"): ["admit = k_hat and U and fits (thinning after the LP decision, then the gate)",
-                                                 "thinned count = k_hat and not U"],
-      ("D5", "ReInit: all arrivals vs admitted"): ["ReInit statistics: rates, bids, sigma, requests from ALL arrivals of the phase",
-                                                   "ReInit statistics: duration, energy, costs from ADMITTED jobs only"],
-      ("D4", "grid rebuilt at every ReInit"): ["grid rebuilt at every ReInit with >= n_min arrivals"],
-      ("D6", "threshold payment = lowest admitted bin's lower edge"): ["payment = lower edge of the lowest admitted bin of (q, hw) at the phase's tau"],
-      ("D6", "surplus, realised profit, IR"): ["IR: payment <= bid for every admitted job"],
+     {("D5", "frozen oracle; live switch"): ["frozen oracle: every score uses the phase's r~ (no live price)"],
+      ("D5", "threshold admission: k* = lowest bin with margin > 0, upper set asserted"): ["threshold admission: k_hat = 1[k* > 0 and bin >= k*]"],
+      ("D5", "thinning after the LP decision"): ["admit = k_hat and b >= reserve and U and fits (thinning after the decision, then the gate)",
+                                                 "thinned count = k_hat and reserve ok and not U"],
+      ("D5", "ReInit: all arrivals vs admitted"): ["ReInit statistics: rates, cost base, sigma from ALL arrivals of the phase",
+                                                   "ReInit statistics: duration, energy, costs, volume from ADMITTED jobs only"],
+      ("D4", "grid and types fixed from Phase 0"): ["grid fixed from Phase 0 (the same rho in every phase)"],
+      ("D6", "hourly payment = max(L_k*, reserve)"): ["hourly payment = max(L_k*, reserve) for every admitted job",
+                                                     "payment > 0 for every admitted job"],
+      ("D6", "total payment = hourly payment x hours run; surplus, IR"): ["total payment = hourly payment x hours run",
+                                                                         "IR: hourly payment <= hourly bid for every admitted job"],
       ("D5", "timeout at 2 x the previous phase length"): ["tests start d_max after the phase start; timeout at 2 x the previous phase length"]})
 display(dg.phase_table(RUN["phases"], CFG.time.tick_seconds))
 
@@ -399,7 +410,7 @@ display(tot)
 split = pd.DataFrame({"customer value $": [float(TERMS.cv[adm.i].sum())],
                       "profit $ (phi - C_elec)": [float(TERMS.profit[adm.i].sum())],
                       "carbon $": [-float(TERMS.carbon_usd[adm.i].sum())],
-                      "payments $": [sm["payments_total"]], "customer surplus v - p $": [sm["surplus_total"]],
+                      "payments $": [sm["payments_total"]], "customer surplus V - payment $": [sm["surplus_total"]],
                       "realised profit p - C_elec $": [sm["profit_realised_total"]],
                       "IR violations": [sm["n_ir_violations"]], "phases": [sm["n_phases"]],
                       "end reasons": [str(sm["phase_end_reasons"])], "Tests 2-3 reward unit r_max $": [RUN["r_unit"]],
@@ -410,11 +421,11 @@ display(split)
 viol = adm[~adm.ir]
 display(Markdown(f"**IR violations: {len(viol):,} of {len(adm):,} admitted jobs.**"))
 if len(viol):
-    display(viol[["i", "m", "k_bin", "q", "hw", "v", "payment", "threshold_k", "cost_base"]].head(10))
+    display(viol[["i", "m", "k_bin", "q", "hw", "v", "payment_rate", "k_star", "L_kstar", "reserve", "cost_base"]].head(10))
 off = adm[adm.below_grid | adm.above_grid]
 display(Markdown(f"Admitted bids outside the phase grid's [v_min, v_max]: {int(adm.below_grid.sum()):,} below, "
                  f"{int(adm.above_grid.sum()):,} above; the largest payment / bid among them is "
-                 f"{(off.payment / off.v).max() if len(off) else float('nan'):.3f}."))
+                 f"{(off.payment_rate / off.v).max() if len(off) else float('nan'):.3f}."))
 
 # %%
 fig, axs = plt.subplots(1, 2, figsize=(13, 3.8))
@@ -425,11 +436,11 @@ axs[0].step(ph.tau_start * h / 24, ph.tau_ram, where="post", color=ORANGE, lw=1.
 style(axs[0], "days since the start of the stream", "tau ($ per machine-tick)")
 axs[0].set_title("Shadow prices per phase", loc="left", fontsize=10)
 axs[0].legend(frameon=False)
-axs[1].scatter(adm.v, adm.payment, s=3, color=BLUE, alpha=0.4, lw=0)
+axs[1].scatter(adm.v, adm.payment_rate, s=3, color=BLUE, alpha=0.4, lw=0)
 lim = [adm.v.min(), adm.v.max()]
 axs[1].plot(lim, lim, color=INK2, lw=0.8, ls=":")
 axs[1].set_xscale("log"); axs[1].set_yscale("log")
-style(axs[1], "bid v ($, log)", "payment p ($, log)")
+style(axs[1], "hourly bid b ($/h, log)", "hourly payment p ($/h, log)")
 axs[1].set_title("Threshold payment vs bid (IR: below the dotted line)", loc="left", fontsize=10)
 plt.tight_layout(); plt.show()
 

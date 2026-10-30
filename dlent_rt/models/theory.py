@@ -4,17 +4,24 @@ Algorithm 2). Theoretical model (the default config):
 
   * immediate observation: the true D of an admitted job is read at admission;
   * one occupancy counter (+ Test 1's in-phase window counter);
-  * frozen oracle: k_hat = 1[ r~_j - tau^T v_j > 0 ] with (r~, tau, v) of the phase (D5);
+  * frozen oracle: k_hat = 1[ bin(b_j) >= k* ], k* the lowest bin of the arrival's column with r~ - tau^T v > 0,
+    with (r~, tau, v) of the phase (D5);
   * Bernoulli thinning AFTER the oracle decision: U(t) ~ Bern((1 - xi) / (1 + eps~_U(t))), admit only if k_hat and U;
   * physical gate: an admission that would exceed the physical capacity c is rejected (`phys_reject`).
 
-Practical-model switches (D5): oracle.kind = "live" scores the arrival with its type's value terms and the job's
-OWN electricity cost and carbon at arrival; ablation.thinning_off = true sets p_U = 1.
+Practical-model switches (D5): oracle.kind = "live" scores every bin of the arrival's column with the type value
+terms and the job's OWN electricity cost and carbon, estimated at arrival as its power x the column's d_bar x the
+price / carbon intensity at arrival (bid-independent); ablation.thinning_off = true sets p_U = 1.
 
-Payment (D6): the threshold price = the lower edge L of the LOWEST admitted bid bin for the arrival's (priority,
-hardware profile) at the phase's tau (the smallest k with r~ - tau^T v > 0); 0 if that is bin 1. The bins cover
-every bid (bin 1 = [0, L_1), bin K* = [L_{K*-1}, +inf)) and allocation uses the same edges, so p <= v. Logged per arrival: payment, customer
-surplus v - p, realised profit p - C_elec and IR (p <= v).
+Admission and payment (dlent_rt.mechanism, week 33): a truthful threshold on HOURLY bids. The margin
+r~ - tau^T v is increasing in the bin inside a column, so k* = the lowest bin with margin > 0 (frozen: per phase;
+live: per job); threshold_kstar raises if the admitted bins are not an upper set. The reserve per hour is
+r_j = P_j * price(t_j). admit <=> bin(b) >= k* and b >= r_j and thinning (theory only) and the gate. The hourly
+payment is p_j = max(L_{k*}, r_j), the lowest hourly bid that would still be admitted, so 0 < p_j <= b_j; the job
+pays p_j x the hours it runs. Every decision uses only the column's estimated duration: the job's true duration is
+read only after the decision (occupancy, billing, realised results).
+Logged per arrival: k*, the reserve, the hourly and total payment, surplus V - payment, realised profit
+payment - C_elec, IR and the rejection reason ("bin below k*", "below reserve", "thinning", "no space").
 
 Per arrival at tick t, through the shared event-driven loop dlent_rt.models.policy.simulate:
   1. before_arrival: all ticks since the previous arrival are scanned (tests / timeout, exact on null ticks); a
@@ -34,6 +41,7 @@ import numpy as np
 from ..config import Config
 from ..data import Dataset
 from ..phase0 import PhaseState, assign_type_ids
+from ..mechanism import admit_and_pay, reserve_price, threshold_kstar
 from ..reward import job_terms
 from .core.error_params import ErrorParams, make_error_params
 from .core.monitor import PhaseMonitor
@@ -75,7 +83,8 @@ class TheoryModel:
         # realised job reward terms of every stream job, scored with Phase 0's bid model and s_C: one scale for every
         # model and benchmark (the decisions use each phase's own sigma through r~)
         S = self.stream
-        self.J = job_terms(S.v, S.cost_base, S.C_elec, S.C_carbon, state0.myerson, self.tax, cfg.objective)
+        self.J = job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state0.myerson, self.tax,
+                           cfg.objective)
 
     # ------------------------------------------------------------------ #
     def _new_phase(self, state: PhaseState, tau_prev: int, W_prev: int):
@@ -85,17 +94,14 @@ class TheoryModel:
                                 tau_prev, W_prev, self.d_max, self.cfg, r_unit=self.r_unit)
         self.ph_arr: list[int] = []
         self.ph_adm: list[int] = []
-        self.ph = dict(R=0.0, n_phys_reject=0, n_khat=0, n_thinned=0, cv=0.0, prof_phi=0.0, prof_pay=0.0,
+        self.ph = dict(R=0.0, n_phys_reject=0, n_khat=0, n_below_reserve=0, n_thinned=0, cv=0.0, prof_phi=0.0, prof_pay=0.0,
                        carb_kg=0.0, sw=0.0, payments=0.0, surplus=0.0, n_ir_violations=0)
-        # threshold bin per (q, a): smallest k with r~ - tau^T v > 0 (0 = none)
+        # threshold: k* per column (q, a) = the lowest bin with margin > 0 (0 = none), frozen oracle
         ts = state.type_space
-        shape = (ts.k_star, len(ts.priorities), ts.n_hw)
-        ok = ((state.r_tilde - state.v @ state.tau) > 0).reshape(shape)
-        self.k_thr = np.where(ok.any(axis=0), ok.argmax(axis=0) + 1, 0)
-        self.L_thr = np.where(self.k_thr > 0,
-                              np.asarray(state.L).reshape(shape)[np.maximum(self.k_thr - 1, 0),
-                                                                 *np.indices(shape[1:])],
-                              np.nan)
+        self._shape = (ts.k_star, len(ts.priorities), ts.n_hw)
+        self.k_star = threshold_kstar((state.r_tilde - state.v @ state.tau).reshape(self._shape))
+        # the column's estimated duration in hours (the live oracle's cost estimate)
+        self.dq_h = state.col(state.d_bar).reshape(self._shape[1:]) * self.cfg.time.tick_seconds / 3600.0
 
     def _end_phase(self, tau_m: int, reason: str, reinit: bool = True):
         W = tau_m - self.tau_prev
@@ -113,6 +119,9 @@ class TheoryModel:
             **{k: v for k, v in self.ph.items()},
             lam_hat_start=float(st.lam_star), tau_cpu=float(st.tau[0]),
             sigma=float(st.myerson.sigma), rho=float(st.grid.ratio),
+            n_columns_kstar0=int((self.k_star == 0).sum()), n_columns=int(self.k_star.size),
+            n_cols_cost_carry=int((st.src_cost == 1).sum()), n_cols_cost_fallback=int((st.src_cost == 2).sum()),
+            n_cols_dur_carry=int((st.src_dur == 1).sum()), n_cols_dur_fallback=int((st.src_dur == 2).sum()),
             tau_ram=float(st.tau[1]) if st.tau.size > 1 else np.nan,
             sum_lam_window=self.mon.sum_lam, n_lp_solves=self.mon.wlp.n_solves,
             lam_hindsight=lam_h, bench_hindsight=bench,
@@ -122,13 +131,12 @@ class TheoryModel:
         )
         if reinit:
             new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg)
-            rec.update(reinit_grid_refit=dg.grid_refit, next_rho=dg.rho, next_sigma=dg.sigma,
+            rec.update(next_rho=dg.rho, next_sigma=dg.sigma, reinit_sigma_refit=dg.sigma_refit,
                        reinit_n_arrivals=dg.n_arrivals, reinit_n_observed=dg.n_observed,
                        reinit_types_seen=dg.n_types_seen,
-                       reinit_value_fallback=dg.n_value_fallback,
-                       reinit_dur_fallback=dg.n_dur_fallback,
-                       reinit_last_resort=dg.n_last_resort, reinit_lp_status=dg.lp_status,
-                       next_lam_hat=dg.lam_hat)
+                       reinit_cost_carry=dg.n_cost_carry, reinit_cost_fallback=dg.n_cost_fallback,
+                       reinit_dur_carry=dg.n_dur_carry, reinit_dur_fallback=dg.n_dur_fallback,
+                       reinit_lp_status=dg.lp_status, next_lam_hat=dg.lam_hat)
         self.res.phases.append(rec)
         if self.cfg.logging.progress_phases:
             self._progress(f"phase {self.m} ended ({reason}) at {tau_m * self._h:,.1f} h: {rec['n_arrivals']:,} "
@@ -150,42 +158,64 @@ class TheoryModel:
     def before_arrival(self, i: int, t: int) -> None:
         self._advance(t)
 
+    def _live_scores(self, i: int, qi: int, hw: int) -> np.ndarray:
+        """
+        Live oracle: the margin of every bid bin of the job's column (q, a), with the job's own costs estimated at
+        arrival: its power x the column's d_bar (hours) x the price / carbon intensity at arrival. No true duration.
+        """
+        st, S, lam = self.state, self.stream, self.cfg.objective
+        K, Q, A = self._shape
+        ids = (np.arange(K) * Q + qi) * A + hw
+        E = float(S.power_kw[i]) * float(self.dq_h[qi, hw])            # estimated energy [kWh]
+        r = (st.r_tilde[ids] - lam.lambda2 * (E * float(S.price[i]) - st.C_elec_bar[ids])
+             - lam.lambda3 * self.tax * (E * float(S.ci[i]) - st.C_carbon_bar[ids]))
+        return r - st.v[ids] @ st.tau
+
     def want(self, i: int, t: int) -> bool:
         S, st, ep = self.stream, self.state, self.ep
         k = int(st.grid.assign(S.v[i])[0])
         j = int(assign_type_ids(st.type_space, np.array([k]), S.priority[i:i + 1], S.hw_idx[i:i + 1])[0])
-        r_j = float(st.r_tilde[j])
-        if self.live:       # practical: the type's value terms, the job's own costs at arrival
-            lam = self.cfg.objective
-            r_j -= (lam.lambda2 * (float(S.C_elec[i]) - float(st.C_elec_bar[j]))
-                    + lam.lambda3 * self.tax * (float(S.C_carbon[i]) - float(st.C_carbon_bar[j])))
+        qi, hw = int(np.searchsorted(st.type_space.priorities, S.priority[i])), int(S.hw_idx[i])
         shadow = float(st.tau @ st.v[j])
+        if self.live:       # practical: the type value terms, the job's own estimated costs, for every bin
+            scores = self._live_scores(i, qi, hw)
+            kstar = int(threshold_kstar(scores))
+            r_j = float(scores[k - 1]) + shadow
+        else:
+            kstar = int(self.k_star[qi, hw])
+            r_j = float(st.r_tilde[j])
         score = r_j - shadow
-        k_hat = score > 0                                   # 1. the LP (oracle) decision
-        pU = ep.p_U(self.W_prev, t - self.tau_prev)         # 2. thinning, after the decision
+        # 1. the threshold decision, then the hourly reserve price
+        reserve = float(reserve_price(S.power_kw[i], S.price[i]))
+        k_hat, res_ok, L_k, pay = admit_and_pay(S.v[i], st.grid, kstar, reserve)
+        # 2. thinning, after the decision
+        pU = ep.p_U(self.W_prev, t - self.tau_prev)
         U = bool(self.u_rand[i] < pU)
-        self._cur = dict(k=k, j=j, r_j=r_j, shadow=shadow, score=score, k_hat=k_hat, pU=pU, U=U)
-        return k_hat and U
+        self._cur = dict(k=k, j=j, r_j=r_j, shadow=shadow, score=score, k_hat=k_hat, pU=pU, U=U, kstar=kstar,
+                         reserve=reserve, res_ok=res_ok, L_k=L_k, pay=pay)
+        return k_hat and res_ok and U
 
     def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
         S, st = self.stream, self.state
         cur = self._cur
         k, j, r_j = cur["k"], cur["j"], cur["r_j"]
         shadow, score, k_hat, pU, U = cur["shadow"], cur["score"], cur["k_hat"], cur["pU"], cur["U"]
+        res_ok = cur["res_ok"]
         c_i, v_i = float(S.cost_base[i]), float(S.v[i])
         phi = float(self.J.phi[i])
-        qi = int(np.searchsorted(st.type_space.priorities, S.priority[i]))
-        thr = float(self.L_thr[qi, int(S.hw_idx[i])])
+        reason = ("" if admit else "bin below k*" if not k_hat else "below reserve" if not res_ok
+                  else "thinning" if not U else "no space")
         R = cv = prof = carb = sw = 0.0
-        pay = surplus = prof_pay = np.nan
+        pay = pay_rate = surplus = prof_pay = np.nan
         ir = True
         if admit:                                   # occ.add was done by simulate (physical gate)
             cv, prof = float(self.J.cv[i]), float(self.J.profit[i])
             carb, R, sw = float(self.J.carbon_kg[i]), float(self.J.R[i]), float(self.J.sw[i])
-            # threshold payment: the lower edge of the lowest admitted bin of (q, a) at this phase's tau
-            pay = thr if np.isfinite(thr) else float(st.L[j])
-            surplus, prof_pay = v_i - pay, pay - float(S.C_elec[i])
-            ir = pay <= v_i * (1 + 1e-12)
+            # hourly payment max(L_{k*}, reserve), the lowest hourly bid that would still be admitted, x hours run
+            pay_rate = cur["pay"]
+            pay = pay_rate * float(S.duration_hours[i])
+            surplus, prof_pay = cv - pay, pay - float(S.C_elec[i])
+            ir = 0 < pay_rate <= v_i * (1 + 1e-12)
             self.ph_adm.append(i)
         self.mon.register_arrival(t, j, R, admit, i, S.A[i], int(S.D[i]))
         self.ph_arr.append(i)
@@ -194,7 +224,8 @@ class TheoryModel:
                            f"{len(self.ph_adm):,} admitted in this phase")
             self._next_report += self._report_step
         ph = self.ph
-        ph["R"] += R; ph["n_khat"] += int(k_hat); ph["n_thinned"] += int(k_hat and not U)
+        ph["R"] += R; ph["n_khat"] += int(k_hat); ph["n_thinned"] += int(k_hat and res_ok and not U)
+        ph["n_below_reserve"] += int(k_hat and not res_ok)
         ph["n_phys_reject"] += int(want and not fits)
         ph["cv"] += cv; ph["prof_phi"] += prof; ph["carb_kg"] += carb; ph["sw"] += sw
         if admit:
@@ -205,11 +236,12 @@ class TheoryModel:
             v=v_i, phi_mech=phi, phi_gen=float(S.phi_gen[i]), oracle="live" if self.live else "frozen",
             r_tilde=r_j, r_tilde_phase=float(st.r_tilde[j]), shadow_cost=shadow, score=score,
             k_hat=k_hat, p_U=pU, U=U, fits=fits, admit=admit, phys_reject=want and not fits,
-            R=R, sw=sw, payment=pay, surplus=surplus, profit_realised=prof_pay, ir=ir, cost_base=c_i,
+            R=R, sw=sw, payment_rate=pay_rate, payment=pay, surplus=surplus, value=v_i * float(S.duration_hours[i]),
+            duration_hours=float(S.duration_hours[i]), profit_realised=prof_pay, ir=ir, cost_base=c_i,
             C_elec=float(S.C_elec[i]), sigma_used=float(st.myerson.sigma),
             below_grid=v_i < float(st.grid.bnd_v[0]), above_grid=v_i > float(st.grid.bnd_v[-1]),
-            threshold_k=int(self.k_thr[qi, int(S.hw_idx[i])]), threshold_price=thr,
-            threshold_markup=thr / c_i, D=int(S.D[i]), U_cpu=float(self.occ.U[0]),
+            k_star=cur["kstar"], L_kstar=cur["L_k"], reserve=cur["reserve"], reserve_ok=res_ok,
+            payment_by_reserve=bool(admit and cur["reserve"] > cur["L_k"]), reason=reason, D=int(S.D[i]), U_cpu=float(self.occ.U[0]),
             U_ram=float(self.occ.U[1]) if self.occ.U.size > 1 else np.nan,
             n_active=self.occ.n_active, **{k2: v for k2, v in self._last_diag.items()},
         ))
@@ -266,6 +298,9 @@ class TheoryModel:
             surplus_total=float(sum(p["surplus"] for p in ph)),
             profit_realised_total=float(sum(p["prof_pay"] for p in ph)),
             n_ir_violations=int(sum(p["n_ir_violations"] for p in ph)),
+            n_below_reserve=int(sum(p["n_below_reserve"] for p in ph)),
+            share_payment_by_reserve=float(np.mean([x["payment_by_reserve"] for x in self.res.arrivals if x["admit"]]))
+            if any(x["admit"] for x in self.res.arrivals) else float("nan"),
             bench_per_phase=bench_ph, regret_per_phase=bench_ph - R_tot,
             lam_hindsight_global=float(lam_all), bench_global=float(lam_all * self.ds.T),
             regret_global=float(lam_all * self.ds.T - R_tot),

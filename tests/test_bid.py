@@ -1,6 +1,6 @@
 """The bid (D2) and the customer value (D1): E[phi_m] = 0 and phi_m increasing for the known lognormal markup; the
-cost base (U0 (1 + ln q) + gamma1 cores + gamma2 GB) d on a hand-made job; U0 = the cost rate of the median H job;
-the sigma refit; customer value V = v (no priority factor)."""
+hourly cost base U0 (1 + ln q) + gamma1 cores + gamma2 GB on a hand-made job; U0 = the cost rate of the median H job;
+the sigma refit; customer value V = b d (hourly bid x true hours, no priority factor)."""
 from types import SimpleNamespace
 
 import numpy as np
@@ -37,8 +37,8 @@ def _jobs(cpu, ram, d, q):
 def test_cost_base_hand_made_job():
     cfg = default_config()
     u0 = 0.5
-    c = cost_base([0.5], [0.25], [2.0], [4.0], u0, cfg)            # 0.5 machine = 32 cores, 0.25 machine = 64 GB, 2 h
-    assert c[0] == pytest.approx((u0 * (1 + np.log(4.0)) + G1 * 32 + G2 * 64) * 2.0, rel=1e-12)
+    c = cost_base([0.5], [0.25], [4.0], u0, cfg)                   # 0.5 machine = 32 cores, 0.25 machine = 64 GB
+    assert c[0] == pytest.approx(u0 * (1 + np.log(4.0)) + G1 * 32 + G2 * 64, rel=1e-12)    # $ per hour, no d
 
 
 def test_u0_is_the_rate_of_the_median_job():
@@ -59,5 +59,6 @@ def test_sigma_refit_and_customer_value_is_the_bid():
     from dataclasses import replace
     fixed = replace(cfg, bid=replace(cfg.bid, refit_sigma=False))
     assert bid_model(fixed, b.v_rate, b.cost_base).sigma == cfg.bid.sigma
-    t = job_terms(b.v_rate, b.cost_base, np.zeros(n), np.zeros(n), MyersonModel.known_markup(0.3), 0.0, cfg.objective)
-    np.testing.assert_array_equal(t.cv, b.v_rate)                    # V = v, no priority factor
+    d = np.random.default_rng(2).uniform(0.1, 24.0, n)
+    t = job_terms(b.v_rate, b.cost_base, d, np.zeros(n), np.zeros(n), MyersonModel.known_markup(0.3), 0.0, cfg.objective)
+    np.testing.assert_array_equal(t.cv, b.v_rate * d)                # V = b d, no priority factor

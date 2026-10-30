@@ -1,10 +1,12 @@
 """
-Bid synthesis and the Myerson virtual value (decision D2).
+Bid synthesis and the Myerson virtual value (decision D2, week 33: HOURLY bids).
 
-    cost_base_j = (U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j) d_j        [$]
-    v_j         ~ LogNormal(ln cost_base_j - sigma^2 / 2, sigma)               [$], mean cost_base_j
-    phi_j       = cost_base_j * phi_m(v_j / cost_base_j)                       [$]
+    cost_base_j = U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j               [$ per hour]
+    v_j         ~ LogNormal(ln cost_base_j - sigma^2 / 2, sigma)               [$ per hour], mean cost_base_j
+    phi_j       = cost_base_j * phi_m(v_j / cost_base_j)                       [$ per hour]
 
+The bid is a price per hour: it does not depend on the job's duration. cost_base_j is known at arrival (priority and
+request). The total value V_j = v_j d_j (true duration) is used only in the results (reward.job_terms).
 U0 ($ per hour per job) = gamma1 cores + gamma2 GB of the median job of H by that rate (calibrate_u0), computed once
 in Phase 0 and then fixed. cores = CPU x machine_cores, GB = RAM x machine_ram_gb.
 """
@@ -14,7 +16,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy.stats import lognorm
+from scipy.stats import norm
+
+PHI_M_FLOOR = -1e12    # floor of phi_m (markup units): phi_m -> -inf as m -> 0 (binds only near overflow, z < -7)
 
 
 @dataclass
@@ -37,13 +41,16 @@ class MyersonModel:
         return c * np.asarray(self.phi_markup(np.asarray(v, dtype=float) / c))
 
     def phi_markup(self, m):
-        """phi_m(m) = m - (1 - F(m)) / f(m) under LogNormal(-sigma^2/2, sigma)."""
+        """
+        phi_m(m) = m - (1 - F(m)) / f(m) under LogNormal(-sigma^2/2, sigma), in the stable form
+        m (1 - sigma Mills(z)), z = (ln m - mu) / sigma, Mills = (1 - Phi) / phi of the standard normal (log space).
+        Increasing in m; floored at PHI_M_FLOOR (m <= 0 gives the floor).
+        """
         m = np.asarray(m, dtype=float)
-        scale = np.exp(self.mu)
-        F = lognorm.cdf(m, s=self.sigma, scale=scale)
-        f = lognorm.pdf(m, s=self.sigma, scale=scale)
-        inv_hazard = np.where(f > 1e-12, (1.0 - F) / f, 0.0)
-        return m - inv_hazard
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            z = (np.log(np.where(m > 0, m, 1.0)) - self.mu) / self.sigma
+            out = m * (1.0 - self.sigma * np.exp(norm.logsf(z) - norm.logpdf(z)))
+        return np.maximum(np.where((m > 0) & ~np.isnan(out), out, PHI_M_FLOOR), PHI_M_FLOOR)
 
     def phi_inv(self, target_phi, m_lo: float = 1e-9, m_hi: float = 1e12):
         """Invert phi_markup numerically (it is increasing): phi_inv(0) = the reserve markup."""
@@ -87,20 +94,21 @@ def calibrate_u0(H, cfg) -> float:
 @dataclass
 class BidResult:
     """Output of bid synthesis for a batch of jobs."""
-    v_rate: np.ndarray                       # bid v [$]
+    v_rate: np.ndarray                       # bid v [$ per hour]
     phi_rate: np.ndarray                     # phi_job(v, cost_base) under the GENERATOR's sigma (diagnostic)
     cost_base: Optional[np.ndarray] = None   # c_j (public, from the job's features)
 
 
-def cost_base(cpu, ram, duration_hours, priority, u0: float, cfg) -> np.ndarray:
-    """cost_base_j = (U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j) d_j  [$]."""
-    return (u0 * (1.0 + np.log(np.asarray(priority, float))) + cost_rate(cpu, ram, cfg)) * np.asarray(duration_hours, float)
+def cost_base(cpu, ram, priority, u0: float, cfg) -> np.ndarray:
+    """cost_base_j = U0 (1 + ln q_j) + gamma1 cores_j + gamma2 GB_j  [$ per hour]; no duration."""
+    return u0 * (1.0 + np.log(np.asarray(priority, float))) + cost_rate(cpu, ram, cfg)
 
 
 def synthesize_bids(jobs, cfg, u0: float, seed: int) -> BidResult:
-    """Bids of `jobs` (JobArrays): v ~ LogNormal(ln cost_base - sigma^2/2, sigma), sigma = bid.sigma."""
+    """Hourly bids of `jobs` (JobArrays): v ~ LogNormal(ln cost_base - sigma^2/2, sigma), sigma = bid.sigma. The
+    duration is not read."""
     rng = np.random.default_rng(seed)
-    c = cost_base(jobs.A[:, 0], jobs.A[:, 1], jobs.duration_hours, jobs.priority, u0, cfg)
+    c = cost_base(jobs.A[:, 0], jobs.A[:, 1], jobs.priority, u0, cfg)
     sigma = cfg.bid.sigma
     v = rng.lognormal(mean=np.log(c) - sigma ** 2 / 2.0, sigma=sigma)
     phi = np.asarray(MyersonModel.known_markup(sigma).phi_job(v, c))

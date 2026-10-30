@@ -42,42 +42,15 @@ QS = (0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.999, 1.0)
 # --------------------------------------------------------------------------- #
 # LP helpers
 # --------------------------------------------------------------------------- #
-def unseen_type_estimates(st0, ds, cfg) -> dict:
+def unseen_type_estimates(st0, ds=None, cfg=None) -> dict:
     """
-    r~ and v of EVERY type, with fallback estimates for the types without jobs in H (Phase 0 gives them r~ = 0,
-    v = 0: its per-type statistics are sample means over H, reward.type_mean). Duration, energy, electricity and
-    carbon: the mean over H's jobs with the same hardware profile (ReInit's last-resort rule); bid and phi: the mean
-    over H's jobs in the same bid bin; request: the hardware profile. The carbon price is Phase 0's (frozen).
-    Seen types keep Phase 0's values.
+    r~ and v of EVERY type of the Phase 0 state and the dual rule admit = 1[r~ - tau . v > 0]. Since week 33 every
+    type has an r~ in Phase 0 (value from the bin's lower edge; costs and volume from the column, with the
+    hardware-profile fallback for columns with no H job, phase0.column_fallback), so this only reads the state. ds
+    and cfg are kept for the old call signature.
     """
-    H = ds.H
-    b = st0.bids                                                  # Phase 0's bids of H
-    phi = np.asarray(st0.myerson.phi_job(b.v_rate, b.cost_base))
-    k = np.asarray(st0.grid.assign(b.v_rate))
-    E = _compute_job_energy(H, cfg)
-    pr, ci = _lookup_grid(H, ds)
-    ts = st0.type_space
-    n_hw, n_q = ts.n_hw, len(ts.priorities)
-    ids = np.arange(st0.n_types)
-    hw_t, k_t = ids % n_hw, ids // (n_q * n_hw) + 1
-
-    def group_mean(g, x, n):
-        s_, c_ = np.bincount(g, weights=x, minlength=n), np.bincount(g, minlength=n)
-        return np.divide(s_, c_, out=np.full(n, float(np.mean(x))), where=c_ > 0)
-    n_k = len(st0.grid.bnd_v) + 1
-    est = dict(d_bar=group_mean(H.hw_idx, H.duration_steps.astype(float), n_hw)[hw_t],
-               C_elec_bar=group_mean(H.hw_idx, electricity_cost(E, pr), n_hw)[hw_t],
-               C_carbon_bar=group_mean(H.hw_idx, carbon_kg(E, ci), n_hw)[hw_t],
-               v_bar=group_mean(k, b.v_rate, n_k)[k_t], phi_bar=group_mean(k, phi, n_k)[k_t])
-    seen = np.asarray(st0.p) > 0
-    full = {key: np.where(seen, getattr(st0, key), est[key]) for key in est}
-    _, _, A_prof = type_arrays(ts, st0.grid)
-    r, _, _ = type_reward(full["v_bar"], full["phi_bar"], full["C_elec_bar"], full["C_carbon_bar"],
-                          np.asarray(st0.p), cfg, s_C=st0.carbon_price)
-    A_t = np.where(seen[:, None], st0.A_type, A_prof)
-    v = np.where(seen[:, None], st0.v, A_t * full["d_bar"][:, None])
-    assert np.allclose(r[seen], st0.r_tilde[seen], rtol=1e-9, atol=1e-12)
-    return dict(r=r, v=v, seen=seen, admit=(r - v @ np.asarray(st0.tau, float)) > 0)
+    r, v = np.asarray(st0.r_tilde, float), np.asarray(st0.v, float)
+    return dict(r=r, v=v, seen=np.asarray(st0.p) > 0, admit=(r - v @ np.asarray(st0.tau, float)) > 0)
 
 
 def lp_x(state, c, cfg, p=None) -> tuple[np.ndarray, object]:
@@ -140,7 +113,7 @@ def window_taus(B, window_ticks: int) -> np.ndarray:
         idx = np.flatnonzero((S.tick > k * window_ticks) & (S.tick <= (k + 1) * window_ticks))
         if idx.size < 2:
             continue
-        st, _ = build_window_state(S, idx, idx, window_ticks, B.state0, B.ds, cfg_h, fallback=False)
+        st, _ = build_window_state(S, idx, idx, window_ticks, B.state0, B.ds, cfg_h)
         taus.append(np.asarray(st.tau, float))
     return np.array(taus)
 
@@ -441,7 +414,7 @@ def h_vs_stream(B, st0, cfg) -> dict:
     """
     Per Phase 0 type (Phase 0's grid for both): arrival rate (per hour) and mean r*d (CPU machine-hours) in H and in
     the stream. Also the decomposition of 'Phase 0 LP expected' vs 'fluid OPT': the LP on the stream's statistics
-    with Phase 0's grid (no refit), and Phase 0's x evaluated on those statistics.
+    (Phase 0's grid), and Phase 0's x evaluated on those statistics.
     """
     S, T, c, lam = B.S, B.T, B.c, cfg.objective
     per_h = 3600.0 / cfg.time.tick_seconds
@@ -474,7 +447,7 @@ def h_vs_stream(B, st0, cfg) -> dict:
     # decomposition
     cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
     idx = np.arange(S.n)
-    sS, _ = build_window_state(S, idx, idx, T, st0, B.ds, cfg_h, fallback=False, refit_grid=False)
+    sS, _ = build_window_state(S, idx, idx, T, st0, B.ds, cfg_h)
     x0, lp0 = lp_x(st0, c, cfg)
     xS, lpS = lp_x(sS, c, cfg)
     return dict(

@@ -61,7 +61,10 @@ def test_q_changes_only_carbon_price(setup):
         out[q] = (r, r_nocarbon, info)
         lam = cfg.objective
         np.testing.assert_allclose(r_nocarbon, lam.lambda1 * cv + lam.lambda2 * prof, rtol=1e-12)
-        np.testing.assert_allclose(r - r_nocarbon, -lam.lambda3 * info["s_C"] * carb, rtol=1e-12, atol=1e-15)
+        # r - r_nocarbon cancels: allow round-off on the scale of r_nocarbon (types far below their column's cost
+        # base have a very negative phi(L_k))
+        err = np.abs((r - r_nocarbon) + lam.lambda3 * info["s_C"] * carb)
+        assert np.all(err <= 1e-12 * (np.abs(r_nocarbon) + np.abs(carb) * info["s_C"]) + 1e-15)
     revs = [o[1] for o in out.values()]
     assert all(np.array_equal(revs[0], x) for x in revs[1:])
     assert len({o[2]["s_C"] for o in out.values()}) == len(out)

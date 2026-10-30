@@ -18,7 +18,7 @@ from .bid import MyersonModel, calibrate_u0, cost_base, cost_rate, fit_sigma
 from .config import REPO_ROOT, resolve_path
 from .lp_oracle import solve_lp_rs
 from .models.core.error_params import make_error_params
-from .phase0 import _compute_job_energy, _compute_job_power, _lookup_grid, assign_type_ids, type_arrays
+from .phase0 import _compute_job_energy, _compute_job_power, _lookup_grid, assign_type_ids, column_ids, type_arrays
 from .reward import carbon_kg, electricity_cost, job_terms, weighted_quantile
 from . import theory_eval as te
 
@@ -101,7 +101,7 @@ def checks_data(ds, cfg, raw: pd.DataFrame):
 # 2. Bid and U0
 # --------------------------------------------------------------------------- #
 def bid_frame(ds, st, cfg) -> pd.DataFrame:
-    """Per H job: priority, cost rate, cost base, bid, markup, phi (Phase 0's bids)."""
+    """Per H job: priority, cost rate, hourly cost base, hourly bid, markup, hourly phi (Phase 0's bids)."""
     H, b = ds.H, st.bids
     rate = cost_rate(H.A[:, 0], H.A[:, 1], cfg)
     return pd.DataFrame({"priority": H.priority, "rate": rate, "cost_base": b.cost_base, "bid": b.v_rate,
@@ -115,8 +115,8 @@ def checks_bid(ds, st, cfg, S):
     o = np.argsort(rate, kind="stable")
     med_job = int(o[(len(o) - 1) // 2])
     u0 = calibrate_u0(H, cfg)
-    cH = cost_base(H.A[:, 0], H.A[:, 1], H.duration_hours, H.priority, u0, cfg)
-    cS = cost_base(S.A[:, 0], S.A[:, 1], S.duration_hours, S.priority, u0, cfg)
+    cH = cost_base(H.A[:, 0], H.A[:, 1], H.priority, u0, cfg)
+    cS = cost_base(S.A[:, 0], S.A[:, 1], S.priority, u0, cfg)
     em = cfg.energy_model
     m = st.bids.v_rate / st.bids.cost_base
     summary = {"U0 ($ per hour per job)": u0, "median H job: cores / GB": [float(H.A[med_job, 0] * em.machine_cores),
@@ -128,7 +128,7 @@ def checks_bid(ds, st, cfg, S):
          f"U0 = {u0:.5f} $/h; the job at the middle position has {rate[med_job]:.5f} $/h"),
         ("U0 is the same for H and the stream (fixed after Phase 0)", np.isclose(st.u0, u0, rtol=1e-12),
          f"Phase 0 state U0 = {st.u0:.5f}"),
-        ("cost_base = (U0 (1 + ln q) + gamma1 cores + gamma2 GB) d, H", np.allclose(st.bids.cost_base, cH, rtol=1e-12),
+        ("cost_base = U0 (1 + ln q) + gamma1 cores + gamma2 GB per hour, H", np.allclose(st.bids.cost_base, cH, rtol=1e-12),
          "recomputed by hand"),
         ("cost_base formula, stream", np.allclose(S.cost_base, cS, rtol=1e-12), "recomputed by hand"),
         ("mean bid = cost_base (mean markup 1, within 1%)", abs(m.mean() - 1) < 0.01, f"mean markup {m.mean():.4f}"),
@@ -139,8 +139,8 @@ def checks_bid(ds, st, cfg, S):
 def bid_tier_table(bf: pd.DataFrame) -> pd.DataFrame:
     g = bf.groupby("priority")
     return pd.DataFrame({"jobs": g.size(), "1 + ln q": 1 + np.log(g.size().index.to_numpy(float)),
-                         "mean bid $": g["bid"].mean(), "mean cost base $": g["cost_base"].mean(),
-                         "mean bid per hour $": g.apply(lambda d: (d["bid"] / d["hours"]).mean()),
+                         "mean bid $/h": g["bid"].mean(), "mean cost base $/h": g["cost_base"].mean(),
+                         "mean total value $": g.apply(lambda d: (d["bid"] * d["hours"]).mean()),
                          "phi < 0 %": g["phi"].apply(lambda s: 100 * (s < 0).mean())}).reset_index()
 
 
@@ -204,7 +204,7 @@ def checks_objectives(ds, st, cfg, S):
     Q_v = weighted_quantile(st.v_bar[pop], w, q)
     Q_pi = weighted_quantile(np.abs(st.phi_bar - st.C_elec_bar)[pop], w, q)
     K_q = weighted_quantile(st.C_carbon_bar[pop], w, q)
-    t = job_terms(S.v, S.cost_base, S.C_elec, S.C_carbon, st.myerson, st.carbon_price, lam)
+    t = job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, st.myerson, st.carbon_price, lam)
     VPi = float((st.p * st.v_bar).sum() / (st.p * np.abs(st.phi_bar - st.C_elec_bar)).sum())
     summary = {"term shares (sum |term|, p-weighted)": term_shares(tt), "sum p V / sum p |Pi| over H's types": VPi,
                "Q_0.9(V) $": Q_v, "Q_0.9(|Pi|) $": Q_pi, "D_q $": ni["D_q"], "K_q kg": K_q, "s_C $/kg": st.carbon_price,
@@ -216,9 +216,10 @@ def checks_objectives(ds, st, cfg, S):
          f"{np.abs(tt['customer value'] + tt['profit'] - tt['carbon $'] - st.r_tilde).max():.1e}"),
         ("s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Pi|)) / 2, recomputed",
          np.isclose(st.carbon_price, 0.5 * (Q_v + Q_pi) / K_q, rtol=1e-12), f"s_C = {st.carbon_price:.4f} $/kg"),
-        ("customer value V = v (no priority factor), stream", np.array_equal(t.cv, S.v), "job_terms(...).cv is the bid"),
-        ("SW = v - C_elec - s_C K per job (metric only)", np.allclose(t.sw, S.v - S.C_elec - st.carbon_price * S.C_carbon,
-                                                                       rtol=1e-12, atol=1e-12),
+        ("customer value V = b d (hourly bid x true hours, results only), stream",
+         np.allclose(t.cv, S.v * S.duration_hours, rtol=1e-12), "job_terms(...).cv"),
+        ("SW = b d - C_elec - s_C K per job (metric only)",
+         np.allclose(t.sw, S.v * S.duration_hours - S.C_elec - st.carbon_price * S.C_carbon, rtol=1e-12, atol=1e-12),
          "reward.job_terms(...).sw; no decision reads it"),
         ("priority enters only the bid: cost_base / rate grows as 1 + ln q at a fixed size",
          _priority_only_in_bid(cfg, st.u0), "hand-made jobs, q = 1..5"),
@@ -228,7 +229,7 @@ def checks_objectives(ds, st, cfg, S):
 
 def _priority_only_in_bid(cfg, u0) -> bool:
     q = np.arange(1, 6, dtype=float)
-    c = cost_base(np.full(5, 0.01), np.full(5, 0.01), np.ones(5), q, u0, cfg)
+    c = cost_base(np.full(5, 0.01), np.full(5, 0.01), q, u0, cfg)
     return bool(np.allclose(np.diff(c), u0 * np.diff(np.log(q)), rtol=1e-12))
 
 
@@ -395,10 +396,11 @@ def checks_phase0(ds, st, cfg, tab) -> pd.DataFrame:
     """The 9 checks of Phase 0."""
     per_h = 3600.0 / cfg.time.tick_seconds
     ef = energy_frame(ds, cfg)
-    tid = assign_type_ids(st.type_space, st.grid.assign(st.bids.v_rate), ds.H.priority, ds.H.hw_idx)
-    N = np.bincount(tid, minlength=st.n_types)
-    mean = lambda x: np.divide(np.bincount(tid, weights=np.asarray(x), minlength=st.n_types), N,
-                               out=np.zeros(st.n_types), where=N > 0)
+    cid = column_ids(st.type_space, ds.H.priority, ds.H.hw_idx)
+    nc = st.type_space.n_cols
+    N = np.bincount(cid, minlength=nc)
+    seen = N > 0
+    mean = lambda x: np.divide(np.bincount(cid, weights=np.asarray(x), minlength=nc), N, out=np.zeros(nc), where=seen)
     tt = type_terms(st, cfg)
     pc = power_check(ds, cfg)
     cov = grid_coverage(ds, cfg)
@@ -407,8 +409,13 @@ def checks_phase0(ds, st, cfg, tab) -> pd.DataFrame:
     rows = [
         ("sum p = true arrival rate of H", np.isclose(tab["sum p (per h)"], tab["true arrival rate of H (per h)"], rtol=1e-9), ""),
         ("manual power = code power (incl. PUE)", bool(pc["match"].all()), ""),
-        ("stored C_elec_bar = recomputed", bool(np.allclose(mean(ef.C_elec), st.C_elec_bar, rtol=1e-9, atol=1e-15)), ""),
-        ("stored C_carbon_bar = recomputed", bool(np.allclose(mean(ef.kg), st.C_carbon_bar, rtol=1e-9, atol=1e-15)), ""),
+        ("stored C_elec_bar = recomputed column mean", bool(np.allclose(mean(ef.C_elec)[seen], st.col(st.C_elec_bar)[seen],
+                                                                        rtol=1e-9, atol=1e-15)), ""),
+        ("stored C_carbon_bar = recomputed column mean", bool(np.allclose(mean(ef.kg)[seen], st.col(st.C_carbon_bar)[seen],
+                                                                          rtol=1e-9, atol=1e-15)), ""),
+        ("costs and volume do not depend on the bin (one value per column)",
+         all(np.allclose(np.asarray(getattr(st, f)).reshape(st.type_space.k_star, nc, -1),
+                         np.asarray(st.col(getattr(st, f))).reshape(1, nc, -1)) for f in ("d_bar", "C_elec_bar", "C_carbon_bar", "v")), ""),
         ("r_tilde = customer value + profit - carbon $ (lambda = 1)",
          bool(np.allclose(tt["customer value"] + tt["profit"] - tt["carbon $"], st.r_tilde, rtol=1e-9, atol=1e-12)), ""),
         ("LP fill <= 1", bool(np.all(np.asarray(tab["consumption at the optimum = LP fill"]) <= 1 + 1e-9)), ""),
@@ -451,48 +458,55 @@ def phase_table(ph: pd.DataFrame, tick_seconds: float) -> pd.DataFrame:
     h = tick_seconds / 3600.0
     out = pd.DataFrame({"phase": ph.m, "start (h)": (ph.tau_start - 1) * h, "end (h)": ph.tau_end * h,
                         "length (h)": ph.W * h, "reason": ph.reason, "arrivals": ph.n_arrivals, "admitted": ph.n_admitted,
-                        "tau CPU": ph.tau_cpu, "tau RAM": ph.tau_ram, "rho": ph.rho, "sigma": ph.sigma,
+                        "tau CPU": ph.tau_cpu, "tau RAM": ph.tau_ram, "sigma": ph.sigma,
+                        "columns with k* = 0": ph.n_columns_kstar0, "columns carried (d, costs)": ph.n_cols_dur_carry,
+                        "columns fallback (d, costs)": ph.n_cols_dur_fallback, "below reserve": ph.n_below_reserve,
                         "reward $": ph.R, "payments $": ph.payments, "IR violations": ph.n_ir_violations})
-    if "reinit_grid_refit" in ph:
-        out["next grid rebuilt"] = ph.reinit_grid_refit
-        out["next rho"] = ph.next_rho
+    if "next_sigma" in ph:
         out["next sigma"] = ph.next_sigma
-        out["ReInit: arrivals used (p, v, sigma, A)"] = ph.reinit_n_arrivals
-        out["ReInit: admitted used (d, energy, costs)"] = ph.reinit_n_observed
+        out["ReInit: arrivals used (p, c, sigma)"] = ph.reinit_n_arrivals
+        out["ReInit: admitted used (d, energy, costs, volume)"] = ph.reinit_n_observed
     return out
 
 
 def checks_run(run: dict, cfg) -> pd.DataFrame:
+    """The decisions of one online run, checked on its logs (monotone admission, reserve, thinning, payments)."""
     A, ph = run["arrivals"], run["phases"]
     adm = A.admit.to_numpy()
-    kh, U, fits = A.k_hat.to_numpy(), A.U.to_numpy(), A.fits.to_numpy()
+    kh, res, U, fits = A.k_hat.to_numpy(), A.reserve_ok.to_numpy(), A.U.to_numpy(), A.fits.to_numpy()
     nre = ph.iloc[:-1]
-    # thinning after the decision: U drawn for every arrival from the common numbers; the thinned count is k_hat & ~U
+    # thinning after the decision: U drawn for every arrival from the common numbers
     pU_k = U[kh].mean() if kh.any() else np.nan
     pU_n = U[~kh].mean() if (~kh).any() else np.nan
     adm_A = A[adm]
     viol = adm_A[~adm_A.ir.to_numpy()]
     off = adm_A[adm_A.below_grid | adm_A.above_grid]
+    want_pay = np.maximum(adm_A.L_kstar.to_numpy(), adm_A.reserve.to_numpy())
     rows = [
         ("frozen oracle: every score uses the phase's r~ (no live price)",
          (A.oracle == "frozen").all() and np.array_equal(A.r_tilde.to_numpy(), A.r_tilde_phase.to_numpy()), ""),
-        ("frozen oracle: k_hat = 1[r~ - tau v > 0]", np.array_equal(kh, (A.r_tilde - A.shadow_cost > 0).to_numpy()), ""),
-        ("admit = k_hat and U and fits (thinning after the LP decision, then the gate)",
-         np.array_equal(adm, kh & U & fits), f"{adm.sum():,} admitted"),
+        ("threshold admission: k_hat = 1[k* > 0 and bin >= k*]",
+         np.array_equal(kh, ((A.k_star > 0) & (A.k_bin >= A.k_star)).to_numpy()), ""),
+        ("admit = k_hat and b >= reserve and U and fits (thinning after the decision, then the gate)",
+         np.array_equal(adm, kh & res & U & fits), f"{adm.sum():,} admitted"),
         ("thinning does not depend on the decision (U rate with and without k_hat)",
          np.isnan(pU_k) or np.isnan(pU_n) or abs(pU_k - pU_n) < 0.02, f"{pU_k:.3f} vs {pU_n:.3f}"),
-        ("thinned count = k_hat and not U", int(ph.n_thinned.sum()) == int((kh & ~U).sum()), f"{int(ph.n_thinned.sum()):,}"),
-        ("ReInit statistics: rates, bids, sigma, requests from ALL arrivals of the phase",
+        ("thinned count = k_hat and reserve ok and not U", int(ph.n_thinned.sum()) == int((kh & res & ~U).sum()),
+         f"{int(ph.n_thinned.sum()):,}"),
+        ("ReInit statistics: rates, cost base, sigma from ALL arrivals of the phase",
          np.array_equal(nre.reinit_n_arrivals.to_numpy(), nre.n_arrivals.to_numpy()), ""),
-        ("ReInit statistics: duration, energy, costs from ADMITTED jobs only",
+        ("ReInit statistics: duration, energy, costs, volume from ADMITTED jobs only",
          np.array_equal(nre.reinit_n_observed.to_numpy(), nre.n_admitted.to_numpy()), ""),
-        ("grid rebuilt at every ReInit with >= n_min arrivals",
-         np.array_equal(nre.reinit_grid_refit.to_numpy(), (nre.n_arrivals >= cfg.phase_transition.n_min).to_numpy()), ""),
-        ("payment = lower edge of the lowest admitted bin of (q, hw) at the phase's tau",
-         np.allclose(adm_A.payment, adm_A.threshold_price, rtol=0, atol=0), ""),
-        ("IR: payment <= bid for every admitted job", len(viol) == 0 and np.all(adm_A.payment <= adm_A.v),
-         f"{len(viol):,} of {len(adm_A):,} violate"),
-        ("IR also for admitted bids below the phase grid's v_min or above its v_max", np.all(off.payment <= off.v),
+        ("grid fixed from Phase 0 (the same rho in every phase)", ph.rho.nunique() == 1, f"rho = {ph.rho.iloc[0]:.5f}"),
+        ("hourly payment = max(L_k*, reserve) for every admitted job",
+         np.allclose(adm_A.payment_rate, want_pay, rtol=0, atol=0),
+         f"set by the reserve: {100 * adm_A.payment_by_reserve.mean():.1f}%"),
+        ("total payment = hourly payment x hours run",
+         np.allclose(adm_A.payment, adm_A.payment_rate * adm_A.duration_hours, rtol=1e-12), ""),
+        ("payment > 0 for every admitted job", np.all(adm_A.payment_rate > 0), ""),
+        ("IR: hourly payment <= hourly bid for every admitted job",
+         len(viol) == 0 and np.all(adm_A.payment_rate <= adm_A.v), f"{len(viol):,} of {len(adm_A):,} violate"),
+        ("IR also for admitted bids below the grid's v_min or above its v_max", np.all(off.payment_rate <= off.v),
          f"{int(adm_A.below_grid.sum()):,} below, {int(adm_A.above_grid.sum()):,} above"),
         ("tests start d_max after the phase start; timeout at 2 x the previous phase length",
          np.all((ph.reason != "timeout") | (ph.W == 2 * ph.W_prev)), ""),
@@ -504,24 +518,27 @@ def checks_run(run: dict, cfg) -> pd.DataFrame:
 # 11. D1-D6 checklist
 # --------------------------------------------------------------------------- #
 CHECKLIST = [
-    ("D1", "V = v (no q factor); Pi = phi - C_elec; carbon = s_C K", "dlent_rt/reward.py", "profit = phi - C_elec"),
+    ("D1", "V = b d (results); Pi = phi d - C_elec; carbon = s_C K", "dlent_rt/reward.py", "profit = phi - C_elec"),
+    ("D1", "type terms: value from L_k, costs from the column", "dlent_rt/phase0.py", "def type_values("),
     ("D1", "R = l1 V + l2 Pi - l3 s_C K, linear, all lambda = 1", "dlent_rt/reward.py", "r_tilde = r_nocarbon - lam.lambda3"),
     ("D1", "s_C = D_q / K_q over H's types, once in Phase 0", "dlent_rt/reward.py", "D_q = 0.5 * (Q_cv + Q_abs_pi)"),
     ("D1", "SW metric only", "dlent_rt/reward.py", "sw=v - C_elec - s_C * K"),
     ("D1", "Chebyshev only in the offline Pareto code", "dlent_rt/pareto.py", "def scalarize_chebyshev("),
-    ("D2", "cost_base = (U0 (1 + ln q) + g1 cores + g2 GB) d", "dlent_rt/bid.py", "return (u0 * (1.0 + np.log("),
+    ("D2", "hourly cost_base = U0 (1 + ln q) + g1 cores + g2 GB (no d)", "dlent_rt/bid.py", "return u0 * (1.0 + np.log("),
     ("D2", "U0 = rate of the median H job", "dlent_rt/bid.py", "return float(np.median(cost_rate("),
-    ("D2", "phi = cost_base phi_m(v / cost_base)", "dlent_rt/bid.py", "return c * np.asarray(self.phi_markup("),
+    ("D2", "phi = cost_base phi_m(b / cost_base), per hour", "dlent_rt/bid.py", "return c * np.asarray(self.phi_markup("),
     ("D2", "sigma refit in Phase 0", "dlent_rt/phase0.py", "myerson = bid_model(cfg, bids.v_rate, bids.cost_base)"),
-    ("D2", "sigma refit at ReInit", "dlent_rt/models/core/reinit.py", "myerson = bid_model(cfg, v_arr, c_arr)"),
+    ("D2", "sigma refit at ReInit", "dlent_rt/models/core/reinit.py", "myerson = bid_model(cfg, v_arr, c_arr) if refit"),
     ("D3", "H = first 7 days", "dlent_rt/data.py", "def _n_history("),
     ("D3", "C = f D_bar on H", "dlent_rt/data.py", "capacity = cfg.capacity.f * capacity_diag"),
     ("D3", "Q = 0.2 C fixed point at the actual f", "dlent_rt/data.py", "Q_new = lim.quota_share * C"),
     ("D3", "24 h cap and 1-minute floor", "dlent_rt/data.py", "np.minimum(np.maximum(d, cfg.time.duration_floor_hours)"),
     ("D3", "job-level enlargement option and check", "dlent_rt/benchmarks.py", "def job_level_space_check("),
     ("D4", "geometric grid between the smallest and largest bid, no floor", "dlent_rt/grid.py", "lo, hi = float(v.min()), float(v.max())"),
-    ("D4", "grid rebuilt at every ReInit", "dlent_rt/models/core/reinit.py", "grid = build_valuation_grid(v_arr"),
-    ("D4", "unseen types: dual rule with fallback estimates", "dlent_rt/theory_eval.py", "def unseen_type_estimates("),
+    ("D4", "grid and types fixed from Phase 0", "dlent_rt/models/core/reinit.py", "ts, grid = prev.type_space, prev.grid"),
+    ("D4", "columns without jobs: carry-forward, then fallback estimates", "dlent_rt/phase0.py", "def column_fallback("),
+    ("D5", "threshold admission: k* = lowest bin with margin > 0, upper set asserted", "dlent_rt/mechanism.py", "def threshold_kstar("),
+    ("D5", "reserve per hour = power x electricity price", "dlent_rt/mechanism.py", "def reserve_price("),
     ("D5", "frozen oracle; live switch", "dlent_rt/models/theory.py", "if self.live:"),
     ("D5", "thinning after the LP decision", "dlent_rt/models/theory.py", "# 2. thinning, after the decision"),
     ("D5", "physical gate", "dlent_rt/models/policy.py", "fits = occ.fits(stream.A[i])"),
@@ -530,9 +547,9 @@ CHECKLIST = [
     ("D5", "Tests 2-3: rewards in the thresholds' units (/ r_max)", "dlent_rt/models/core/monitor.py", "self.R[int(t)] = float(R) / self.r_unit"),
     ("D5", "tests start d_max after the phase start", "dlent_rt/models/core/monitor.py", "self.tau_bar = self.tau_prev + int(d_max)"),
     ("D5", "timeout at 2 x the previous phase length", "dlent_rt/models/core/monitor.py", "timeout = self.tau_prev + 2 * self.W_prev + 1"),
-    ("D5", "ReInit: all arrivals vs admitted", "dlent_rt/models/core/reinit.py", "M, md = _means(tid_obs, n_types"),
-    ("D6", "threshold payment = lowest admitted bin's lower edge", "dlent_rt/models/theory.py", "pay = thr if np.isfinite(thr)"),
-    ("D6", "surplus, realised profit, IR", "dlent_rt/models/theory.py", "surplus, prof_pay = v_i - pay"),
+    ("D5", "ReInit: all arrivals vs admitted", "dlent_rt/models/core/reinit.py", "M, md = column_means(cols_of(o), n_cols"),
+    ("D6", "hourly payment = max(L_k*, reserve)", "dlent_rt/mechanism.py", "pay = max(L, float(reserve))"),
+    ("D6", "total payment = hourly payment x hours run; surplus, IR", "dlent_rt/models/theory.py", "pay = pay_rate * float(S.duration_hours[i])"),
     ("D6", "benchmarks: fluid OPT, fluid feasible, bucketed MILP", "dlent_rt/benchmarks.py", "def fluid_opt_feasible_types("),
     ("D6", "fluid on windows: volume inside the window only", "dlent_rt/theory_eval.py", "v_in = ref.A_type * d_in"),
 ]

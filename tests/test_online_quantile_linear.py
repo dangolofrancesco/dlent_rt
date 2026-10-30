@@ -46,9 +46,10 @@ def test_reward_in_dollars_with_frozen_carbon_price(default_run):
     assert adm
     for a in adm:
         i = a["i"]
-        phi0 = float(m.state0.myerson.phi_job(S.v[i], S.cost_base[i]))
-        assert a["phi_mech"] == phi0
-        exp = (l1 * S.v[i] + l2 * (phi0 - S.C_elec[i])
+        d = S.duration_hours[i]                    # hourly bid and phi x the true hours (results only)
+        phi0 = float(m.state0.myerson.phi_job(S.v[i], S.cost_base[i])) * d
+        assert a["phi_mech"] == pytest.approx(phi0, rel=1e-12)
+        exp = (l1 * S.v[i] * d + l2 * (phi0 - S.C_elec[i])
                - l3 * sC * S.C_carbon[i])
         assert a["R"] == pytest.approx(exp, rel=1e-12, abs=1e-12)
     # the reward is unbounded: nothing clips it to [-1, 1]
