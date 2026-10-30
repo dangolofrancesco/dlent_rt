@@ -259,12 +259,15 @@ class Benchmarks:
         The benchmark ladder of an online run (model = the TheoryModel, result = model.run()), every row scored
         with R_job on the same stream and physical gate [$ per run]:
         no-capacity bound, feasible ceiling, job-level MILP, bucketed MILP A (reference / Phase 0 buckets),
-        fluid OPT, fluid OPT on feasible types, G2, G1, static Phase 0, static Phase 0 + thinning at the cap
-        p = (1 - xi) / (1 + eps_D) (the run's common random numbers), DLENT-RT.
+        fluid OPT, fluid OPT on feasible types, Greedy-Pos, G1, static Phase 0, the no-learning model, DLENT-RT.
+        Greedy-Pos, static Phase 0 and the no-learning model use DLENT-RT's mechanism on the Phase 0 state
+        (models.policy.ThresholdPolicy: threshold k* per column, hourly reserve, payment max(L_k*, r) x hours);
+        Greedy-Pos with tau = 0, the no-learning model with the theoretical thinning p_U(W0, t) and the run's
+        common random numbers.
         Checks: DLENT-RT's score = its R_total; a bucketed A set is feasible and its realised value is at most
         the job MILP (within the MILP's own gap). G1's decision-error rate (sign R_job != sign r~) is returned.
         """
-        from .models.policy import JobGreedyPolicy, TypeGreedyPolicy, run_policy, run_static
+        from .models.policy import ThresholdPolicy, TypeGreedyPolicy, mechanism_summary, run_policy
 
         S, R = self.S, self.R
         adm = np.zeros(S.n, bool)
@@ -276,12 +279,16 @@ class Benchmarks:
         for src, o in buck.items():
             assert o["feasible_true"], src
             assert o["R_real"] <= bound, (src, o["R_real"], job["R_ip"], job["gap"])
-        p_cap = (1 - model.ep.xi) / (1 + model.ep.eps_D)
         g1 = TypeGreedyPolicy.from_state(self.state0, S, R, self.ds.H_span_steps)
-        sims = {"G2 job greedy": run_policy(S, self.c, JobGreedyPolicy(R)),
-                "G1 type greedy": run_policy(S, self.c, g1),
-                "static Phase 0": run_static(S, self.c, self.state0),
-                "static Phase 0 + thinning": run_static(S, self.c, self.state0, thin_p=p_cap, u_rand=model.u_rand)}
+        mech_pols = {"Greedy-Pos": ThresholdPolicy(self.state0, S, tau=0.0),
+                     "static Phase 0": ThresholdPolicy(self.state0, S),
+                     "no-learning model": ThresholdPolicy(self.state0, S,
+                                                          thin=(model.ep, model.u_rand, int(self.ds.d_max_steps)))}
+        sims = {k: run_policy(S, self.c, p) for k, p in mech_pols.items()}
+        sims = {"Greedy-Pos": sims["Greedy-Pos"], "G1 type greedy": run_policy(S, self.c, g1),
+                "static Phase 0": sims["static Phase 0"], "no-learning model": sims["no-learning model"]}
+        mech = {k: {a: b for a, b in mechanism_summary(p, sims[k], S).items() if a != "admit"}
+                for k, p in mech_pols.items()}
         ff = self.fluid_opt_feasible_types()
         rows = {"job-level, no capacity": job["R_nocap"], "feasible ceiling": self.feasible_ceiling(),
                 "job-level MILP": job["R_ip"],
@@ -293,7 +300,7 @@ class Benchmarks:
         return dict(rows=rows, admitted={k: int(v.admit.sum()) for k, v in sims.items()} | {"DLENT-RT": int(adm.sum())},
                     job=dict((k, v) for k, v in job.items() if k != "x"),
                     bucketed={s: {k: v for k, v in o.items() if k != "x"} for s, o in buck.items()},
-                    fluid_feasible=ff, p_cap=float(p_cap),
+                    fluid_feasible=ff, mechanism=mech,
                     g1_decision_error=float(np.mean(np.sign(R[ok]) != np.sign(g1.r_dec[ok]))) if ok.any() else 0.0)
 
 

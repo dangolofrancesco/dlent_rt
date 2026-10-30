@@ -7,10 +7,10 @@ run here.
   * fluid on feasible types   Benchmarks.fluid_opt_feasible_types: the same LP, types with A_type > C removed.
   * bucketed MILP             Benchmarks.job_opt_bucketed (reference buckets, true durations); run only when its
                               constraint matrix is small enough (max_milp_nonzeros), else reported as skipped.
-  * static Phase 0            the Phase 0 LP solution x (learned on H) applied to the stream after H: each arrival is
-                              admitted with probability x of its type (models.policy.FractionPolicy), real gate;
-                              types with no job in H by the dual rule with fallback estimates.
-  * no-learning model         the same, then the theoretical model's thinning (models.policy.NoLearningPolicy).
+  * static Phase 0            DLENT-RT's mechanism on the Phase 0 state, never updated (models.policy.ThresholdPolicy):
+                              threshold k* per column from (r~, tau, v) of Phase 0, hourly reserve, payment
+                              max(L_k*, r) x hours; no thinning; real gate.
+  * no-learning model         the same, with the theoretical model's thinning p_U(W0, t) (same u_rand).
   * window LPs                the fluid LP on each window of the stream (its own type rates; reinit.build_window_state
                               without fallback), for the share of windows where capacity binds (tau > 0).
 
@@ -29,7 +29,7 @@ from .lp_oracle import solve_lp_rs
 from .models.core.occupancy import Occupancy
 from .models.core.reinit import build_window_state
 from .models.core.error_params import make_error_params
-from .models.policy import FractionPolicy, NoLearningPolicy, simulate
+from .models.policy import ThresholdPolicy, mechanism_summary, simulate
 from .phase0 import (_compute_job_energy, _lookup_grid, assign_type_ids, run_phase0,
                      type_arrays)
 from .reward import social_welfare
@@ -121,17 +121,22 @@ def window_taus(B, window_ticks: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # One capacity value
 # --------------------------------------------------------------------------- #
-def static_run(B, st0, x0, cfg, seed, admit_unseen=None, no_learning: bool = False) -> dict:
-    """The Phase 0 static policy (FractionPolicy) on B's stream with the real gate: realised split and occupancy.
-    no_learning: the no-learning model (NoLearningPolicy: + the theoretical model's thinning, same u_rand)."""
+def static_run(B, st0, cfg, no_learning: bool = False, tau=None) -> dict:
+    """
+    The static Phase 0 policy on B's stream with the real gate: DLENT-RT's threshold, reserve and payment on the
+    Phase 0 state, never updated (models.policy.ThresholdPolicy). no_learning: the no-learning model (+ the
+    theoretical model's thinning p_U(W0, t), the same common random numbers u_rand). tau = 0: Greedy-Pos.
+    Returns the realised split, the occupancy and the mechanism checks (payments, IR, upper set, reasons).
+    """
     S, c = B.S, B.c
+    thin = None
     if no_learning:
         ep = make_error_params(st0, B.ds, cfg)
         u_rand = np.random.default_rng(cfg.run.seed + cfg.online.thinning_seed_offset).random(S.n)
-        pol = NoLearningPolicy(st0, S, x0, ep, u_rand, W0=int(B.ds.d_max_steps), seed=seed, admit_unseen=admit_unseen)
-    else:
-        pol = FractionPolicy(st0, S, x0, seed=seed, admit_unseen=admit_unseen)
+        thin = (ep, u_rand, int(B.ds.d_max_steps))
+    pol = ThresholdPolicy(st0, S, tau=tau, thin=thin)
     sim = simulate(S, Occupancy(c, record=False), pol)
+    mech = mechanism_summary(pol, sim, S)
     adm, terms = sim.admit, B.terms
     _, lev, w = occupancy_series(S.tick, S.D, S.A, adm)
     split = {"customer value": float(terms.cv[adm].sum()), "profit": float(terms.profit[adm].sum()),
@@ -143,10 +148,8 @@ def static_run(B, st0, x0, cfg, seed, admit_unseen=None, no_learning: bool = Fal
                 n_admitted=int(adm.sum()), rejected_space=float(sim.phys_reject.mean()), wanted=int(sim.want.sum()),
                 oversize_wanted=int((sim.want & big).sum()),
                 mean_occupancy_over_C=((lev * w[:, None]).sum(0) / w.sum() / c).tolist(),
-                unseen_type_share=float(pol.unseen.mean()),
-                unseen_admitted=int((adm & pol.unseen).sum()),
-                unseen_type_cpu_hours=float((S.A[pol.unseen, 0] * S.duration_hours[pol.unseen]).sum()
-                                            / (S.A[:, 0] * S.duration_hours).sum()),
+                mechanism={k: v for k, v in mech.items() if k != "admit"}, admit=adm,
+                profit_payments=float(mech["payments"] - S.C_elec[adm].sum()),
                 stream_load_over_C=((S.A * S.duration_hours[:, None] * 3600 / cfg.time.tick_seconds).sum(0)
                                     / B.T / c).tolist(),
                 occupancy=(S.tick, S.D, S.A, adm))
@@ -172,12 +175,11 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     res["phase0_lp"] = dict(tau=np.asarray(lp0.tau).tolist(), counts=admit_counts(x0, st0.p),
                             fill=lp_fill(st0, x0, c).tolist(), expected=type_split(st0, x0, T, lam),
                             lam_star_T=float(lp0.optimum) * T)
-    admit_unseen = unseen_type_estimates(st0, ds, cfg)["admit"]          # the dual rule
-    st = static_run(B, st0, x0, cfg, seed, admit_unseen)
+    st = static_run(B, st0, cfg)
     res["static"] = {k: v for k, v in st.items() if k != "occupancy"}
     res["occupancy"] = st["occupancy"]
     if no_learning:
-        nl = static_run(B, st0, x0, cfg, seed, admit_unseen, no_learning=True)
+        nl = static_run(B, st0, cfg, no_learning=True)
         res["no_learning"] = {k: v for k, v in nl.items() if k != "occupancy"}
 
     # fluid OPT and fluid on feasible types (reference = hindsight state of the whole stream)
@@ -210,7 +212,7 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     return res
 
 
-F_SCAN = (0.3, 0.35, 0.4, 0.45, 0.5)
+F_SCAN = (0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6)
 
 
 def tau_positive(r) -> bool:

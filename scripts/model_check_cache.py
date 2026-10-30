@@ -5,6 +5,7 @@ cache; without it, it recomputes the same things itself).
     dlent_venv/bin/python scripts/model_check_cache.py scan      # the f scan (~5 min) -> f_scan.pkl
     dlent_venv/bin/python scripts/model_check_cache.py week      # one-week bucketed MILP, 3,600 s -> week_milp.pkl
     dlent_venv/bin/python scripts/model_check_cache.py theory    # one theoretical DLENT-RT run -> theory_run.pkl
+                                                                 # (+ IR / upper set / truthfulness spot check)
     dlent_venv/bin/python scripts/model_check_cache.py all       # scan, then week and theory in two processes
 
 Every step uses configs/default.yaml as it is on disk (week and theory at its capacity.f).
@@ -60,15 +61,25 @@ def theory() -> dict:
     from dlent_rt.data import load_dataset
     from dlent_rt.models.theory import TheoryModel
     from dlent_rt.phase0 import run_phase0
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from truthful_batch import _Recording, run_numbers, spot_check     # the same checks as the 48 h batch
     cfg = default_config()
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
     _, _, enl = enlarge_for_job_models(ds, st0, cfg)          # the job-level check (enlargement off by default)
     t = time.perf_counter()
-    m = TheoryModel(ds, st0, cfg)
+    m = _Recording(ds, st0, cfg)
     res = m.run()
+    runtime = time.perf_counter() - t
+    adm = [a["i"] for a in res.arrivals if a["admit"]]
+    checks = dict(run=run_numbers(m, res, cfg), spot_check=spot_check(m, res, cfg.run.seed),
+                  myerson=dict(expected_profit=float(m.J.profit[adm].sum()),
+                               realised_profit=float(res.summary["profit_realised_total"]),
+                               payments=float(res.summary["payments_total"]),
+                               C_elec=float(m.stream.C_elec[adm].sum())))
     r = dict(arrivals=pd.DataFrame(res.arrivals), phases=pd.DataFrame(res.phases), summary=res.summary,
-             runtime_s=time.perf_counter() - t, job_level_check=enl, r_unit=m.r_unit, f=cfg.capacity.f)
+             runtime_s=runtime, job_level_check=enl, r_unit=m.r_unit, f=cfg.capacity.f, checks=checks,
+             R_job=m.J.R, tick=m.stream.tick)
     _save(r, "theory_run.pkl")
     return r
 

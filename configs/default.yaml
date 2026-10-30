@@ -46,11 +46,12 @@ limits:
 
 # D3: C_i = f x D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H|. ONE cluster for every model.
 capacity:
-  # f rule (week 33, made explicit after the notebook preview), over f in {0.3, 0.35, 0.4, 0.45, 0.5}:
+  # f rule (fixed, week 33), over f in {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}, hourly bids, the static policy with
+  # DLENT-RT's mechanism:
   #   (a) REQUIRED: tau > 0 (CPU or RAM) in both the Phase 0 LP and fluid OPT;
-  #   (b) among those, the static Phase 0 policy's "% time >= 95% full" closest to the 20-30% band.
-  # Every f of the scan passes (a); 0.5 is the closest to the band (44.6%; none is inside). See
-  # notebooks/01_model_check.ipynb, section 6, and reports/week33/model_check.md.
+  #   (b) among those, the static Phase 0 policy's "% time >= 95% full" closest to the 20-30% band (ties: to 25%).
+  # f = 0.3-0.5 pass (a), 0.55 and 0.6 do not. All five are inside the band; 0.5 is the closest to 25% (25.6%).
+  # See reports/week33/final_theory.md and notebooks/01_model_check.ipynb, section 6.
   f: 0.5
   job_level_enlarge: false    # off: enlarge C only if job-level models reject > 50% of positive-reward jobs for space
   job_level_reject_max: 0.5

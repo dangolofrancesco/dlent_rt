@@ -4,7 +4,7 @@ variants are switches inside it:
 
     theoretical model   oracle.kind frozen, ablation.thinning_off false, bid.refit_sigma true   (the default)
     practical model     oracle.kind live,   ablation.thinning_off true
-    no-learning model   the Phase 0 state forever (models.policy.NoLearningPolicy); sigma = bid.sigma, never refit
+    no-learning model   the Phase 0 state forever (models.policy.ThresholdPolicy with thinning); Phase 0's sigma
 """
 from __future__ import annotations
 

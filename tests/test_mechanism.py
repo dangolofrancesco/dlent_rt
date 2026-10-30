@@ -218,3 +218,37 @@ def test_grid_fixed_and_columns_carry_forward(world):
     assert np.all(new.src_dur[has_d] == FRESH)
     assert dg.n_dur_carry + dg.n_dur_fallback == int((~has_d).sum())
     assert len({p["rho"] for p in res.phases}) == 1                     # the same grid in every phase
+
+
+# --------------------------------------------------------------------------- #
+# The same mechanism in the baselines (static Phase 0, no-learning, Greedy-Pos)
+# --------------------------------------------------------------------------- #
+def test_baselines_use_the_same_mechanism(world):
+    from dlent_rt.models.core.occupancy import Occupancy
+    from dlent_rt.models.policy import ThresholdPolicy, mechanism_summary, simulate
+    cfg, ds, st, m, res, new, dg = world
+    S = m.stream
+    pols = {"static": ThresholdPolicy(st, S),
+            "no-learning": ThresholdPolicy(st, S, thin=(m.ep, m.u_rand, int(ds.d_max_steps))),
+            "Greedy-Pos": ThresholdPolicy(st, S, tau=0.0)}
+    out = {}
+    for k, pol in pols.items():
+        sim = simulate(S, Occupancy(ds.capacity, record=False), pol)
+        ms = mechanism_summary(pol, sim, S)
+        adm = sim.admit
+        assert adm.any(), k
+        # the DLENT-RT rule: price part, then thinning, then the gate
+        np.testing.assert_array_equal(sim.want, pol.bin_ok & pol.res_ok & pol.U)
+        # hourly payment max(L_k*, r), IR, upper set
+        np.testing.assert_array_equal(pol.pay_rate[adm], np.maximum(pol.L[adm], pol.reserve[adm]))
+        assert ms["payments"] == pytest.approx(float((pol.pay_rate[adm] * S.duration_hours[adm]).sum()))
+        assert ms["n_ir_violations"] == 0 and ms["n_upper_set_violations"] == 0, k
+        out[k] = (pol, ms)
+    # the static k* is DLENT-RT's phase-1 k* (same Phase 0 state, never updated)
+    np.testing.assert_array_equal(out["static"][0].kstar_col, threshold_kstar(
+        (st.r_tilde - st.v @ st.tau).reshape(st.grid.k_star, len(st.type_space.priorities), st.type_space.n_hw)))
+    assert out["static"][1]["rejections"]["thinning"] == 0 and out["Greedy-Pos"][1]["rejections"]["thinning"] == 0
+    assert out["no-learning"][1]["rejections"]["thinning"] > 0
+    # tau = 0 lowers every margin's cost, so Greedy-Pos's k* is never above the static k*
+    gk, sk = out["Greedy-Pos"][0].kstar_col, out["static"][0].kstar_col
+    assert np.all((sk == 0) | ((gk > 0) & (gk <= sk)))

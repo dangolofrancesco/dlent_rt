@@ -7,14 +7,13 @@ import pytest
 from dlent_rt.benchmarks import Benchmarks
 from dlent_rt.data import load_dataset
 from dlent_rt.lp_oracle import solve_lp_rs
-from dlent_rt.models.policy import run_static
 from dlent_rt.models.theory import TheoryModel
 from dlent_rt.phase0 import run_phase0
 from tests.synthetic import synthetic_config
 
 ROWS = ["job-level, no capacity", "feasible ceiling", "job-level MILP", "bucketed MILP A (reference buckets)",
-        "bucketed MILP A (Phase 0 buckets)", "fluid OPT", "fluid OPT on feasible types", "G2 job greedy",
-        "G1 type greedy", "static Phase 0", "static Phase 0 + thinning", "DLENT-RT"]
+        "bucketed MILP A (Phase 0 buckets)", "fluid OPT", "fluid OPT on feasible types", "Greedy-Pos",
+        "G1 type greedy", "static Phase 0", "no-learning model", "DLENT-RT"]
 
 
 @pytest.fixture(scope="module")
@@ -37,18 +36,22 @@ def test_ladder_rows_and_bounds(run):
     assert r["DLENT-RT"] == pytest.approx(res.summary["R_total"], rel=1e-10)
     assert r["feasible ceiling"] <= r["job-level, no capacity"] + 1e-9
     assert r["job-level MILP"] <= r["job-level, no capacity"] + 1e-6
-    for k in ("G2 job greedy", "G1 type greedy", "static Phase 0", "static Phase 0 + thinning", "DLENT-RT",
+    for k in ("Greedy-Pos", "G1 type greedy", "static Phase 0", "no-learning model", "DLENT-RT",
               "job-level MILP"):
         assert r[k] <= r["feasible ceiling"] + 1e-6, k
     assert 0.0 <= lad["g1_decision_error"] <= 1.0
 
 
-def test_static_thinning_uses_the_cap_and_common_numbers(run):
+def test_baselines_use_the_mechanism(run):
+    """Greedy-Pos, static Phase 0 and the no-learning model: payments, IR = 0, upper set = 0; thinning only in the
+    no-learning model, so it admits at most what the static policy wants."""
     B, model, res, lad = run
-    p = (1 - model.ep.xi) / (1 + model.ep.eps_D)
-    assert lad["p_cap"] == pytest.approx(p)
-    sim = run_static(B.S, B.c, B.state0, thin_p=p, u_rand=model.u_rand)
-    assert B.score(sim.admit) == lad["rows"]["static Phase 0 + thinning"]
+    for k, m in lad["mechanism"].items():
+        assert m["n_admitted"] > 0, k
+        assert m["payments"] > 0 and m["n_ir_violations"] == 0 and m["n_upper_set_violations"] == 0, k
+    assert lad["mechanism"]["static Phase 0"]["rejections"]["thinning"] == 0
+    assert lad["mechanism"]["Greedy-Pos"]["rejections"]["thinning"] == 0
+    assert lad["mechanism"]["no-learning model"]["rejections"]["thinning"] > 0
 
 
 def test_fluid_on_feasible_types(run):

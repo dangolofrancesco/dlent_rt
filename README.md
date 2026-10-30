@@ -101,7 +101,7 @@ start.
   carbon, estimated at arrival as its power × the column's d̄ × the price / carbon intensity at arrival; k* per job)
   and `ablation.thinning_off: true`.
 * **No-learning model** = the Phase 0 state forever: the static Phase 0 policy and the thinning
-  (`models.policy.NoLearningPolicy`).
+  (`models.policy.ThresholdPolicy` with `thin`).
 
 ## Payments and benchmarks (D6)
 
@@ -113,7 +113,11 @@ start.
 * **Benchmarks** (`dlent_rt/benchmarks.py`, `dlent_rt/theory_eval.py`): fluid OPT, fluid on feasible types, the
   bucketed MILP (one-week window, each MILP its own HiGHS instance; the fluid LP on a window counts only the volume
   inside the window), the static Phase 0 policy and the no-learning model. Practical only (code kept, not run in the
-  model check): Greedy-Pos (G2), the type greedy (G1) and the job MILP. There is no separate FCFS class.
+  model check): Greedy-Pos, the type greedy (G1) and the job MILP. There is no separate FCFS class.
+* **The baselines use DLENT-RT's mechanism** (`models.policy.ThresholdPolicy`) on the Phase 0 state, never updated:
+  threshold k* per column, hourly reserve, payment max(L_k*, r_j) × hours, IR checked. The static policy has no
+  thinning; the no-learning model has the theoretical thinning p_U(W0, t); Greedy-Pos uses τ = 0. Fluid OPT, fluid
+  on feasible types and the bucketed MILP stay as upper bounds.
 
 ## Where things are
 

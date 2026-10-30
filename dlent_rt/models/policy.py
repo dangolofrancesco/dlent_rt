@@ -235,3 +235,75 @@ class NoLearningPolicy(FractionPolicy):
 
     def want(self, i: int, t: int) -> bool:
         return super().want(i, t) and bool(self.u_rand[i] < self.ep.p_U(self.W0, t))
+
+
+# --------------------------------------------------------------------------- #
+# The DLENT-RT mechanism on a frozen state (week 33): static, no-learning, Greedy-Pos
+# --------------------------------------------------------------------------- #
+REASONS = ("bin below k*", "below reserve", "thinning", "no space")
+
+
+class ThresholdPolicy:
+    """
+    The same admission and payment as DLENT-RT (dlent_rt.mechanism) on ONE frozen PhaseState, never updated:
+    k* per column = the lowest bin with r~ - tau^T v > 0 (threshold_kstar, upper set asserted); hourly reserve
+    r_j = P_j price(t_j); want_i = bin(b_i) >= k* and b_i >= r_i and the thinning draw; the hourly payment
+    max(L_k*, r_i) x the hours the job runs. Used as:
+      * the static Phase 0 policy        ThresholdPolicy(state0, stream)                      (no thinning)
+      * the no-learning model            ThresholdPolicy(state0, stream, thin=(ep, u_rand, W0))  (p_U(W0, t))
+      * Greedy-Pos (practical benchmark)  ThresholdPolicy(state0, stream, tau=0)                 (tau = 0)
+    """
+
+    def __init__(self, state: PhaseState, stream, tau: Optional[np.ndarray] = None, thin=None):
+        from ..mechanism import reserve_price, threshold_kstar
+        ts, g = state.type_space, state.grid
+        tau = np.asarray(state.tau if tau is None else tau, float) * np.ones(len(state.tau))
+        K, Q, A = ts.k_star, len(ts.priorities), ts.n_hw
+        ok = (state.r_tilde - state.v @ tau).reshape(K, Q * A) > 0
+        self.state_upper_set_violations = int((ok[:-1] & ~ok[1:]).sum())
+        self.kstar_col = threshold_kstar((state.r_tilde - state.v @ tau).reshape(K, Q, A))
+        qi = np.searchsorted(ts.priorities, np.asarray(stream.priority, float))
+        self.col = qi * A + np.asarray(stream.hw_idx)
+        self.n_cols = Q * A
+        self.k = g.assign(stream.v)
+        self.kstar = self.kstar_col[qi, stream.hw_idx]
+        self.L = np.where(self.kstar > 0, g.lower_edges[np.maximum(self.kstar, 1) - 1], np.nan)
+        self.reserve = reserve_price(stream.power_kw, stream.price)
+        self.bin_ok = (self.kstar > 0) & (self.k >= self.kstar)
+        self.res_ok = np.asarray(stream.v) >= self.reserve
+        self.pay_rate = np.where(self.kstar > 0, np.fmax(self.L, self.reserve), np.nan)
+        self.thin = thin
+        self.U = np.ones(stream.n, bool)
+
+    def before_arrival(self, i: int, t: int) -> None:
+        pass
+
+    def want(self, i: int, t: int) -> bool:
+        if self.thin is not None:
+            ep, u_rand, W0 = self.thin
+            self.U[i] = bool(u_rand[i] < ep.p_U(W0, t))
+        return bool(self.bin_ok[i] and self.res_ok[i] and self.U[i])
+
+    def record(self, i: int, t: int, want: bool, fits: bool, admit: bool) -> None:
+        pass
+
+
+def mechanism_summary(pol, sim: SimResult, stream) -> dict:
+    """Payments, IR, upper set and rejection reasons of a ThresholdPolicy run (the same checks as DLENT-RT's)."""
+    adm = sim.admit
+    reason = np.where(~pol.bin_ok, 0, np.where(~pol.res_ok, 1, np.where(~pol.U, 2, 3)))[~adm]
+    rate = pol.pay_rate[adm]
+    b = np.asarray(stream.v)[adm]
+    # upper set: in the state (a rejected bin above an admitted one in a column), and in the run (an arrival refused
+    # by the price rule in a bin above the lowest bin the rule accepted in the same column)
+    lo = np.full(pol.n_cols, np.inf)
+    np.minimum.at(lo, pol.col[pol.bin_ok], pol.k[pol.bin_ok])
+    viol = pol.state_upper_set_violations + int((~pol.bin_ok & (pol.k > lo[pol.col])).sum())
+    return dict(n_admitted=int(adm.sum()),
+                rejections={r: int((reason == n).sum()) for n, r in enumerate(REASONS)},
+                payments=float((rate * stream.duration_hours[adm]).sum()),
+                payment_rate_over_bid_mean=float(np.mean(rate / b)) if adm.any() else np.nan,
+                share_payment_by_reserve=float(np.mean(pol.reserve[adm] > pol.L[adm])) if adm.any() else np.nan,
+                n_ir_violations=int(np.sum(~((rate > 0) & (rate <= b * (1 + 1e-12))))),
+                n_upper_set_violations=viol, columns_kstar0=int((pol.kstar_col == 0).sum()),
+                admit=adm)

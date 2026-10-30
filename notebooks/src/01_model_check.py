@@ -241,14 +241,13 @@ display(pd.Series(summ, name="value").to_frame())
 # ## 6. Cluster and quota
 #
 # D3: D̄_i = Σ_H r_ij d_j / |H|, C_i = f · D̄_i, and Q_i = 0.2 · C_i of the cluster actually used (a fixed point:
-# Q sets which jobs are kept, the kept jobs set D̄). f follows a rule with two conditions, in priority order, over
-# f ∈ {0.3, 0.35, 0.4, 0.45, 0.5}:
+# Q sets which jobs are kept, the kept jobs set D̄). f follows a fixed rule with two conditions, in priority order,
+# over f ∈ {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}, with hourly bids:
 #
 # * (a) REQUIRED: τ > 0 (CPU or RAM) in both the Phase 0 LP and fluid OPT;
 # * (b) among the f that pass (a): the static Phase 0 policy's "% of the time ≥ 95% full" closest to the 20–30% band.
 #
-# The rule was made explicit after the preview of this notebook (week 33): the first version ranked by (b) only,
-# over a scan up to f = 0.6, and picked f = 0.6, where τ = 0.
+# The static policy here uses DLENT-RT's mechanism on the Phase 0 state (threshold k*, reserve, payment).
 
 # %%
 SCAN = cached("f_scan.pkl", "scan")
@@ -328,12 +327,21 @@ display(pd.Series({k: v for k, v in TAB0.items() if not k.startswith("_")}, name
 # ## 9. Theoretical benchmarks at the chosen f
 #
 # Fluid OPT (the full-stream LP on the stream's own type statistics), fluid on feasible types, the Phase 0 LP's
-# expected reward, the static Phase 0 policy (LP fractions, dual rule for unseen types, real gate) and the
-# no-learning model (the same, then the theoretical model's thinning). Every realised number uses the same job
-# reward. Then τ per window, the decomposition from H to the stream, and the one-week bucketed MILP.
+# expected reward, the static Phase 0 policy and the no-learning model. Both baselines use DLENT-RT's mechanism on
+# the Phase 0 state, never updated: threshold k* per column, hourly reserve, payment max(L_k*, r) × hours; the
+# no-learning model adds the theoretical thinning. Every realised number uses the same job reward. Then τ per
+# window, the decomposition from H to the stream, and the one-week bucketed MILP.
 
 # %%
 display(dg.benchmark_table(R0))
+display(pd.DataFrame({k: {"admitted": R0[k]["mechanism"]["n_admitted"], "payments $": R0[k]["mechanism"]["payments"],
+                          "payments - C_elec $": R0[k]["profit_payments"],
+                          "mean p / b": R0[k]["mechanism"]["payment_rate_over_bid_mean"],
+                          "set by the reserve": R0[k]["mechanism"]["share_payment_by_reserve"],
+                          "IR violations": R0[k]["mechanism"]["n_ir_violations"],
+                          "upper-set violations": R0[k]["mechanism"]["n_upper_set_violations"],
+                          **{f"rejected: {r}": n for r, n in R0[k]["mechanism"]["rejections"].items()}}
+                      for k in ("static", "no_learning")}))
 w24, w6 = R0["windows"][24], R0["windows"][6]
 display(pd.DataFrame({"windows": [len(w24), len(w6)], "tau CPU > 0 %": [100 * (w24[:, 0] > 0).mean(), 100 * (w6[:, 0] > 0).mean()],
                       "tau RAM > 0 %": [100 * (w24[:, 1] > 0).mean(), 100 * (w6[:, 1] > 0).mean()]}, index=["1 day", "6 h"]))
@@ -366,6 +374,7 @@ display(pd.Series({"jobs": WEEK["n_jobs"], "MILP candidates": WEEK["n_candidates
                    "discretization cost $ (best .. bound)": f"{WEEK['fluid_feasible'] - best:,.2f} .. {WEEK['fluid_feasible'] - bound:,.2f}",
                    "discretization cost %": f"{100 * (WEEK['fluid_feasible'] - best) / WEEK['fluid_feasible']:.2f} .. "
                                             f"{100 * (WEEK['fluid_feasible'] - bound) / WEEK['fluid_feasible']:.2f}",
+                   "grid worst case 1 - 1/rho %": 100 * (1 - 1 / ST.grid.ratio),
                    "MILP realised (job rewards) $": WEEK["bucketed_realised"]}, name="value").to_frame())
 
 # %% [markdown]
@@ -416,6 +425,15 @@ split = pd.DataFrame({"customer value $": [float(TERMS.cv[adm.i].sum())],
                       "end reasons": [str(sm["phase_end_reasons"])], "Tests 2-3 reward unit r_max $": [RUN["r_unit"]],
                       "runtime s": [RUN["runtime_s"]]}, index=["DLENT-RT"]).T
 display(split)
+CK = RUN["checks"]
+display(pd.Series({"expected profit sum(phi d - C_elec) $": CK["myerson"]["expected_profit"],
+                   "realised profit payments - C_elec $": CK["myerson"]["realised_profit"],
+                   "IR violations": CK["run"]["IR violations"],
+                   "upper-set violations (phase states)": CK["run"]["upper-set violations (phase states)"],
+                   "upper-set violations (run log)": CK["run"]["upper-set violations (run: a bin rejected above an admitted bin, same phase and column)"],
+                   "truthfulness spot check: decisions re-run": CK["spot_check"]["decisions re-run"],
+                   "truthfulness spot check: violations": CK["spot_check"]["violations"],
+                   **{f"rejected: {k}": v for k, v in CK["run"]["rejections"].items()}}, name="value").to_frame())
 
 # %%
 viol = adm[~adm.ir]
