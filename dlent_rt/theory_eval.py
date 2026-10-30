@@ -1,12 +1,15 @@
 """
-Type / average ("theoretical") models over a capacity scan. No online model (DLENT-RT) and no job-level benchmark is
-run here.
+The f rule (on H only) and the type / average ("theoretical") models at one f. No online model (DLENT-RT) is run here.
 
+  f rule (D3)                 evaluate_f_H / f_rule_point / select_f: Phase 0 on H alone (data.load_history) and the
+                              replay of H's jobs through the static policy; no stream job is read.
+  discretization cost (D6)    window_discretization: MILP_true vs MILP_bin (benchmarks.discretization_milps) on the
+                              first days of the stream.
+
+At one f (evaluate_f), on the stream:
   * fluid OPT                 Benchmarks.fluid_opt: the full-stream LP-RS on the stream's own type rates and means
-                              (hindsight), lambda_hat_ref x T.
+                              (hindsight), lambda_hat_ref x T. An upper bound.
   * fluid on feasible types   Benchmarks.fluid_opt_feasible_types: the same LP, types with A_type > C removed.
-  * bucketed MILP             Benchmarks.job_opt_bucketed (reference buckets, true durations); run only when its
-                              constraint matrix is small enough (max_milp_nonzeros), else reported as skipped.
   * static Phase 0            DLENT-RT's mechanism on the Phase 0 state, never updated (models.policy.ThresholdPolicy):
                               threshold k* per column from (r~, tau, v) of Phase 0, hourly reserve, payment
                               max(L_k*, r) x hours; no thinning; real gate.
@@ -14,7 +17,7 @@ run here.
   * window LPs                the fluid LP on each window of the stream (its own type rates; reinit.build_window_state
                               without fallback), for the share of windows where capacity binds (tau > 0).
 
-    from dlent_rt.theory_eval import evaluate_f, job_distributions
+    from dlent_rt.theory_eval import evaluate_f_H, select_f, evaluate_f, window_discretization
 """
 from __future__ import annotations
 
@@ -23,11 +26,12 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from .benchmarks import Benchmarks
-from .data import _occupancy_stats, _OccupancyBasis, load_dataset
+from .benchmarks import Benchmarks, discretization_milps
+from .data import _occupancy_stats, _OccupancyBasis, load_dataset, load_history
 from .lp_oracle import solve_lp_rs
 from .models.core.occupancy import Occupancy
 from .models.core.reinit import build_window_state
+from .models.core.stream import build_history_stream, build_stream
 from .models.core.error_params import make_error_params
 from .models.policy import ThresholdPolicy, mechanism_summary, simulate
 from .phase0 import (_compute_job_energy, _lookup_grid, assign_type_ids, run_phase0,
@@ -95,15 +99,6 @@ def occupancy_series(tick, D, A, admit):
     return t[keep], lev[keep], w[keep]
 
 
-def milp_nonzeros(B, source="reference") -> tuple[int, int]:
-    """(candidate jobs, constraint nonzeros) of Benchmarks.job_opt_bucketed(source, 'true')."""
-    S = B.S
-    cand = np.flatnonzero(B.bucket_types(source)["r"] > 0)
-    t, D = S.tick[cand], S.D[cand]
-    last = np.searchsorted(t, t + D, side="left") - 1
-    return int(cand.size), int((last - np.arange(cand.size) + 1).sum() * S.A.shape[1])
-
-
 def window_taus(B, window_ticks: int) -> np.ndarray:
     """tau of the fluid LP on each full window of the stream (its own type rates, no fallback), (n_windows, |I|)."""
     S, cfg = B.S, B.cfg
@@ -155,11 +150,9 @@ def static_run(B, st0, cfg, no_learning: bool = False, tau=None) -> dict:
                 occupancy=(S.tick, S.D, S.A, adm))
 
 
-def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_nonzeros: int = 0,
-               milp_time_limit: float = 600.0, no_learning: bool = True) -> dict:
-    """Every type / average model at capacity.f = f (the quota fixed point is at this f, so the jobs change with f).
-    The full-stream bucketed MILP runs only if its constraint matrix has <= max_milp_nonzeros nonzeros (0 = never;
-    the one-week MILP is window_models)."""
+def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), no_learning: bool = True) -> dict:
+    """Every type / average model on the stream at capacity.f = f (the quota fixed point is at this f, so the jobs
+    change with f). Not used by the f rule (that is evaluate_f_H, on H only)."""
     cfg = replace(base_cfg, capacity=replace(base_cfg.capacity, f=f)).validate()
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
@@ -195,15 +188,6 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     res["fluid_feasible"] = dict(tau=np.asarray(lpf.tau).tolist(), counts=admit_counts(xf, pf),
                                  fill=lp_fill(ref, xf, c, p=pf).tolist(), split=type_split(ref, xf, T, lam, p=pf),
                                  n_types_removed=int((~feas & (ref.p > 0)).sum()))
-    # bucketed MILP: only when small enough
-    n_cand, nnz = milp_nonzeros(B, "reference")
-    res["bucketed"] = dict(n_candidates=n_cand, nonzeros=nnz, run=nnz <= max_milp_nonzeros)
-    if res["bucketed"]["run"]:
-        o = B.job_opt_bucketed("reference", "true", time_limit=milp_time_limit)
-        x, terms = o["x"], B.terms
-        res["bucketed"].update(split={"customer value": float(terms.cv[x].sum()), "profit": float(terms.profit[x].sum()),
-                                      "carbon": float(-terms.carbon_usd[x].sum()), "reward": o["R_real"]},
-                               status=o["status"], gap=o["gap"], runtime_s=o["runtime_s"])
     res["oversize"] = dict(stream=int(big.sum()), H=int(np.any(ds.H.A > c[None, :], axis=1).sum()),
                            cpu_hours_share=float((S.A[big, 0] * S.duration_hours[big]).sum()
                                                  / (S.A[:, 0] * S.duration_hours).sum()))
@@ -212,30 +196,64 @@ def evaluate_f(base_cfg, f: float, seed: int = 0, windows_h=(24, 6), max_milp_no
     return res
 
 
+# --------------------------------------------------------------------------- #
+# The f rule (D3), on H only
+# --------------------------------------------------------------------------- #
 F_SCAN = (0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6)
 
 
+def f_rule_point(ds, cfg) -> dict:
+    """
+    One f of the rule, from H alone: Phase 0 on ds (its H), then H's jobs replayed through the static ThresholdPolicy
+    of that Phase 0 state with capacity C (the real gate). Reads only ds.H, ds.capacity and the grid file.
+    Returns Phase 0's numbers (U0, sigma, grid, D_bar, C, Q, s_C, r_max, tau, LP fill) and the replay's
+    '% of H's time with the cluster >= 95% full' (full_time).
+    """
+    st0 = run_phase0(ds, cfg)
+    SH = build_history_stream(ds, st0, cfg)
+    c = np.asarray(ds.capacity, float)
+    pol = ThresholdPolicy(st0, SH)
+    sim = simulate(SH, Occupancy(c, record=False), pol)
+    mech = mechanism_summary(pol, sim, SH)
+    _, lev, w = occupancy_series(SH.tick, SH.D, SH.A, sim.admit)
+    x0, _ = lp_x(st0, c, cfg)
+    g = st0.grid
+    return dict(f=float(cfg.capacity.f), C=c.tolist(), D_bar=np.asarray(ds.capacity_diag["D_bar"]).tolist(),
+                quota=list(ds.limit_report.quota), n_H=int(ds.H.n), U0=float(st0.u0), sigma=float(st0.myerson.sigma),
+                v_min=float(g.bnd_v[0]), v_max=float(g.bnd_v[-1]), rho=float(g.ratio), s_C=float(st0.carbon_price),
+                r_max=float(st0.r_max), tau=np.asarray(st0.tau, float).tolist(), lp_fill=lp_fill(st0, x0, c).tolist(),
+                full_time=float((w * (lev >= FULL * c[None, :]).any(1)).sum() / w.sum()),
+                mean_occupancy_over_C=((lev * w[:, None]).sum(0) / w.sum() / c).tolist(),
+                n_admitted=int(sim.admit.sum()), rejections=mech["rejections"])
+
+
+def evaluate_f_H(base_cfg, f: float) -> dict:
+    """f_rule_point at capacity.f = f on the H-only Dataset (data.load_history: no stream job is read)."""
+    cfg = replace(base_cfg, capacity=replace(base_cfg.capacity, f=f)).validate()
+    return f_rule_point(load_history(cfg), cfg)
+
+
 def tau_positive(r) -> bool:
-    """Condition (a) of the f rule: tau > 0 (CPU or RAM) in BOTH the Phase 0 LP and fluid OPT."""
-    return bool(np.any(np.asarray(r["phase0_lp"]["tau"]) > 0) and np.any(np.asarray(r["fluid"]["tau"]) > 0))
+    """Condition (a) of the f rule: tau > 0 (CPU or RAM) in the Phase 0 LP (on H)."""
+    return bool(np.any(np.asarray(r["tau"]) > 0))
 
 
 def band_distance(r, band=(0.20, 0.30)) -> float:
-    x = r["static"]["full_time"]
+    x = r["full_time"]
     return max(band[0] - x, 0.0, x - band[1])
 
 
 def select_f(results, band=(0.20, 0.30), target=0.25):
     """
-    The f rule (D3), in priority order:
-      (a) REQUIRED: tau > 0 in both the Phase 0 LP and fluid OPT (CPU or RAM);
-      (b) among the f that pass (a): the static policy's '% time >= 95% full' closest to the band (0 inside), ties
-          to the target 25%.
+    The f rule (D3), on H only (results = evaluate_f_H over the scan), in priority order:
+      (a) REQUIRED: tau > 0 (CPU or RAM) in the Phase 0 LP;
+      (b) among the f that pass (a): the '% of H's time with the cluster >= 95% full' of H's replay through the static
+          policy closest to the band (0 inside), ties to the target 25%.
     """
     ok = [r for r in results if tau_positive(r)]
     if not ok:
-        raise ValueError("f rule: no f of the scan has tau > 0 in both the Phase 0 LP and fluid OPT")
-    return min(ok, key=lambda r: (band_distance(r, band), abs(r["static"]["full_time"] - target)))["f"]
+        raise ValueError("f rule: no f of the scan has tau > 0 in the Phase 0 LP")
+    return min(ok, key=lambda r: (band_distance(r, band), abs(r["full_time"] - target)))["f"]
 
 
 # --------------------------------------------------------------------------- #
@@ -356,36 +374,6 @@ def fig_H_vs_month(J, axs):
     axs[0].set_ylabel("share of jobs at or below x", color=INK)
 
 
-MODELS = (("fluid", "fluid OPT (hindsight)"), ("fluid_feasible", "fluid on feasible types"),
-          ("phase0_expected", "Phase 0 LP, expected"), ("static", "static Phase 0, realised"))
-
-
-def model_reward(r, key) -> float:
-    if key == "phase0_expected":
-        return r["phase0_lp"]["expected"]["reward"]
-    return r[key]["split"]["reward"]
-
-
-def fig_tau_vs_f(results, axs):
-    fs = [r["f"] for r in results]
-    for ax, i, nm in zip(axs, (0, 1), ("CPU", "RAM")):
-        for key, lab, col, ls in (("phase0_lp", "Phase 0 LP", BLUE, "-"), ("fluid", "fluid OPT", ORANGE, "--"),
-                                  ("fluid_feasible", "fluid on feasible types", INK2, ":")):
-            ax.plot(fs, [r[key]["tau"][i] for r in results], color=col, ls=ls, marker="o", ms=4, lw=1.6, label=lab)
-        ax.set_title(f"tau ({nm})", loc="left", fontsize=10, color=INK)
-        _style(ax, "f (cluster = f x mean demand of H), log scale", "tau ($ per machine-tick)")
-    axs[0].legend(frameon=False, fontsize=8)
-
-
-def fig_reward_vs_f(results, ax):
-    fs = [r["f"] for r in results]
-    for (key, lab), col, ls in zip(MODELS, (ORANGE, INK2, BLUE, BLUE), ("--", ":", "-", "-.")):
-        ax.plot(fs, [model_reward(r, key) for r in results], color=col, ls=ls, marker="o", ms=4, lw=1.6, label=lab)
-    ax.set_title("Reward over the stream ($) by model", loc="left", fontsize=10, color=INK)
-    _style(ax, "f, log scale", "reward ($ over the stream)")
-    ax.legend(frameon=False, fontsize=8)
-
-
 def fig_occupancy(r, axs, tick_seconds=1.0):
     st = r["static"]
     tick, D, A, adm = r["occupancy"]
@@ -473,45 +461,18 @@ def sub_stream(S, mask):
     return type(S)(n=int(mask.sum()), **kw)
 
 
-def window_models(cfg, days=(0.0, 7.0), milp_time_limit: float = 3600.0, tail_hours: float | None = 1.0) -> dict:
+def window_discretization(cfg, days=(0.0, 7.0), time_limit: float = 3600.0) -> dict:
     """
-    The models on the stream arrivals of days [days[0], days[1]) after H, T = the window length (D6):
-      fluid (window)          the fluid LP with each type's volume counted only INSIDE the window
-                              (mean of min(D_j, window end - t_j) over its jobs);
-      fluid feasible (window) the same with the types whose request exceeds C removed;
-      fluid (whole volume)    the usual fluid LP (each type's whole volume A x d_bar), for comparison;
-      bucketed MILP           reference buckets, true durations, its own HiGHS instance and time limit; capacity
-                              checks also every tail_hours after the last arrival.
+    The discretization cost of the grid on the stream arrivals of days [days[0], days[1]) after H (D6):
+    benchmarks.discretization_milps (MILP_true vs MILP_bin, true durations, capacity checked at every arrival), with
+    Phase 0's grid, bid model and s_C, lambda = 1. Each MILP on its own HiGHS instance with time_limit seconds.
     """
-    import time
     ds = load_dataset(cfg)
     st0 = run_phase0(ds, cfg)
-    S = Benchmarks(ds, st0, cfg).S
+    S = build_stream(ds, cfg)
     t0, t1 = days[0] * 86400 / cfg.time.tick_seconds, days[1] * 86400 / cfg.time.tick_seconds
-    m = (S.tick > t0) & (S.tick <= t1)
-    Sw = sub_stream(S, m)
-    Bw = Benchmarks(ds, st0, cfg, stream=Sw)
-    Bw.T = int(t1 - t0)
-    t = time.perf_counter()
-    fluid_whole = Bw.fluid_opt()
-    ref = Bw.reference_state
-    j = Bw.bucket_types("reference")["type"]
-    inside = np.minimum(Sw.D, Bw.T - (Sw.tick - t0) + 1).astype(float)          # ticks of each job inside the window
-    N = np.bincount(j, minlength=ref.n_types)
-    d_in = np.divide(np.bincount(j, weights=inside, minlength=ref.n_types), N, out=np.zeros(ref.n_types),
-                     where=N > 0)
-    v_in = ref.A_type * d_in[:, None]
-    feas = ~np.any(ref.A_type > Bw.c[None, :], axis=1)
-    lp_w = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=v_in, c=Bw.c, presolve=cfg.lp.presolve)
-    lp_wf = solve_lp_rs(p=ref.p * feas, r=ref.r_tilde, v=v_in, c=Bw.c, presolve=cfg.lp.presolve)
-    t_lp = time.perf_counter() - t
-    n_cand, nnz = milp_nonzeros(Bw, "reference")
-    tail = None if tail_hours is None else int(round(tail_hours * 3600 / cfg.time.tick_seconds))
-    o = Bw.job_opt_bucketed("reference", "true", time_limit=milp_time_limit, tail_step=tail)
-    return dict(f=cfg.capacity.f, days=days, n_jobs=int(Sw.n), C=Bw.c.tolist(),
-                fluid=float(lp_w.optimum) * Bw.T, fluid_feasible=float(lp_wf.optimum) * Bw.T,
-                fluid_whole_volume=fluid_whole, tail_hours=tail_hours, n_tail_checks=o["n_tail_checks"],
-                bucketed_believed=o["R_believed"], bucketed_realised=o["R_real"], bucketed_lp_believed=o["R_lp_believed"],
-                bucketed_dual_bound=o["dual_bound"], status=o["status"], gap=o["gap"], milp_runtime_s=o["runtime_s"],
-                milp_lp_runtime_s=o["lp_runtime_s"], lp_runtime_s=t_lp, n_candidates=n_cand, nonzeros=o["nonzeros"],
-                feasible_true=o["feasible_true"], milp_time_limit=milp_time_limit)
+    Sw = sub_stream(S, (S.tick > t0) & (S.tick <= t1))
+    lam = replace(cfg.objective, lambda1=1.0, lambda2=1.0, lambda3=1.0)
+    out = discretization_milps(Sw, st0, lam, ds.capacity, time_limit=time_limit)
+    return dict(f=cfg.capacity.f, seed=cfg.run.seed, days=tuple(days), C=np.asarray(ds.capacity).tolist(),
+                **{k: v for k, v in out.items() if k not in ("R_true", "R_bin")})

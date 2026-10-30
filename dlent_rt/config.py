@@ -92,7 +92,7 @@ class HardwareCfg:
     n_profiles: int = 32
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
-    fit_on: str = "full"            # "full" | "H"
+    fit_on: str = "full"            # "full" | "H" (the f rule always fits on H: data.load_history)
     # Minimum hardware-profile component that may enter gamma's v_min term (degenerate k-means centroids are
     # left out of that term only; it is NOT a filter on which types are served).
     hw_floor: float = 1.0e-5
@@ -111,7 +111,7 @@ class LimitsCfg:
 @dataclass(frozen=True)
 class CapacityCfg:
     # C_i = f * D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H| (machines; H only, after the quota, capped durations).
-    # ONE cluster for every model.
+    # ONE cluster for every model. f is chosen on H only (theory_eval.select_f over evaluate_f_H; scripts/select_f.py).
     f: float = 0.5
     # Job-level enlargement (off by default): if a job-level model rejects more than job_level_reject_max of the
     # positive-reward jobs for lack of space (benchmarks.job_level_space_check), C is multiplied by
@@ -131,7 +131,8 @@ class ObjectiveCfg:
 @dataclass(frozen=True)
 class GridCfg:
     # Geometric grid on HOURLY bids: L_k = v_min rho^k, rho = (v_max / v_min)^(1 / k_star), v_min / v_max = the smallest /
-    # largest bid. Types = (bid bin, priority, hardware profile).
+    # largest bid. Types = (bid bin, priority, hardware profile). Its discretization cost = MILP_true vs MILP_bin
+    # (benchmarks.discretization_milps: the job's bid vs its bin's lower edge, true durations).
     k_star: int = 128
     priority_classes: tuple = (1, 2, 3, 4, 5)
 

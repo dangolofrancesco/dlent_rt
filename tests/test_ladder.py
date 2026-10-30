@@ -11,8 +11,8 @@ from dlent_rt.models.theory import TheoryModel
 from dlent_rt.phase0 import run_phase0
 from tests.synthetic import synthetic_config
 
-ROWS = ["job-level, no capacity", "feasible ceiling", "job-level MILP", "bucketed MILP A (reference buckets)",
-        "bucketed MILP A (Phase 0 buckets)", "fluid OPT", "fluid OPT on feasible types", "Greedy-Pos",
+ROWS = ["job-level, no capacity", "feasible ceiling", "job-level MILP", "job-level MILP on bin values, at true rewards",
+        "fluid OPT", "fluid OPT on feasible types", "Greedy-Pos",
         "G1 type greedy", "static Phase 0", "no-learning model", "DLENT-RT"]
 
 
@@ -37,9 +37,20 @@ def test_ladder_rows_and_bounds(run):
     assert r["feasible ceiling"] <= r["job-level, no capacity"] + 1e-9
     assert r["job-level MILP"] <= r["job-level, no capacity"] + 1e-6
     for k in ("Greedy-Pos", "G1 type greedy", "static Phase 0", "no-learning model", "DLENT-RT",
-              "job-level MILP"):
+              "job-level MILP", "job-level MILP on bin values, at true rewards"):
         assert r[k] <= r["feasible ceiling"] + 1e-6, k
     assert 0.0 <= lad["g1_decision_error"] <= 1.0
+
+
+def test_discretization_in_the_ladder(run):
+    """The ladder's discretization cost: OPT_bin and MILP_bin's schedule at the true rewards are below OPT_true."""
+    B, model, res, lad = run
+    d = lad["discretization"]
+    assert d["n_jobs_reward_bin_gt_true"] == 0
+    assert d["bin"]["best"] <= d["true"]["bound"] + 1e-6
+    assert lad["rows"]["job-level MILP on bin values, at true rewards"] == d["bin_schedule_at_true"]
+    assert d["decision_loss"] >= -1e-6 * max(1.0, abs(d["true"]["best"]))
+    assert d["worst_case_pct"] == pytest.approx(100 * (1 - 1 / B.state0.grid.ratio))
 
 
 def test_baselines_use_the_mechanism(run):

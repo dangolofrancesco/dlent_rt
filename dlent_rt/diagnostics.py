@@ -259,23 +259,24 @@ def checks_grid(st, cfg):
 # 6. Cluster and quota
 # --------------------------------------------------------------------------- #
 def scan_table(scan: dict) -> pd.DataFrame:
+    """The f rule on H (scripts/select_f.py -> f_scan_H.pkl; theory_eval.evaluate_f_H per f)."""
     rows = []
     for r in scan["results"]:
-        s = r["static"]
-        rows.append({"f": r["f"], "(a) tau > 0 in Phase 0 LP and fluid OPT": te.tau_positive(r),
-                     "(b) distance to the 20-30% band (points)": 100 * te.band_distance(r), "C CPU": r["C"][0], "C RAM": r["C"][1], "Q CPU": r["quota"][0], "Q RAM": r["quota"][1],
-                     "H jobs": r["n_H"], "stream jobs": r["n_stream"], "% time >= 95% full": 100 * s["full_time"],
-                     "mean occupancy / C (CPU)": 100 * s["mean_occupancy_over_C"][0],
-                     "rejected for space %": 100 * s["rejected_space"],
-                     "tau Phase 0 (CPU, RAM)": str(np.round(r["phase0_lp"]["tau"], 5).tolist()),
-                     "tau fluid OPT (CPU, RAM)": str(np.round(r["fluid"]["tau"], 5).tolist()),
-                     "static reward $": s["split"]["reward"], "fluid OPT $": r["fluid"]["split"]["reward"]})
+        rows.append({"f": r["f"], "(a) tau > 0 in the Phase 0 LP": te.tau_positive(r),
+                     "(b) distance to the 20-30% band (points)": 100 * te.band_distance(r),
+                     "% of H's time >= 95% full": 100 * r["full_time"],
+                     "tau Phase 0 (CPU, RAM)": str(np.round(r["tau"], 6).tolist()),
+                     "LP fill (CPU, RAM) %": str(np.round(100 * np.asarray(r["lp_fill"]), 1).tolist()),
+                     "C CPU": r["C"][0], "C RAM": r["C"][1], "Q CPU": r["quota"][0], "Q RAM": r["quota"][1],
+                     "H jobs": r["n_H"], "H jobs admitted": r["n_admitted"],
+                     "mean occupancy / C (CPU) %": 100 * r["mean_occupancy_over_C"][0],
+                     "U0 ($/h)": r["U0"], "sigma": r["sigma"], "s_C ($/kg)": r["s_C"], "r_max ($)": r["r_max"]})
     out = pd.DataFrame(rows)
     out["picked"] = out.f == scan["selected"]
     return out
 
 
-def checks_cluster(ds, st, cfg, scan: dict, fluid_tau):
+def checks_cluster(ds, st, cfg, scan: dict):
     md = ds.capacity_diag
     its = ds.limit_report.quota_iterations
     Q = np.asarray(ds.limit_report.quota)
@@ -285,11 +286,11 @@ def checks_cluster(ds, st, cfg, scan: dict, fluid_tau):
              f"Q / C = {np.round(Q / ds.capacity, 4).tolist()}"),
             ("fixed point stopped with a move < 1%", np.all(np.asarray(its[-1]["change"]) < cfg.limits.quota_tol),
              f"{len(its)} steps, last move {np.round(its[-1]['change'], 4).tolist()}"),
-            ("f = the rule's pick: (a) tau > 0 in both LPs, then (b) closest to the 20-30% band",
-             scan["selected"] == cfg.capacity.f, f"rule picks {scan['selected']}, config f = {cfg.capacity.f}; "
-             f"{100 * _full(scan, cfg.capacity.f):.1f}% of the time >= 95% full"),
-            ("tau > 0 in the Phase 0 LP (some resource)", np.any(np.asarray(st.tau) > 0), f"tau = {np.round(st.tau, 6).tolist()}"),
-            ("tau > 0 in fluid OPT (some resource)", np.any(np.asarray(fluid_tau) > 0), f"tau = {np.round(fluid_tau, 6).tolist()}")]
+            ("f = the rule's pick on H: (a) tau > 0 in the Phase 0 LP, then (b) H's replay closest to the 20-30% band",
+             scan["selected"] == cfg.capacity.f, f"rule picks {scan['selected']}, config f = {cfg.capacity.f}"
+             + (f"; {100 * _full(scan, cfg.capacity.f):.1f}% of H's time >= 95% full"
+                if any(r["f"] == cfg.capacity.f for r in scan["results"]) else "")),
+            ("tau > 0 in the Phase 0 LP (some resource)", np.any(np.asarray(st.tau) > 0), f"tau = {np.round(st.tau, 6).tolist()}")]
     iters = pd.DataFrame([{"step": i["iteration"], "Q CPU": i["Q"][0], "Q RAM": i["Q"][1], "jobs kept": i["n_kept"],
                            "H jobs": i["n_H"], "C CPU": i["C"][0], "C RAM": i["C"][1],
                            "move CPU %": 100 * i["change"][0], "move RAM %": 100 * i["change"][1]} for i in its])
@@ -297,7 +298,7 @@ def checks_cluster(ds, st, cfg, scan: dict, fluid_tau):
 
 
 def _full(scan, f):
-    return next(r["static"]["full_time"] for r in scan["results"] if r["f"] == f)
+    return next(r["full_time"] for r in scan["results"] if r["f"] == f)
 
 
 # --------------------------------------------------------------------------- #
@@ -438,17 +439,34 @@ def benchmark_table(r: dict) -> pd.DataFrame:
                                                                         "social welfare")}} for n, s in rows])
 
 
-def checks_week(w: dict):
-    best, bound = w["bucketed_believed"], min(w["bucketed_dual_bound"], w["bucketed_lp_believed"])
-    rows = [("fluid (inside the window) >= fluid on feasible types", w["fluid"] >= w["fluid_feasible"] - 1e-6,
-             f"{w['fluid']:,.2f} >= {w['fluid_feasible']:,.2f}"),
-            ("fluid on feasible types (inside the window) >= MILP bound", w["fluid_feasible"] >= bound - 1e-6,
-             f"{w['fluid_feasible']:,.2f} >= {bound:,.2f}"),
-            ("MILP bound >= MILP best", bound >= best - 1e-6, f"{bound:,.2f} >= {best:,.2f}"),
-            ("the MILP's chosen set is feasible on the true durations", w["feasible_true"], ""),
-            ("the MILP used its own 3,600 s budget", w["milp_runtime_s"] >= 0.9 * w["milp_time_limit"] or w["gap"] <= 1e-4,
-             f"{w['milp_runtime_s']:.0f} s, gap {100 * w['gap']:.2f}%")]
+def checks_discretization(w: dict):
+    """PASS / FAIL of the discretization MILPs (theory_eval.window_discretization -> discretization_milp.pkl)."""
+    t, b = w["true"], w["bin"]
+    budget = lambda o: o["runtime_s"] >= 0.9 * w["time_limit"] or o["gap"] <= 1e-4
+    rows = [("reward_bin <= reward_true for every job", w["n_jobs_reward_bin_gt_true"] == 0,
+             f"{w['n_jobs_reward_bin_gt_true']} jobs above"),
+            ("OPT_bin <= OPT_true bound", b["best"] <= t["bound"] + 1e-6, f"{b['best']:,.2f} <= {t['bound']:,.2f}"),
+            ("MILP_bin's schedule at the true rewards <= OPT_true bound", w["bin_schedule_at_true"] <= t["bound"] + 1e-6,
+             f"{w['bin_schedule_at_true']:,.2f} <= {t['bound']:,.2f}"),
+            ("both schedules feasible on the true durations", t["feasible_true"] and b["feasible_true"], ""),
+            ("each MILP solved or used its own time limit", budget(t) and budget(b),
+             f"true {t['runtime_s']:.0f} s (gap {100 * t['gap']:.3f}%), bin {b['runtime_s']:.0f} s (gap {100 * b['gap']:.3f}%)")]
     return check_table(rows)
+
+
+def discretization_table(w: dict) -> pd.DataFrame:
+    t, b = w["true"], w["bin"]
+    lo, hi = w["value_loss_range"]
+    return pd.Series({"jobs in the window": w["n_jobs"], "candidates (R_true > 0)": w["n_candidates"],
+                      "candidates of MILP_bin (R_bin > 0)": b["n_candidates"],
+                      "OPT_true best / bound $": f"{t['best']:,.2f} / {t['bound']:,.2f} (gap {100 * t['gap']:.3f}%, {t['status']})",
+                      "OPT_bin best / bound $": f"{b['best']:,.2f} / {b['bound']:,.2f} (gap {100 * b['gap']:.3f}%, {b['status']})",
+                      "(a) value loss OPT_true - OPT_bin $": f"{w['value_loss']:,.2f} (range {lo:,.2f} .. {hi:,.2f})",
+                      "(a) value loss %": w["value_loss_pct"],
+                      "MILP_bin's schedule at the true rewards $": w["bin_schedule_at_true"],
+                      "(b) decision loss $": f"{w['decision_loss']:,.2f} (at most {w['decision_loss_max']:,.2f})",
+                      "(b) decision loss %": w["decision_loss_pct"],
+                      "(c) grid worst case 1 - 1/rho %": w["worst_case_pct"]}, name="value").to_frame()
 
 
 # --------------------------------------------------------------------------- #
@@ -530,7 +548,8 @@ CHECKLIST = [
     ("D2", "sigma refit in Phase 0", "dlent_rt/phase0.py", "myerson = bid_model(cfg, bids.v_rate, bids.cost_base)"),
     ("D2", "sigma refit at ReInit", "dlent_rt/models/core/reinit.py", "myerson = bid_model(cfg, v_arr, c_arr) if refit"),
     ("D3", "H = first 7 days", "dlent_rt/data.py", "def _n_history("),
-    ("D3", "C = f D_bar on H", "dlent_rt/data.py", "capacity = cfg.capacity.f * capacity_diag"),
+    ("D3", "C = f D_bar on H", "dlent_rt/data.py", "return cfg.capacity.f * capacity_diag[\"D_bar\"], capacity_diag"),
+    ("D3", "f rule on H only (H-only Dataset, replay of H)", "dlent_rt/theory_eval.py", "def evaluate_f_H("),
     ("D3", "Q = 0.2 C fixed point at the actual f", "dlent_rt/data.py", "Q_new = lim.quota_share * C"),
     ("D3", "24 h cap and 1-minute floor", "dlent_rt/data.py", "np.minimum(np.maximum(d, cfg.time.duration_floor_hours)"),
     ("D3", "job-level enlargement option and check", "dlent_rt/benchmarks.py", "def job_level_space_check("),
@@ -551,8 +570,8 @@ CHECKLIST = [
     ("D5", "ReInit: all arrivals vs admitted", "dlent_rt/models/core/reinit.py", "M, md = column_means(cols_of(o), n_cols"),
     ("D6", "hourly payment = max(L_k*, reserve)", "dlent_rt/mechanism.py", "pay = max(L, float(reserve))"),
     ("D6", "total payment = hourly payment x hours run; surplus, IR", "dlent_rt/models/theory.py", "pay = pay_rate * float(S.duration_hours[i])"),
-    ("D6", "benchmarks: fluid OPT, fluid feasible, bucketed MILP", "dlent_rt/benchmarks.py", "def fluid_opt_feasible_types("),
-    ("D6", "fluid on windows: volume inside the window only", "dlent_rt/theory_eval.py", "v_in = ref.A_type * d_in"),
+    ("D6", "benchmarks: fluid OPT and fluid on feasible types (upper bounds)", "dlent_rt/benchmarks.py", "def fluid_opt_feasible_types("),
+    ("D6", "discretization cost = MILP_true vs MILP_bin (true durations)", "dlent_rt/benchmarks.py", "def discretization_milps("),
 ]
 
 

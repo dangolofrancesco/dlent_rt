@@ -2,13 +2,15 @@
 The long computations of notebooks/01_model_check.ipynb, cached in reports/week33/cache/ (the notebook reads the
 cache; without it, it recomputes the same things itself).
 
-    dlent_venv/bin/python scripts/model_check_cache.py scan      # the f scan (~5 min) -> f_scan.pkl
-    dlent_venv/bin/python scripts/model_check_cache.py week      # one-week bucketed MILP, 3,600 s -> week_milp.pkl
+    dlent_venv/bin/python scripts/model_check_cache.py select_f  # the f rule on H (scripts/select_f.py) -> f_scan_H.pkl
+    dlent_venv/bin/python scripts/model_check_cache.py bench     # the stream models at the configured f -> benchmarks_f.pkl
+    dlent_venv/bin/python scripts/model_check_cache.py disc      # MILP_true vs MILP_bin, 7 days, 3,600 s each
+                                                                 # (scripts/discretization_milp.py) -> discretization_milp.pkl
     dlent_venv/bin/python scripts/model_check_cache.py theory    # one theoretical DLENT-RT run -> theory_run.pkl
                                                                  # (+ IR / upper set / truthfulness spot check)
-    dlent_venv/bin/python scripts/model_check_cache.py all       # scan, then week and theory in two processes
+    dlent_venv/bin/python scripts/model_check_cache.py all       # select_f and bench, then disc and theory in two processes
 
-Every step uses configs/default.yaml as it is on disk (week and theory at its capacity.f).
+Every step uses configs/default.yaml as it is on disk (bench, disc and theory at its capacity.f).
 """
 from __future__ import annotations
 
@@ -27,32 +29,29 @@ sys.path.insert(0, str(ROOT))
 CACHE = ROOT / "reports" / "week33" / "cache"
 
 
-def scan() -> dict:
+def select_f() -> dict:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import select_f as sf
+    return sf.main()
+
+
+def bench() -> dict:
+    """fluid OPT, fluid on feasible types, the static policy, the no-learning model and the window LPs on the stream
+    at the configured f (theory_eval.evaluate_f). Not part of the f rule."""
     from dlent_rt import theory_eval as te
     from dlent_rt.config import default_config
     cfg = default_config()
-    out = []
-    for f in te.F_SCAN:
-        t = time.perf_counter()
-        r = te.evaluate_f(cfg, f, seed=cfg.run.seed)
-        if f != cfg.capacity.f:
-            r.pop("occupancy")                 # keep the occupancy series of the configured f only
-        r["runtime_s"] = time.perf_counter() - t
-        out.append(r)
-        print(f"f = {f}: >= 95% full {100 * r['static']['full_time']:.1f}% of the time", flush=True)
-    res = dict(results=out, selected=te.select_f(out), config_f=cfg.capacity.f)
-    _save(res, "f_scan.pkl")
-    print(f"fixed rule picks f = {res['selected']}; configs/default.yaml has f = {cfg.capacity.f}")
-    return res
-
-
-def week() -> dict:
-    from dlent_rt import theory_eval as te
-    from dlent_rt.config import default_config
-    cfg = default_config()
-    r = te.window_models(cfg, days=(0.0, 7.0), milp_time_limit=3600.0, tail_hours=1.0)
-    _save(r, "week_milp.pkl")
+    t = time.perf_counter()
+    r = te.evaluate_f(cfg, cfg.capacity.f, seed=cfg.run.seed)
+    r["runtime_s"] = time.perf_counter() - t
+    _save(r, "benchmarks_f.pkl")
     return r
+
+
+def disc() -> dict:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import discretization_milp as dm
+    return dm.main(days=7.0, time_limit=3600.0)
 
 
 def theory() -> dict:
@@ -93,15 +92,16 @@ def _save(obj, name):
 
 def _run(name):
     warnings.simplefilter("ignore")
-    return {"scan": scan, "week": week, "theory": theory}[name]()
+    return {"select_f": select_f, "bench": bench, "disc": disc, "theory": theory}[name]()
 
 
 if __name__ == "__main__":
     warnings.simplefilter("ignore")
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
     if what == "all":
-        scan()
+        select_f()
+        bench()
         with ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn")) as pool:
-            list(pool.map(_run, ["week", "theory"]))
+            list(pool.map(_run, ["disc", "theory"]))
     else:
         _run(what)

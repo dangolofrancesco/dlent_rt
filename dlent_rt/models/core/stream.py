@@ -58,3 +58,18 @@ def build_stream(ds: Dataset, cfg: Config) -> StreamData:
         price=np.asarray(price, float), ci=np.asarray(ci, float),
         C_elec=electricity_cost(E, price), C_carbon=carbon_kg(E, ci),
     )
+
+
+def build_history_stream(ds: Dataset, state0, cfg: Config) -> StreamData:
+    """H's jobs as a StreamData, with Phase 0's own bids (state0.bids): the replay of H through a policy (the f rule,
+    D3). Reads only ds.H."""
+    H, bids = ds.H, state0.bids
+    E = _compute_job_energy(H, cfg)
+    price, ci = _lookup_grid(H, ds)
+    return StreamData(
+        n=H.n, tick=np.asarray(H.arrival_step, np.int64) + 1, v=bids.v_rate, phi_gen=bids.phi_rate,
+        cost_base=bids.cost_base, priority=H.priority, hw_idx=H.hw_idx, A=H.A,
+        D=np.asarray(H.duration_steps, np.int64), duration_hours=H.duration_hours, energy_kwh=E,
+        power_kw=_compute_job_power(H, cfg), price=np.asarray(price, float), ci=np.asarray(ci, float),
+        C_elec=electricity_cost(E, price), C_carbon=carbon_kg(E, ci),
+    )

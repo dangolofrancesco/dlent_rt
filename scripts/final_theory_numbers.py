@@ -1,6 +1,8 @@
 """
 Week 33: the raw numbers of reports/week33/final_theory.md, from the model-check caches (scan, week, theory) and one
-Phase 0 at the configured f.
+Phase 0 at the configured f. Kept to reproduce that report: its f_scan.pkl (rule with fluid OPT on the stream) and
+week_milp.pkl (bucketed MILP) come from the code of commit 7f2f7fa; the current rule is on H (scripts/select_f.py)
+and the current discretization cost is scripts/discretization_milp.py.
 
     dlent_venv/bin/python scripts/model_check_cache.py scan     # then week and theory
     dlent_venv/bin/python scripts/final_theory_numbers.py       # -> reports/week33/final_theory_numbers.md
@@ -31,7 +33,6 @@ def md(df: pd.DataFrame, floatfmt="{:,.4g}") -> str:
 
 def main() -> None:
     warnings.simplefilter("ignore")
-    from dlent_rt import theory_eval as te
     from dlent_rt.config import default_config
     from dlent_rt.data import load_dataset
     from dlent_rt.phase0 import run_phase0
@@ -55,7 +56,8 @@ def main() -> None:
         rows.append({"f": r["f"], "C CPU": r["C"][0], "C RAM": r["C"][1], "stream jobs": r["n_stream"],
                      "tau Phase 0 (CPU, RAM)": str(np.round(r["phase0_lp"]["tau"], 6).tolist()),
                      "tau fluid (CPU, RAM)": str(np.round(r["fluid"]["tau"], 6).tolist()),
-                     "(a) tau > 0 in both": te.tau_positive(r),
+                     "(a) tau > 0 in both": bool(np.any(np.asarray(r["phase0_lp"]["tau"]) > 0)
+                                                 and np.any(np.asarray(r["fluid"]["tau"]) > 0)),
                      "static: % time >= 95% full": 100 * r["static"]["full_time"],
                      "fluid OPT $": r["fluid"]["split"]["reward"], "static $": r["static"]["split"]["reward"],
                      "no-learning $": r["no_learning"]["split"]["reward"]})

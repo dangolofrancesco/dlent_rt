@@ -1,9 +1,9 @@
 """
 Benchmarks for the regret of an online run (D6). Every number is scored with the single job-level reward
 dlent_rt.reward (R_job, $ per job), on the online STREAM (the jobs after H, within the job quota), with Phase 0's
-bid model and frozen s_C. Kept for the theoretical model: fluid OPT, fluid on feasible types, the bucketed MILP,
-the static Phase 0 policy and the no-learning model (models.policy). Practical only (code kept, not run in the
-model check): the job-level MILP, Greedy-Pos (G2) and the type greedy (G1).
+bid model and frozen s_C. Kept for the theoretical model: fluid OPT, fluid on feasible types (upper bounds), the
+discretization cost (two job-level MILPs, discretization_milps), the static Phase 0 policy and the no-learning model
+(models.policy). Practical only (code kept, not run in the model check): Greedy-Pos and the type greedy (G1).
 
     b = Benchmarks(ds, state0, cfg)          # or Benchmarks.from_model(theory_model)
     b.score(admitted_mask)    sum of R_job over the admitted stream jobs                 [$ per run]
@@ -14,10 +14,13 @@ model check): the job-level MILP, Greedy-Pos (G2) and the type greedy (G1).
                               schedule. Equals TheoryModel's summary["bench_global"].      [$ per run]
     b.job_level_opt()         offline job-level OPT (ORACLE): max sum_j R_job,j x_j, x in {0,1},
                               s.t. at every arrival tick the occupancy of the chosen jobs is <= c
-                              (HiGHS MILP). Kept as the reference for the discretization loss
-                              (fluid on types vs per-job decisions); also returns the LP
-                              relaxation and the no-capacity bound sum_j R_job,j^+.          [$ per run]
-    b.job_opt_bucketed(source, duration)
+                              (HiGHS MILP); also returns the LP relaxation and the no-capacity
+                              bound sum_j R_job,j^+.                                          [$ per run]
+    discretization_milps(S, state, lam, c)
+                              the discretization cost of the grid (week 33): MILP_true (each job
+                              valued at its own hourly bid b_j) vs MILP_bin (b_j replaced by its
+                              bin's lower edge L_k), same jobs, capacity, true durations.     [$ per run]
+    b.job_opt_bucketed(source, duration)      (week 30, used only by notebook 03)
                               the same per-tick-capacity MILP on BUCKETED jobs: the solver sees
                               each job's TYPE reward r~_k(j) instead of R_job (the professor's
                               benchmark between job OPT and fluid OPT, week 30). source =
@@ -141,6 +144,63 @@ def peak_occupancy(t, D, A) -> np.ndarray:
     return np.cumsum(d[order], axis=0).max(axis=0)
 
 
+def bin_values(v, grid) -> np.ndarray:
+    """L_k of every hourly bid: the lower edge of its bin (0 for bin 1)."""
+    return grid.lower_edges[grid.assign(v) - 1]
+
+
+def discretization_milps(S, state, lam, c, time_limit: float = 3600.0) -> dict:
+    """
+    The discretization cost of the grid (week 33). The grid changes only the VALUE (L_k instead of the bid), so two
+    job-level MILPs on the same jobs, the same capacity checks (at every arrival, true durations), the same carbon
+    map and s_C, differ only in that:
+        MILP_true   R_j = b_j d_j   + (phi_j(b_j) d_j   - C_elec,j) - s_C K_j
+        MILP_bin    R_j = L_k d_j   + (phi_j(L_k) d_j   - C_elec,j) - s_C K_j      L_k = lower edge of b_j's bin
+    with phi_j(x) = c_j phi_m(x / c_j) (the job's own cost_base c_j), d_j the true duration. S: any stream-like object
+    (tick, D, A, v, cost_base, duration_hours, C_elec, C_carbon); state: its grid, bid model and s_C.
+    Candidates = the jobs with R_true > 0, for both. A candidate with R_bin <= 0 is left out of MILP_bin: a job with
+    a negative reward is never in an optimal schedule, so OPT_bin does not change. L_k <= b_j and phi is increasing,
+    so R_bin <= R_true for every job and OPT_bin <= OPT_true.
+        value loss     OPT_true - OPT_bin (best - best; the range uses the MILPs' bounds)
+        decision loss  OPT_true - (MILP_bin's schedule valued at the true rewards)
+        worst case     1 - 1/rho of the grid
+    Each MILP (and its LP relaxation) runs on its own HiGHS instance with its own time limit.
+    """
+    terms = lambda b: reward.job_terms(b, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state.myerson,
+                                       state.carbon_price, lam).R
+    R_true = terms(np.asarray(S.v, float))
+    R_bin = terms(bin_values(S.v, state.grid))
+    c = np.asarray(c, float)
+    n = len(R_true)
+
+    def solve(R, cand):
+        x = np.zeros(n, bool)
+        if cand.size == 0:
+            return x, dict(best=0.0, bound=0.0, lp=0.0, gap=0.0, status="no candidates", runtime_s=0.0,
+                           n_candidates=0, nonzeros=0)
+        o = occupancy_milp(S.tick[cand], S.D[cand], S.A[cand], R[cand], c, time_limit)
+        x[cand] = o["x"]
+        return x, dict(best=float(R[x].sum()), bound=max(o["dual_bound"], float(R[x].sum())), lp=o["lp_obj"],
+                       gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"], n_candidates=int(cand.size),
+                       nonzeros=o["nonzeros"])
+    cand = np.flatnonzero(R_true > 0)
+    x_true, true = solve(R_true, cand)
+    x_bin, binm = solve(R_bin, cand[R_bin[cand] > 0])
+    peak = lambda x: peak_occupancy(S.tick[x], S.D[x], S.A[x])
+    for o, x in ((true, x_true), (binm, x_bin)):
+        o["feasible_true"] = bool(np.all(peak(x) <= c * (1 + 1e-9)))
+    at_true = float(R_true[x_bin].sum())
+    pct = lambda d: 100 * d / true["best"] if true["best"] > 0 else float("nan")
+    rho = state.grid.ratio
+    return dict(n_jobs=int(n), n_candidates=int(cand.size), true=true, bin=binm,
+                value_loss=true["best"] - binm["best"], value_loss_pct=pct(true["best"] - binm["best"]),
+                value_loss_range=(true["best"] - binm["bound"], true["bound"] - binm["best"]),
+                bin_schedule_at_true=at_true, decision_loss=true["best"] - at_true,
+                decision_loss_pct=pct(true["best"] - at_true), decision_loss_max=true["bound"] - at_true,
+                rho=float(rho), worst_case_pct=100 * (1 - 1 / rho), n_jobs_reward_bin_gt_true=int((R_bin > R_true + 1e-12).sum()),
+                x_true=x_true, x_bin=x_bin, R_true=R_true, R_bin=R_bin, time_limit=float(time_limit))
+
+
 class Benchmarks:
     def __init__(self, ds, state0, cfg, stream: StreamData | None = None):
         self.ds, self.state0, self.cfg = ds, state0, cfg
@@ -214,6 +274,7 @@ class Benchmarks:
     def job_opt_bucketed(self, source: str = "phase0", duration: str = "true",
                          time_limit: float = 300.0, tail_step: int | None = None) -> dict:
         """
+        Week 30, used only by notebook 03 (the discretization cost is discretization_milps).
         Job-level MILP on BUCKETED jobs: max sum_j r~_k(j) x_j over the jobs with r~ > 0, same
         per-tick capacity, stream and real A as job_level_opt. duration "true"
         (variant A) uses each job's true D in the occupancy, "type" (variant B) the type's d_bar
@@ -258,14 +319,15 @@ class Benchmarks:
         """
         The benchmark ladder of an online run (model = the TheoryModel, result = model.run()), every row scored
         with R_job on the same stream and physical gate [$ per run]:
-        no-capacity bound, feasible ceiling, job-level MILP, bucketed MILP A (reference / Phase 0 buckets),
+        no-capacity bound, feasible ceiling, job-level MILP (MILP_true), MILP_bin's schedule at the true rewards,
         fluid OPT, fluid OPT on feasible types, Greedy-Pos, G1, static Phase 0, the no-learning model, DLENT-RT.
         Greedy-Pos, static Phase 0 and the no-learning model use DLENT-RT's mechanism on the Phase 0 state
         (models.policy.ThresholdPolicy: threshold k* per column, hourly reserve, payment max(L_k*, r) x hours);
         Greedy-Pos with tau = 0, the no-learning model with the theoretical thinning p_U(W0, t) and the run's
         common random numbers.
-        Checks: DLENT-RT's score = its R_total; a bucketed A set is feasible and its realised value is at most
-        the job MILP (within the MILP's own gap). G1's decision-error rate (sign R_job != sign r~) is returned.
+        Checks: DLENT-RT's score = its R_total; both MILP schedules are feasible; OPT_bin and MILP_bin's schedule at
+        the true rewards are at most OPT_true's bound. The discretization cost (discretization_milps, without the
+        masks) and G1's decision-error rate (sign R_job != sign r~) are returned.
         """
         from .models.policy import ThresholdPolicy, TypeGreedyPolicy, mechanism_summary, run_policy
 
@@ -273,12 +335,11 @@ class Benchmarks:
         adm = np.zeros(S.n, bool)
         adm[[a["i"] for a in result.arrivals if a["admit"]]] = True
         assert np.isclose(self.score(adm), result.summary["R_total"], rtol=1e-10)
-        job = self.job_level_opt(time_limit=time_limit)
-        buck = {src: self.job_opt_bucketed(src, "true", time_limit=time_limit) for src in ("reference", "phase0")}
-        bound = job["R_ip"] * (1 + max(job["gap"], 0)) + 1e-6
-        for src, o in buck.items():
-            assert o["feasible_true"], src
-            assert o["R_real"] <= bound, (src, o["R_real"], job["R_ip"], job["gap"])
+        disc = discretization_milps(S, self.state0, self.cfg.objective, self.c, time_limit=time_limit)
+        assert np.allclose(disc["R_true"], R)
+        assert disc["true"]["feasible_true"] and disc["bin"]["feasible_true"]
+        for v in (disc["bin"]["best"], disc["bin_schedule_at_true"]):
+            assert v <= disc["true"]["bound"] + 1e-6, (v, disc["true"])
         g1 = TypeGreedyPolicy.from_state(self.state0, S, R, self.ds.H_span_steps)
         mech_pols = {"Greedy-Pos": ThresholdPolicy(self.state0, S, tau=0.0),
                      "static Phase 0": ThresholdPolicy(self.state0, S),
@@ -290,16 +351,14 @@ class Benchmarks:
         mech = {k: {a: b for a, b in mechanism_summary(p, sims[k], S).items() if a != "admit"}
                 for k, p in mech_pols.items()}
         ff = self.fluid_opt_feasible_types()
-        rows = {"job-level, no capacity": job["R_nocap"], "feasible ceiling": self.feasible_ceiling(),
-                "job-level MILP": job["R_ip"],
-                "bucketed MILP A (reference buckets)": buck["reference"]["R_real"],
-                "bucketed MILP A (Phase 0 buckets)": buck["phase0"]["R_real"],
+        rows = {"job-level, no capacity": float(R[R > 0].sum()), "feasible ceiling": self.feasible_ceiling(),
+                "job-level MILP": disc["true"]["best"],
+                "job-level MILP on bin values, at true rewards": disc["bin_schedule_at_true"],
                 "fluid OPT": self.fluid_opt(), "fluid OPT on feasible types": ff["value"],
                 **{k: self.score(v.admit) for k, v in sims.items()}, "DLENT-RT": self.score(adm)}
         ok = np.isfinite(g1.r_dec)
         return dict(rows=rows, admitted={k: int(v.admit.sum()) for k, v in sims.items()} | {"DLENT-RT": int(adm.sum())},
-                    job=dict((k, v) for k, v in job.items() if k != "x"),
-                    bucketed={s: {k: v for k, v in o.items() if k != "x"} for s, o in buck.items()},
+                    discretization={k: v for k, v in disc.items() if k not in ("x_true", "x_bin", "R_true", "R_bin")},
                     fluid_feasible=ff, mechanism=mech,
                     g1_decision_error=float(np.mean(np.sign(R[ok]) != np.sign(g1.r_dec[ok]))) if ok.any() else 0.0)
 

@@ -78,9 +78,10 @@ def _read_csv(cfg: Config) -> pd.DataFrame:
     cpu = df[col.requested_cpu].to_numpy(dtype=float)
     span = df[col.duration_hours].to_numpy(dtype=float)
     eff = np.divide(df[col.cpu_hours_real].to_numpy(dtype=float), cpu, out=span.copy(), where=cpu > 0)
-    assert np.all(eff <= span * (1 + 1e-9)), "effective duration > span"
+    assert not np.any(eff > span * (1 + 1e-9)), "effective duration > span"
     df[col.duration_hours] = eff
-    df = df.sort_values(col.datetime).reset_index(drop=True)
+    # stable: tied arrival times keep the file's order, so H's order does not depend on the rows after H
+    df = df.sort_values(col.datetime, kind="stable").reset_index(drop=True)
     return df
 
 
@@ -312,18 +313,67 @@ def _compute_d_max_steps(T: int, cfg: Config) -> tuple[int, dict]:
     return d_max, diag
 
 
-# Public entry point
-def load_dataset(cfg: Config) -> Dataset:
+class NoStream:
+    """The stream of a history-only Dataset (load_history): any access raises, so nothing can read the stream."""
+
+    def __getattr__(self, name):
+        raise RuntimeError(f"history-only Dataset: the stream was read (stream.{name})")
+
+
+def _quota_and_history(cfg: Config) -> tuple[pd.DataFrame, LimitReport, int, list[str]]:
+    """The jobs after the quota (fixed point on H) and the number n0 of H's jobs: H = the first n0 rows."""
     df = _read_csv(cfg)
     col = cfg.data.columns
-    resources = ["cpu", "ram"]
     a_cols = [col.requested_cpu, col.requested_ram]
-
     Q, its = _quota_fixed_point(df, cfg, a_cols)
     df, limit_report = apply_quota(df, a_cols, (float(Q[0]), float(Q[1])))
     limit_report.quota_iterations = its
+    return df, limit_report, _n_history(df, cfg), a_cols
 
-    n0 = _n_history(df, cfg)
+
+def _capacity(H: JobArrays, H_span_steps: int, cfg: Config) -> tuple[np.ndarray, dict]:
+    """C = f x D_bar: Phase 0 information only (H's jobs after the quota, capped durations, H's span)."""
+    capacity_diag = mean_demand(H.A, H.duration_hours, H_span_steps * cfg.time.tick_seconds / 3600.0)
+    capacity_diag["f"] = float(cfg.capacity.f)
+    capacity_diag["enlargement"] = 1.0
+    return cfg.capacity.f * capacity_diag["D_bar"], capacity_diag
+
+
+def _grid_data(cfg: Config):
+    if cfg.data.grid_csv and resolve_path(cfg.data.grid_csv).is_file():
+        return load_grid_data(str(resolve_path(cfg.data.grid_csv)))
+    return None
+
+
+def load_history(cfg: Config) -> Dataset:
+    """
+    The Dataset of H ALONE, for the f rule (D3): the same quota fixed point, H, C = f x D_bar and Q as load_dataset,
+    but no stream job is used. The hardware profiles are fit on H's requests only (whatever hardware.fit_on says);
+    stream = NoStream() (any access raises); T = H's span and a_max = H's largest request (read only by Phase 0's
+    data-xi / gamma diagnostics). H may be every job of the file.
+    """
+    df, limit_report, n0, a_cols = _quota_and_history(cfg)
+    df_H = df.iloc[:n0].reset_index(drop=True)
+    steps_H = _assign_real_tick_steps(df_H[cfg.data.columns.datetime].to_numpy(),
+                                      df_H[cfg.data.columns.datetime].to_numpy()[0], cfg.time.tick_seconds)
+    H_span_steps = int(steps_H[-1] - steps_H[0]) + 1
+    catalogue = fit_hardware_catalogue(df_H[a_cols].to_numpy(dtype=float), cfg)
+    d_max_steps = max(int(np.rint(cfg.time.d_cap_hours * 3600.0 / cfg.time.tick_seconds)), 1)
+    H = _build_job_arrays(df_H, cfg, ["cpu", "ram"], d_max_steps, catalogue, steps_H)
+    capacity, capacity_diag = _capacity(H, H_span_steps, cfg)
+    a_max = H.A.max(axis=0)
+    return Dataset(H=H, stream=NoStream(), resources=["cpu", "ram"], capacity=capacity, a_max=a_max,
+                   d_max_steps=d_max_steps, tick_seconds=cfg.time.tick_seconds, T=H_span_steps, n_arrivals_stream=0,
+                   H_span_steps=H_span_steps, hw_catalogue=catalogue, limit_report=limit_report,
+                   d_max_diag=dict(d_cap_hours=cfg.time.d_cap_hours, chosen=d_max_steps, ratio_to_T=float("nan")),
+                   xi=float(np.max(a_max / capacity)), grid_data=_grid_data(cfg), capacity_diag=capacity_diag)
+
+
+# Public entry point
+def load_dataset(cfg: Config) -> Dataset:
+    df, limit_report, n0, a_cols = _quota_and_history(cfg)
+    col = cfg.data.columns
+    resources = ["cpu", "ram"]
     if n0 >= len(df):
         raise ValueError(f"H has {n0} jobs = every job after the quota ({len(df)}): lower data.h_days.")
 
@@ -375,11 +425,7 @@ def load_dataset(cfg: Config) -> Dataset:
     stream = _build_job_arrays(df_stream, cfg, resources,
                                d_max_steps, catalogue, steps_stream)
 
-    # C = f x D_bar: Phase 0 information only (H's jobs after the quota, capped durations, H's span)
-    capacity_diag = mean_demand(H.A, H.duration_hours, H_span_steps * cfg.time.tick_seconds / 3600.0)
-    capacity_diag["f"] = float(cfg.capacity.f)
-    capacity_diag["enlargement"] = 1.0
-    capacity = cfg.capacity.f * capacity_diag["D_bar"]
+    capacity, capacity_diag = _capacity(H, H_span_steps, cfg)
 
     a_max = stream.A.max(axis=0)
     xi = float(np.max(a_max / capacity))
@@ -393,9 +439,7 @@ def load_dataset(cfg: Config) -> Dataset:
             RuntimeWarning,
         )
 
-    grid_data = None  
-    if cfg.data.grid_csv and resolve_path(cfg.data.grid_csv).is_file():
-        grid_data = load_grid_data(str(resolve_path(cfg.data.grid_csv)))
+    grid_data = _grid_data(cfg)
 
     return Dataset(
         H=H,

@@ -46,12 +46,13 @@ limits:
 
 # D3: C_i = f x D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H|. ONE cluster for every model.
 capacity:
-  # f rule (fixed, week 33), over f in {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}, hourly bids, the static policy with
-  # DLENT-RT's mechanism:
-  #   (a) REQUIRED: tau > 0 (CPU or RAM) in both the Phase 0 LP and fluid OPT;
-  #   (b) among those, the static Phase 0 policy's "% time >= 95% full" closest to the 20-30% band (ties: to 25%).
-  # f = 0.3-0.5 pass (a), 0.55 and 0.6 do not. All five are inside the band; 0.5 is the closest to 25% (25.6%).
-  # See reports/week33/final_theory.md and notebooks/01_model_check.ipynb, section 6.
+  # f rule (fixed, week 33), on H ONLY (scripts/select_f.py; no stream job is read), over f in
+  # {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}:
+  #   (a) REQUIRED: tau > 0 (CPU or RAM) in the Phase 0 LP;
+  #   (b) among those, replay H's jobs through the static Phase 0 policy (DLENT-RT's mechanism) with capacity C; the
+  #       f whose "% of H's time >= 95% full" is closest to the 20-30% band (ties: to 25%).
+  # f = 0.5 is the pick of the earlier rule (tau > 0 also in fluid OPT, static policy on the stream;
+  # reports/week33/final_theory.md). The rule on H has not been run yet: see reports/week33/discretization_and_f_on_H.md.
   f: 0.5
   job_level_enlarge: false    # off: enlarge C only if job-level models reject > 50% of positive-reward jobs for space
   job_level_reject_max: 0.5
@@ -84,7 +85,8 @@ objective:
   lambda2: 1.0
   lambda3: 1.0
 
-# D4: geometric grid on HOURLY bids, 128 bins between the smallest and the largest hourly bid of H (fixed)
+# D4: geometric grid on HOURLY bids, 128 bins between the smallest and the largest hourly bid of H (fixed).
+# Discretization cost: MILP_true (job's own bid) vs MILP_bin (its bin's lower edge), scripts/discretization_milp.py
 grid:
   k_star: 128
   priority_classes: [1, 2, 3, 4, 5]

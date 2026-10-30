@@ -5,9 +5,11 @@
 # replaces the old notebooks 01 (Phase 0 diagnostics) and 05 (theoretical models).
 #
 # Each section has a short introduction, then a PASS / FAIL table, then the results. The logic is in
-# `dlent_rt/diagnostics.py`. Three long computations are cached by `scripts/model_check_cache.py` in
-# `reports/week33/cache/`: the f scan, the one-week bucketed MILP (3,600 s, its own process) and the one
-# theoretical DLENT-RT run. Without the cache, this notebook computes them itself (about 1.5 hours).
+# `dlent_rt/diagnostics.py`. The long computations are cached by `scripts/model_check_cache.py` in
+# `reports/week33/cache/`: the f rule on H (`f_scan_H.pkl`, `scripts/select_f.py`), the stream models at the chosen f
+# (`benchmarks_f.pkl`), the discretization MILPs (`discretization_milp.pkl`, `scripts/discretization_milp.py`, two
+# MILPs of up to 3,600 s each) and the one theoretical DLENT-RT run (`theory_run.pkl`, about 5.5 hours). Without a
+# cache file, this notebook computes it itself.
 #
 # Build: `dlent_venv/bin/python notebooks/src/build.py 01_model_check --execute`.
 
@@ -241,19 +243,23 @@ display(pd.Series(summ, name="value").to_frame())
 # ## 6. Cluster and quota
 #
 # D3: D̄_i = Σ_H r_ij d_j / |H|, C_i = f · D̄_i, and Q_i = 0.2 · C_i of the cluster actually used (a fixed point:
-# Q sets which jobs are kept, the kept jobs set D̄). f follows a fixed rule with two conditions, in priority order,
-# over f ∈ {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}, with hourly bids:
+# Q sets which jobs are kept, the kept jobs set D̄). f follows a fixed rule on H ONLY (no stream job is read), with
+# two conditions in priority order, over f ∈ {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}:
 #
-# * (a) REQUIRED: τ > 0 (CPU or RAM) in both the Phase 0 LP and fluid OPT;
-# * (b) among the f that pass (a): the static Phase 0 policy's "% of the time ≥ 95% full" closest to the 20–30% band.
+# * (a) REQUIRED: τ > 0 (CPU or RAM) in the Phase 0 LP;
+# * (b) among the f that pass (a): replay H's jobs through the static policy of that f's Phase 0 state, with capacity
+#   C; pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to the 20–30% band (ties to 25%).
 #
-# The static policy here uses DLENT-RT's mechanism on the Phase 0 state (threshold k*, reserve, payment).
+# Each f uses an H-only dataset (`data.load_history`): the hardware profiles are fit on H, and the stream is never
+# built. The static policy uses DLENT-RT's mechanism on the Phase 0 state (threshold k*, reserve, payment).
 
 # %%
-SCAN = cached("f_scan.pkl", "scan")
-R0 = next(r for r in SCAN["results"] if r["f"] == CFG.capacity.f)
-tab, ITERS = dg.checks_cluster(DS, ST, CFG, SCAN, R0["fluid"]["tau"])
+SCAN = cached("f_scan_H.pkl", "select_f")
+R0 = cached("benchmarks_f.pkl", "bench")          # the stream models at the configured f (sections 9 and 10)
+tab, ITERS = dg.checks_cluster(DS, ST, CFG, SCAN)
 show(tab, {("D3", "C = f D_bar on H"): ["C = f x D_bar (H only)"],
+           ("D3", "f rule on H only (H-only Dataset, replay of H)"):
+               ["f = the rule's pick on H: (a) tau > 0 in the Phase 0 LP, then (b) H's replay closest to the 20-30% band"],
            ("D3", "Q = 0.2 C fixed point at the actual f"): ["Q = 0.2 C at the fixed point (within 2%)",
                                                              "fixed point stopped with a move < 1%"]})
 display(dg.scan_table(SCAN))
@@ -264,11 +270,11 @@ display(ITERS)
 SC = dg.scan_table(SCAN)
 fig, axs = plt.subplots(1, 2, figsize=(13, 3.6))
 axs[0].axhspan(20, 30, color=GRID, alpha=0.8, lw=0)
-axs[0].plot(SC.f, SC["% time >= 95% full"], color=BLUE, marker="o", ms=5, lw=1.6)
-for f, y in zip(SC.f, SC["% time >= 95% full"]):
+axs[0].plot(SC.f, SC["% of H's time >= 95% full"], color=BLUE, marker="o", ms=5, lw=1.6)
+for f, y in zip(SC.f, SC["% of H's time >= 95% full"]):
     axs[0].annotate(f"{y:.1f}%", (f, y), textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8, color=INK2)
-style(axs[0], "f", "% of the time >= 95% full")
-axs[0].set_title("Fixed rule: the band is 20-30% (grey)", loc="left", fontsize=10)
+style(axs[0], "f", "% of H's time >= 95% full")
+axs[0].set_title("Fixed rule on H: the band is 20-30% (grey)", loc="left", fontsize=10)
 axs[1].plot(SC.f, SC["C CPU"], color=BLUE, marker="o", ms=5, lw=1.6, label="C, CPU")
 axs[1].plot(SC.f, SC["C RAM"], color=ORANGE, marker="o", ms=5, lw=1.6, ls="--", label="C, RAM")
 style(axs[1], "f", "C (machines)")
@@ -330,7 +336,8 @@ display(pd.Series({k: v for k, v in TAB0.items() if not k.startswith("_")}, name
 # expected reward, the static Phase 0 policy and the no-learning model. Both baselines use DLENT-RT's mechanism on
 # the Phase 0 state, never updated: threshold k* per column, hourly reserve, payment max(L_k*, r) × hours; the
 # no-learning model adds the theoretical thinning. Every realised number uses the same job reward. Then τ per
-# window, the decomposition from H to the stream, and the one-week bucketed MILP.
+# window, the decomposition from H to the stream, and the discretization cost (MILP_true vs MILP_bin). Fluid OPT and
+# fluid on feasible types are upper bounds.
 
 # %%
 display(dg.benchmark_table(R0))
@@ -359,23 +366,19 @@ display(pd.Series({"Phase 0 LP, expected $": HS["phase0_expected"],
                    "mean r x d, stream / H (weighted)": HS["rd_ratio"]}, name="value").to_frame())
 
 # %% [markdown]
-# **The one-week bucketed MILP** (the first 7 days of the stream; reference buckets, true durations; its own HiGHS
-# instance with a 3,600 s limit). The fluid LP on a window counts only the volume inside the window (D6).
+# **The discretization cost** (the first 7 days of the stream; scripts/discretization_milp.py). The grid changes only
+# the value of a job (L_k, the lower edge of its bin, instead of its hourly bid b), so two job-level MILPs on the same
+# jobs, capacity checks (at every arrival, true durations), carbon map and s_C, λ = 1, differ only in that:
+# MILP_true values each job at b_j·d_j + (φ_j(b_j)·d_j − C_elec,j) − s_C·K_j, MILP_bin at L_k·d_j + (φ_j(L_k)·d_j −
+# C_elec,j) − s_C·K_j. Candidates: the jobs with a positive reward in MILP_true. Each MILP has its own HiGHS instance
+# and time limit. (a) value loss = OPT_true − OPT_bin; (b) decision loss = OPT_true − MILP_bin's schedule valued at
+# the true rewards; (c) the grid's worst case 1 − 1/ρ.
 
 # %%
-WEEK = cached("week_milp.pkl", "week")
-show(dg.checks_week(WEEK))
-best, bound = WEEK["bucketed_believed"], min(WEEK["bucketed_dual_bound"], WEEK["bucketed_lp_believed"])
-display(pd.Series({"jobs": WEEK["n_jobs"], "MILP candidates": WEEK["n_candidates"], "nonzeros": WEEK["nonzeros"],
-                   "fluid OPT, volume inside the window $": WEEK["fluid"],
-                   "fluid on feasible types, inside the window $": WEEK["fluid_feasible"],
-                   "fluid OPT, whole volume $": WEEK["fluid_whole_volume"], "MILP best $": best, "MILP bound $": bound,
-                   "MILP gap %": 100 * WEEK["gap"], "MILP runtime s": WEEK["milp_runtime_s"],
-                   "discretization cost $ (best .. bound)": f"{WEEK['fluid_feasible'] - best:,.2f} .. {WEEK['fluid_feasible'] - bound:,.2f}",
-                   "discretization cost %": f"{100 * (WEEK['fluid_feasible'] - best) / WEEK['fluid_feasible']:.2f} .. "
-                                            f"{100 * (WEEK['fluid_feasible'] - bound) / WEEK['fluid_feasible']:.2f}",
-                   "grid worst case 1 - 1/rho %": 100 * (1 - 1 / ST.grid.ratio),
-                   "MILP realised (job rewards) $": WEEK["bucketed_realised"]}, name="value").to_frame())
+DISC = cached("discretization_milp.pkl", "disc")
+show(dg.checks_discretization(DISC), {("D6", "discretization cost = MILP_true vs MILP_bin (true durations)"):
+                                      list(dg.checks_discretization(DISC).check)})
+display(dg.discretization_table(DISC))
 
 # %% [markdown]
 # ## 10. One theoretical DLENT-RT run

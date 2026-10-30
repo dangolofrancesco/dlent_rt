@@ -18,9 +18,11 @@ Online admission of cloud jobs with a learned LP oracle (DLENT, Zhang & Cheung 2
   for every model.
 * **Job quota.** A job with r_ij > Q_i on some resource is rejected before the market. Q_i = 0.2 · C_i of the cluster
   actually used: a fixed point on H, from the 99th percentile of H's requests, until Q moves by less than 1%.
-* **f.** Rule, in priority order, over f ∈ {0.3, 0.35, 0.4, 0.45, 0.5}: (a) required, τ > 0 (CPU or RAM) in both the
-  Phase 0 LP and fluid OPT; (b) among those, the static Phase 0 policy's "% of the time ≥ 95% full" closest to
-  20–30%. The config holds the pick and a comment.
+* **f.** Chosen on H ONLY (no stream job is read). Rule, in priority order, over f ∈ {0.3, 0.35, …, 0.6}:
+  (a) required, τ > 0 (CPU or RAM) in the Phase 0 LP; (b) among those, replay H's jobs through the static Phase 0
+  policy with capacity C, and pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to 20–30%
+  (ties to 25%). Each f uses an H-only dataset (`data.load_history`: quota fixed point, C, Q and the hardware
+  profiles all from H). `scripts/select_f.py` runs it and prints the pick; the config holds the pick and a comment.
 * **Job-level enlargement** (`capacity.job_level_enlarge`, off): if a job-level model rejects more than 50% of the
   positive-reward jobs for lack of space, C grows until it does not. The check is always computed.
 
@@ -78,6 +80,12 @@ only the arrival rate p is estimated; the duration, energy, costs, request and c
 with no job in H starts from fallback estimates (hardware-profile means over H). So every type has an r̃ from the
 start.
 
+**Discretization cost of the grid.** The grid changes only the value of a job (L_k instead of its hourly bid), so the
+cost is measured with two job-level MILPs on the same jobs, capacity checks (at every arrival, true durations),
+carbon map and s_C: MILP_true values each job at its own bid b_j, MILP_bin at L_k (in both the customer value and
+φ). Reported: the value loss OPT_true − OPT_bin, the decision loss OPT_true − (MILP_bin's schedule at the true
+rewards), and the grid's worst case 1 − 1/ρ (`benchmarks.discretization_milps`, `scripts/discretization_milp.py`).
+
 ## Online model (D5)
 
 * **Threshold admission (Myerson: monotone admission + critical-value payment).** In a column, the margin
@@ -110,14 +118,14 @@ start.
   optimal. The job pays p_j × the hours it runs. Logged per job: k*, r_j, the hourly and total payment, the customer
   surplus V − payment, the realised profit payment − C_elec, IR (p_j ≤ b_j) and the rejection reason ("bin below
   k*", "below reserve", "thinning", "no space").
-* **Benchmarks** (`dlent_rt/benchmarks.py`, `dlent_rt/theory_eval.py`): fluid OPT, fluid on feasible types, the
-  bucketed MILP (one-week window, each MILP its own HiGHS instance; the fluid LP on a window counts only the volume
-  inside the window), the static Phase 0 policy and the no-learning model. Practical only (code kept, not run in the
-  model check): Greedy-Pos, the type greedy (G1) and the job MILP. There is no separate FCFS class.
+* **Benchmarks** (`dlent_rt/benchmarks.py`, `dlent_rt/theory_eval.py`): fluid OPT and fluid on feasible types
+  (upper bounds), the discretization cost (MILP_true vs MILP_bin on the first 7 days of the stream, each MILP its own
+  HiGHS instance; see D4), the static Phase 0 policy and the no-learning model. Practical only (code kept, not run in
+  the model check): Greedy-Pos and the type greedy (G1). There is no separate FCFS class.
 * **The baselines use DLENT-RT's mechanism** (`models.policy.ThresholdPolicy`) on the Phase 0 state, never updated:
   threshold k* per column, hourly reserve, payment max(L_k*, r_j) × hours, IR checked. The static policy has no
   thinning; the no-learning model has the theoretical thinning p_U(W0, t); Greedy-Pos uses τ = 0. Fluid OPT, fluid
-  on feasible types and the bucketed MILP stay as upper bounds.
+  on feasible types stay as upper bounds.
 
 ## Where things are
 
