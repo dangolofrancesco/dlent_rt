@@ -66,16 +66,20 @@ class MyersonModel:
         return out if out.size > 1 else float(out[0])
 
 
+def log_markups(v: np.ndarray, cost_base: np.ndarray) -> np.ndarray:
+    """ln(v / cost_base) of every bid."""
+    return np.log(np.asarray(v, float) / np.asarray(cost_base, float))
+
+
 def fit_sigma(v: np.ndarray, cost_base: np.ndarray) -> float:
     """sigma refit on the markups: the standard deviation of ln(v / cost_base) (theoretical model, D2)."""
-    lm = np.log(np.asarray(v, float) / np.asarray(cost_base, float))
-    return float(np.std(lm))
+    return float(np.std(log_markups(v, cost_base)))
 
 
 def bid_model(cfg, v: Optional[np.ndarray] = None, cost_base: Optional[np.ndarray] = None) -> MyersonModel:
-    """The mechanism's bid model: sigma refit on (v, cost_base) if bid.refit_sigma and bids are given, else
-    bid.sigma (the no-learning model)."""
-    if cfg.bid.refit_sigma and v is not None and np.size(v) >= 2:
+    """The mechanism's bid model: sigma fit on (v, cost_base) when at least two bids are given (Phase 0 on H; ReInit
+    by bid.sigma_update), else bid.sigma (the generator's)."""
+    if v is not None and np.size(v) >= 2:
         return MyersonModel.known_markup(fit_sigma(v, cost_base))
     return MyersonModel.known_markup(cfg.bid.sigma)
 

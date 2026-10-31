@@ -57,8 +57,10 @@ def test_sigma_refit_and_customer_value_is_the_bid():
     assert fit_sigma(b.v_rate, b.cost_base) == pytest.approx(cfg.bid.sigma, abs=2e-3)
     assert bid_model(cfg, b.v_rate, b.cost_base).sigma == pytest.approx(fit_sigma(b.v_rate, b.cost_base))
     from dataclasses import replace
-    fixed = replace(cfg, bid=replace(cfg.bid, refit_sigma=False))
-    assert bid_model(fixed, b.v_rate, b.cost_base).sigma == cfg.bid.sigma
+    for mode in ("phase", "cumulative", "fixed"):                     # Phase 0 always fits sigma on the bids given
+        m = replace(cfg, bid=replace(cfg.bid, sigma_update=mode))
+        assert bid_model(m, b.v_rate, b.cost_base).sigma == pytest.approx(fit_sigma(b.v_rate, b.cost_base))
+    assert bid_model(cfg).sigma == cfg.bid.sigma                      # no bids: the generator's sigma
     d = np.random.default_rng(2).uniform(0.1, 24.0, n)
     t = job_terms(b.v_rate, b.cost_base, d, np.zeros(n), np.zeros(n), MyersonModel.known_markup(0.3), 0.0, cfg.objective)
     np.testing.assert_array_equal(t.cv, b.v_rate * d)                # V = b d, no priority factor

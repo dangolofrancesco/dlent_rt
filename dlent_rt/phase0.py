@@ -3,7 +3,7 @@ Phase 0 — Offline Bootstrap
 
 Computes everything the online loop needs to start its first phase:
   - U0 calibration (median H job) and HOURLY bid synthesis (lognormal, on the fly)
-  - sigma refit on H's markups (bid.refit_sigma) and the geometric grid on hourly bids (fixed for the run)
+  - sigma fit on H's markups and the geometric grid on hourly bids (fixed for the run)
   - Energy model (power draw from CPU/RAM/scheduling_class)
   - Grid-data lookup (electricity price + carbon intensity at request_time)
   - Per-type arrival rates p and per-COLUMN statistics (priority, hardware profile): duration, energy, costs,
@@ -246,6 +246,11 @@ class PhaseState:
     # per COLUMN, where its statistics come from: 0 = fresh (H / this phase), 1 = carried forward, 2 = fallback
     src_cost: Optional[np.ndarray] = None    # hourly cost base c_(q,h) (from arrivals)
     src_dur: Optional[np.ndarray] = None     # duration, energy, costs, request of the volume (from admitted jobs)
+    # the counts behind the statistics (stats.update "by_end_reason" merges old and new with these weights)
+    n_type: Optional[np.ndarray] = None      # (n_types,) arrivals behind p
+    T_obs: float = 0.0                       # ticks behind p (p = n_type / T_obs)
+    n_col_arr: Optional[np.ndarray] = None   # (n_cols,) arrivals behind c_col
+    n_col_obs: Optional[np.ndarray] = None   # (n_cols,) observed (admitted) jobs behind d_bar, energy, costs, request
 
     def col(self, x) -> np.ndarray:
         """The per-column values of a per-type array spread by cols_to_types (the bin-1 block)."""
@@ -297,7 +302,7 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
     u0 = calibrate_u0(H, cfg)
     bids = _synthesize_bids(H, cfg, seed=cfg.run.seed, u0=u0)
 
-    # 2. Bid model: sigma refit on H's markups (bid.refit_sigma) or bid.sigma
+    # 2. Bid model: sigma fit on H's markups (ReInit updates it by bid.sigma_update)
     myerson = bid_model(cfg, bids.v_rate, bids.cost_base)
 
     # 3. Geometric grid on the hourly bids, between the smallest and the largest bid (fixed for the run)
@@ -398,4 +403,6 @@ def run_phase0(ds: Dataset, cfg: Config) -> PhaseState:
         n_types_hw_degenerate=n_types_hw_degenerate,
         carbon_price=float(carbon_price), norm_info=norm_info, A_type=A_vol,
         u0=float(u0), r_max=reward_unit(r_tilde, p), c_col=c_col, src_cost=src, src_dur=src.copy(),
+        n_type=N.astype(float), T_obs=float(max(ds.H_span_steps, 1)), n_col_arr=Nc.astype(float),
+        n_col_obs=Nc.astype(float),
     )

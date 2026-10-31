@@ -2,8 +2,11 @@
 Configuration layer for DLENT-RT. One configuration: configs/default.yaml = the final model (week 33). The model
 variants are switches inside it:
 
-    theoretical model   oracle.kind frozen, ablation.thinning_off false, bid.refit_sigma true   (the default)
-    practical model     oracle.kind live,   ablation.thinning_off true
+    theoretical model   oracle.kind frozen, ablation.thinning_off false, bid.sigma_update phase,
+                        stats.update replace                                                   (the default)
+    practical model     ablations of the theoretical model, one switch each (scripts/run_ablations.py):
+                        ablation.thinning_off true, stats.update by_end_reason, bid.sigma_update cumulative | fixed,
+                        oracle.kind live
     no-learning model   the Phase 0 state forever (models.policy.ThresholdPolicy with thinning); Phase 0's sigma
 """
 from __future__ import annotations
@@ -70,9 +73,12 @@ class BidCfg:
     gamma1: float = 0.0332          # $ per vCPU-hour
     gamma2: float = 0.00445         # $ per GiB-hour
     sigma: float = 0.3              # log-space std of the markup b / cost_base (the generator)
-    # true (theoretical model): the mechanism's sigma is refit on the markups (H in Phase 0, the previous phase's
-    # arrivals at every ReInit). false (no-learning model): the mechanism keeps sigma above, never refit.
-    refit_sigma: bool = True
+    # The mechanism's sigma is always fit on H's markups in Phase 0. At every ReInit:
+    #   "phase"      (theoretical model) refit on the previous phase's markups (if it has >= phase_transition.n_min
+    #                arrivals, else kept);
+    #   "cumulative" refit on the pooled markups of H and of every phase so far;
+    #   "fixed"      the Phase 0 estimate, never updated.
+    sigma_update: str = "phase"
 
 
 @dataclass(frozen=True)
@@ -192,6 +198,18 @@ class OnlineCfg:
 
 
 @dataclass(frozen=True)
+class StatsCfg:
+    # How ReInit updates the statistics (type arrival rates p; per column d_bar, energy, power, C_elec, K, request,
+    # cost base):
+    #   "replace"       (theoretical model) the previous phase's statistics replace the old ones; columns / types
+    #                   with no new data carry forward;
+    #   "by_end_reason" after a phase ended by timeout or Test 1 (the environment did not change): old and new are
+    #                   merged, weighted by their number of jobs (p = total arrivals / total time); after Test 2 or
+    #                   Test 3 (a change was detected): as "replace".
+    update: str = "replace"
+
+
+@dataclass(frozen=True)
 class AblationCfg:
     # thinning_off (practical model): p_U(t) = 1; the oracle and the physical gate stay.
     thinning_off: bool = False
@@ -232,6 +250,7 @@ class Config:
     tests: TestsCfg = field(default_factory=TestsCfg)
     online: OnlineCfg = field(default_factory=OnlineCfg)
     ablation: AblationCfg = field(default_factory=AblationCfg)
+    stats: StatsCfg = field(default_factory=StatsCfg)
 
     #  validation
     def validate(self) -> "Config":
@@ -239,6 +258,8 @@ class Config:
         assert self.time.d_cap_hours > 0 and self.time.duration_floor_hours > 0
         assert self.data.h_days > 0
         assert self.oracle.kind in ("frozen", "live")
+        assert self.bid.sigma_update in ("phase", "cumulative", "fixed")
+        assert self.stats.update in ("replace", "by_end_reason")
         assert self.capacity.f > 0
         assert 0 < self.capacity.job_level_reject_max < 1 and self.capacity.job_level_enlarge_step > 1
         assert 0 < self.limits.quota_share <= 1 and 0 < self.limits.quota_tol < 1
@@ -306,7 +327,7 @@ _DATACLASS_REGISTRY = {
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
     "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
-    "AblationCfg": AblationCfg,
+    "AblationCfg": AblationCfg, "StatsCfg": StatsCfg,
 }
 
 
