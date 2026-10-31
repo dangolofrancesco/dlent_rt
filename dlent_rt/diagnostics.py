@@ -17,6 +17,7 @@ from scipy import integrate, optimize, stats
 from .bid import MyersonModel, calibrate_u0, cost_base, cost_rate, fit_sigma
 from .config import REPO_ROOT, resolve_path
 from .lp_oracle import solve_lp_rs
+from .mechanism import threshold_kstar
 from .models.core.error_params import make_error_params
 from .phase0 import _compute_job_energy, _compute_job_power, _lookup_grid, assign_type_ids, column_ids, type_arrays
 from .reward import carbon_kg, electricity_cost, job_terms, weighted_quantile
@@ -136,6 +137,85 @@ def checks_bid(ds, st, cfg, S):
     return check_table(rows), summary
 
 
+def bid_value_table(bf: pd.DataFrame) -> pd.DataFrame:
+    """Count, mean, p10, p50, p90, p99, max of the hourly bid b and of the total value b d, over H."""
+    cols = {"hourly bid b ($/h)": bf.bid.to_numpy(), "total value b d ($)": (bf.bid * bf.hours).to_numpy()}
+    return pd.DataFrame({k: {"count": x.size, "mean": x.mean(), **{f"p{int(100 * q)}": np.quantile(x, q) for q in QS},
+                             "max": x.max()} for k, x in cols.items()}).T
+
+
+def plot_bid_distribution(bf: pd.DataFrame, st, every: int = 8):
+    """(a) hourly bids of H (log x) with every `every`-th grid edge; (b) bid vs cost base by priority; (c) bid by tier."""
+    import matplotlib.pyplot as plt
+    edges = np.asarray(st.grid.bnd_v, float)
+    b, c, q = bf.bid.to_numpy(), bf.cost_base.to_numpy(), bf.priority.to_numpy()
+    tiers = np.unique(q)
+    cols = plt.cm.viridis(np.linspace(0, 0.9, len(tiers)))
+    fig, axs = plt.subplots(1, 3, figsize=(16, 4))
+    ax = axs[0]
+    ax.hist(b, bins=np.geomspace(b.min(), b.max(), 100), color=te.BLUE)
+    for e in edges[::every]:
+        ax.axvline(e, color=te.INK2, lw=0.4, alpha=0.6)
+    for e, nm in ((edges[0], "v_min"), (edges[-1], "v_max")):
+        ax.axvline(e, color=te.ORANGE, lw=1.4)
+        ax.annotate(nm, (e, 1), xycoords=("data", "axes fraction"), xytext=(3, -12), textcoords="offset points",
+                    color=te.ORANGE, fontsize=8)
+    ax.set_xscale("log")
+    _limit_axes(ax, "hourly bid b ($/h, log)", "jobs", f"(a) Hourly bids of H; thin lines: every {every}th grid edge")
+    ax = axs[1]
+    for t, col in zip(tiers, cols):
+        m = q == t
+        ax.scatter(c[m], b[m], s=2, color=col, alpha=0.4, lw=0, label=f"q = {t:g}")
+    lim = [min(b.min(), c.min()), max(b.max(), c.max())]
+    ax.plot(lim, lim, color=te.INK, lw=0.8, ls=":", label="b = c")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    _limit_axes(ax, "hourly cost base c_j ($/h, log)", "hourly bid b ($/h, log)", "(b) Bid vs cost base, by priority")
+    ax.legend(frameon=False, fontsize=7, markerscale=4)
+    ax = axs[2]
+    ax.boxplot([b[q == t] for t in tiers], showfliers=True, flierprops=dict(markersize=1, alpha=0.3))
+    ax.set_xticks(np.arange(1, len(tiers) + 1), [f"{t:g}" for t in tiers])
+    ax.set_yscale("log")
+    _limit_axes(ax, "priority tier q", "hourly bid b ($/h, log)", "(c) Hourly bid by priority tier")
+    fig.tight_layout()
+    return fig
+
+
+def plot_bid_model(bf: pd.DataFrame, sigma: float, seed: int = 0):
+    """
+    The bid formula against H's bids. (a) ln m, m = b / c, with the N(-sigma^2/2, sigma^2) density of the formula;
+    (b) the hourly bids b with a fresh draw c_j LogNormal(-sigma^2/2, sigma) on the same c_j; (c) the total value b d.
+    """
+    import matplotlib.pyplot as plt
+    b, c, d = bf.bid.to_numpy(), bf.cost_base.to_numpy(), bf.hours.to_numpy()
+    mu = -sigma ** 2 / 2
+    fig, axs = plt.subplots(1, 3, figsize=(16, 4))
+    ax = axs[0]
+    z = np.log(b / c)
+    ax.hist(z, bins=80, density=True, color=te.BLUE, alpha=0.8, label="H")
+    g = np.linspace(z.min(), z.max(), 400)
+    ax.plot(g, stats.norm.pdf(g, mu, sigma), color=te.ORANGE, lw=1.6, label=f"N({mu:.3f}, {sigma:g}²)")
+    _limit_axes(ax, "ln m = ln(b / c)", "density", "(a) Markup: ln m ~ N(-σ²/2, σ²)")
+    ax.legend(frameon=False, fontsize=8)
+    ax = axs[1]
+    sim = c * np.random.default_rng(seed).lognormal(mu, sigma, c.size)
+    bins = np.geomspace(min(b.min(), sim.min()), max(b.max(), sim.max()), 100)
+    ax.hist(b, bins=bins, color=te.BLUE, alpha=0.8, label="H bids")
+    ax.hist(sim, bins=bins, histtype="step", color=te.ORANGE, lw=1.4, label="formula, new draw")
+    ax.set_xscale("log")
+    _limit_axes(ax, "hourly bid b ($/h, log)", "jobs", "(b) b = c · m, the same c_j")
+    ax.legend(frameon=False, fontsize=8)
+    ax = axs[2]
+    v = b * d
+    ax.hist(v, bins=np.geomspace(v.min(), v.max(), 100), color=te.BLUE)
+    for qq, ls in ((0.1, ":"), (0.5, "-"), (0.9, "--")):
+        ax.axvline(np.quantile(v, qq), color=te.ORANGE, lw=1.2, ls=ls, label=f"p{int(100 * qq)}")
+    ax.set_xscale("log")
+    _limit_axes(ax, "total value V = b · d ($, log)", "jobs", "(c) Total value of H's jobs")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
 def bid_tier_table(bf: pd.DataFrame) -> pd.DataFrame:
     g = bf.groupby("priority")
     return pd.DataFrame({"jobs": g.size(), "1 + ln q": 1 + np.log(g.size().index.to_numpy(float)),
@@ -186,12 +266,20 @@ def type_terms(st, cfg) -> pd.DataFrame:
                          "carbon $": lam.lambda3 * st.carbon_price * st.C_carbon_bar, "r_tilde": st.r_tilde})
 
 
-def term_shares(tt: pd.DataFrame, x=None) -> dict:
-    """Share of sum |term| (p-weighted) from each term, over populated types or over admitted mass p x."""
-    w = tt.p.to_numpy() * (1.0 if x is None else np.asarray(x))
+def term_shares(tt: pd.DataFrame, w) -> dict:
+    """Share of sum |term| from each term, with type weights w (e.g. p x, or p on the types with r~ > 0)."""
+    w = np.asarray(w, float)
     a = {k: float((w * np.abs(tt[k])).sum()) for k in ("customer value", "profit", "carbon $")}
     s = sum(a.values())
     return {k: v / s for k, v in a.items()}
+
+
+def lp_x(ds, st, cfg) -> np.ndarray:
+    """The Phase 0 LP's admission share x per type (0 outside the support)."""
+    lp = solve_lp_rs(p=np.asarray(st.p), r=st.r_tilde, v=st.v, c=ds.capacity, presolve=cfg.lp.presolve)
+    x = np.zeros(st.n_types)
+    x[lp.support_idx] = lp.x
+    return x
 
 
 def checks_objectives(ds, st, cfg, S):
@@ -205,8 +293,9 @@ def checks_objectives(ds, st, cfg, S):
     Q_pi = weighted_quantile(np.abs(st.phi_bar - st.C_elec_bar)[pop], w, q)
     K_q = weighted_quantile(st.C_carbon_bar[pop], w, q)
     t = job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, st.myerson, st.carbon_price, lam)
-    VPi = float((st.p * st.v_bar).sum() / (st.p * np.abs(st.phi_bar - st.C_elec_bar)).sum())
-    summary = {"term shares (sum |term|, p-weighted)": term_shares(tt), "sum p V / sum p |Pi| over H's types": VPi,
+    p = np.asarray(st.p)
+    summary = {"term shares over the LP-admitted mass p x": term_shares(tt, p * lp_x(ds, st, cfg)),
+               "term shares over the types with r~ > 0 (p-weighted)": term_shares(tt, p * (st.r_tilde > 0)),
                "Q_0.9(V) $": Q_v, "Q_0.9(|Pi|) $": Q_pi, "D_q $": ni["D_q"], "K_q kg": K_q, "s_C $/kg": st.carbon_price,
                "lambda": (lam.lambda1, lam.lambda2, lam.lambda3)}
     rows = [
@@ -225,6 +314,89 @@ def checks_objectives(ds, st, cfg, S):
          _priority_only_in_bid(cfg, st.u0), "hand-made jobs, q = 1..5"),
     ]
     return check_table(rows), summary, t
+
+
+def h_job_terms(ds, st, cfg):
+    """job_terms of every H job (Phase 0's bids, true durations, H's own electricity and carbon)."""
+    ef = energy_frame(ds, cfg)
+    return job_terms(st.bids.v_rate, st.bids.cost_base, ds.H.duration_hours, ef.C_elec.to_numpy(), ef.kg.to_numpy(),
+                     st.myerson, st.carbon_price, cfg.objective)
+
+
+def h_at_kstar(ds, st) -> np.ndarray:
+    """Per H job: bin(b) >= k* of its column in the Phase 0 state (k* = lowest bin with margin r~ - tau v > 0)."""
+    ts = st.type_space
+    kstar = threshold_kstar((st.r_tilde - st.v @ st.tau).reshape(ts.k_star, len(ts.priorities), ts.n_hw)).reshape(-1)
+    ks = kstar[column_ids(ts, ds.H.priority, ds.H.hw_idx)]
+    return (ks > 0) & (np.asarray(st.grid.assign(st.bids.v_rate)) >= ks)
+
+
+TERM_NAMES = ("V = b d", "Pi = phi d - C_elec", "carbon $ = s_C K")
+
+
+def _three(t, mask=None):
+    m = slice(None) if mask is None else np.asarray(mask)
+    return dict(zip(TERM_NAMES, (np.asarray(t.cv)[m], np.asarray(t.profit)[m], np.asarray(t.carbon_usd)[m])))
+
+
+def terms_job_table(sets: dict) -> pd.DataFrame:
+    """sets: {name: (JobTerms, mask or None)} -> jobs, total and mean of V, Pi, carbon $ per set."""
+    out = {}
+    for nm, (t, mask) in sets.items():
+        d = _three(t, mask)
+        out[nm] = {"jobs": next(iter(d.values())).size,
+                   **{f"total {k} $": x.sum() for k, x in d.items()}, **{f"mean {k} $": x.mean() for k, x in d.items()}}
+    return pd.DataFrame(out).T
+
+
+def plot_terms_by_job(rows: dict):
+    """rows: {name: (JobTerms, mask or None)} -> one row of three histograms (symlog x) per set, p10 / p50 / p90 lines."""
+    import matplotlib.pyplot as plt
+    fig, axs = plt.subplots(len(rows), 3, figsize=(16, 3.4 * len(rows)), squeeze=False)
+    for r, (nm, (t, mask)) in enumerate(rows.items()):
+        for ax, (k, x) in zip(axs[r], _three(t, mask).items()):
+            lt = max(float(np.quantile(np.abs(x[x != 0]), 0.01)) if np.any(x != 0) else 1e-6, 1e-12)
+            hi = max(float(np.abs(x).max()), 10 * lt)
+            pos = np.geomspace(lt, hi, 50)
+            bins = np.unique(np.concatenate([-pos[::-1], [0.0], pos])) if x.min() < 0 else np.concatenate([[0.0], pos])
+            ax.hist(x, bins=bins, color=te.BLUE)
+            ax.set_xscale("symlog", linthresh=lt)
+            for qq, ls in ((0.1, ":"), (0.5, "-"), (0.9, "--")):
+                ax.axvline(np.quantile(x, qq), color=te.ORANGE, lw=1.2, ls=ls, label=f"p{int(100 * qq)}")
+            _limit_axes(ax, f"{k} ($, symlog)", "jobs", f"{nm}: {k}")
+            ax.legend(frameon=False, fontsize=7)
+    fig.tight_layout()
+    return fig
+
+
+def plot_objective(sets: dict, term: str):
+    """
+    One objective (a name of TERM_NAMES) on several job sets {name: (JobTerms, mask or None)}: (a) the share of
+    jobs per bin, (b) the empirical CDF, both on a symlog x axis with the same bins.
+    """
+    import matplotlib.pyplot as plt
+    data = {nm: _three(t, m)[term] for nm, (t, m) in sets.items()}
+    allx = np.concatenate(list(data.values()))
+    nz = np.abs(allx[allx != 0])
+    lt = float(np.quantile(nz, 0.01)) if nz.size else 1e-6
+    pos = np.geomspace(lt, max(float(np.abs(allx).max()), 10 * lt), 60)
+    bins = np.unique(np.concatenate([-pos[::-1], [0.0], pos])) if allx.min() < 0 else np.concatenate([[0.0], pos])
+    cols = (te.BLUE, te.INK2, te.ORANGE, te.INK)
+    fig, axs = plt.subplots(1, 2, figsize=(14, 3.8))
+    for (nm, x), col in zip(data.items(), cols):
+        axs[0].hist(x, bins=bins, weights=np.full(x.size, 100 / x.size), histtype="step", lw=1.5, color=col,
+                    label=f"{nm} (median {np.median(x):,.3g} $)")
+        xs = np.sort(x)
+        axs[1].plot(xs, np.arange(1, xs.size + 1) / xs.size, color=col, lw=1.5, label=nm)
+    for ax in axs:
+        ax.set_xscale("symlog", linthresh=lt)
+        if allx.min() < 0:
+            ax.axvline(0, color=te.INK2, lw=0.6)
+    _limit_axes(axs[0], f"{term} ($, symlog)", "% of jobs", f"(a) {term}: share of jobs per bin")
+    _limit_axes(axs[1], f"{term} ($, symlog)", "share of jobs <= x", f"(b) {term}: CDF")
+    axs[0].legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return fig
 
 
 def _priority_only_in_bid(cfg, u0) -> bool:
@@ -370,9 +542,7 @@ def phase0_table(ds, st, cfg) -> dict:
     per_h = 3600.0 / cfg.time.tick_seconds
     p = np.asarray(st.p)
     pop = p > 0
-    lp = solve_lp_rs(p=p, r=st.r_tilde, v=st.v, c=ds.capacity, presolve=cfg.lp.presolve)
-    x = np.zeros(st.n_types)
-    x[lp.support_idx] = lp.x
+    x = lp_x(ds, st, cfg)
     return {
         "n_types": int(st.n_types), "populated types": int(pop.sum()), "jobs assigned": int(st.n_assigned),
         "sum p (per h)": float(p.sum() * per_h), "true arrival rate of H (per h)": float(ds.H.n / ds.H_span_steps * per_h),
@@ -443,6 +613,7 @@ def checks_discretization(w: dict):
     """PASS / FAIL of the discretization MILPs (theory_eval.window_discretization -> discretization_milp.pkl)."""
     t, b = w["true"], w["bin"]
     budget = lambda o: o["runtime_s"] >= 0.9 * w["time_limit"] or o["gap"] <= 1e-4
+    awake = lambda o: o.get("highs_run_time_s", o["runtime_s"]) <= 1.1 * o["runtime_s"] + 60
     rows = [("reward_bin <= reward_true for every job", w["n_jobs_reward_bin_gt_true"] == 0,
              f"{w['n_jobs_reward_bin_gt_true']} jobs above"),
             ("OPT_bin <= OPT_true bound", b["best"] <= t["bound"] + 1e-6, f"{b['best']:,.2f} <= {t['bound']:,.2f}"),
@@ -450,22 +621,31 @@ def checks_discretization(w: dict):
              f"{w['bin_schedule_at_true']:,.2f} <= {t['bound']:,.2f}"),
             ("both schedules feasible on the true durations", t["feasible_true"] and b["feasible_true"], ""),
             ("each MILP solved or used its own time limit", budget(t) and budget(b),
-             f"true {t['runtime_s']:.0f} s (gap {100 * t['gap']:.3f}%), bin {b['runtime_s']:.0f} s (gap {100 * b['gap']:.3f}%)")]
+             f"true {t['runtime_s']:.0f} s (gap {100 * t['gap']:.3f}%), bin {b['runtime_s']:.0f} s (gap {100 * b['gap']:.3f}%)"),
+            ("no sleep during a solve (HiGHS's time ~ our timer)", awake(t) and awake(b),
+             f"true: ours {t['runtime_s']:.0f} s, HiGHS {t.get('highs_run_time_s', float('nan')):.0f} s; "
+             f"bin: ours {b['runtime_s']:.0f} s, HiGHS {b.get('highs_run_time_s', float('nan')):.0f} s"),
+            ("decision loss >= 0 (MILP_true warm-started with MILP_bin's schedule)",
+             w["decision_loss_range"][0] >= -1e-6 if "decision_loss_range" in w else False,
+             f"{w.get('decision_loss_range', (float('nan'),))[0]:,.2f} $")]
     return check_table(rows)
 
 
 def discretization_table(w: dict) -> pd.DataFrame:
     t, b = w["true"], w["bin"]
     lo, hi = w["value_loss_range"]
+    dlo, dhi = w["decision_loss_range"]
     return pd.Series({"jobs in the window": w["n_jobs"], "candidates (R_true > 0)": w["n_candidates"],
                       "candidates of MILP_bin (R_bin > 0)": b["n_candidates"],
                       "OPT_true best / bound $": f"{t['best']:,.2f} / {t['bound']:,.2f} (gap {100 * t['gap']:.3f}%, {t['status']})",
                       "OPT_bin best / bound $": f"{b['best']:,.2f} / {b['bound']:,.2f} (gap {100 * b['gap']:.3f}%, {b['status']})",
-                      "(a) value loss OPT_true - OPT_bin $": f"{w['value_loss']:,.2f} (range {lo:,.2f} .. {hi:,.2f})",
-                      "(a) value loss %": w["value_loss_pct"],
-                      "MILP_bin's schedule at the true rewards $": w["bin_schedule_at_true"],
-                      "(b) decision loss $": f"{w['decision_loss']:,.2f} (at most {w['decision_loss_max']:,.2f})",
-                      "(b) decision loss %": w["decision_loss_pct"],
+                      "time MILP_true: ours / HiGHS s": f"{t['runtime_s']:,.0f} / {t['highs_run_time_s']:,.0f}",
+                      "time MILP_bin: ours / HiGHS s": f"{b['runtime_s']:,.0f} / {b['highs_run_time_s']:,.0f}",
+                      "(a) value loss OPT_true - OPT_bin $ (best .. bound)": f"{lo:,.2f} .. {hi:,.2f}",
+                      "(a) value loss % (best .. bound)": "{:.2f} .. {:.2f}".format(*w["value_loss_range_pct"]),
+                      "MILP_bin's schedule at the true rewards $ (MILP_true's warm start)": w["bin_schedule_at_true"],
+                      "(b) decision loss $ (best .. bound)": f"{dlo:,.2f} .. {dhi:,.2f}",
+                      "(b) decision loss % (best .. bound)": "{:.2f} .. {:.2f}".format(*w["decision_loss_range_pct"]),
                       "(c) grid worst case 1 - 1/rho %": w["worst_case_pct"]}, name="value").to_frame()
 
 
@@ -485,6 +665,28 @@ def phase_table(ph: pd.DataFrame, tick_seconds: float) -> pd.DataFrame:
         out["ReInit: arrivals used (p, c, sigma)"] = ph.reinit_n_arrivals
         out["ReInit: admitted used (d, energy, costs, volume)"] = ph.reinit_n_observed
     return out
+
+
+def plot_tau_windows_time(r: dict, phases: pd.DataFrame, tick_seconds: float, hours=(24, 6)):
+    """tau CPU and tau RAM per window over time (days since the stream start), one panel per window length, with the
+    phase boundaries of the run (phases) as dotted lines. Window k covers ticks (k w, (k + 1) w]."""
+    import matplotlib.pyplot as plt
+    h = tick_seconds / 3600.0
+    starts = ((phases.tau_start.to_numpy() - 1) * h / 24)[1:]
+    fig, axs = plt.subplots(len(hours), 1, figsize=(13, 3.2 * len(hours)), sharex=True, squeeze=False)
+    for ax, w in zip(axs[:, 0], hours):
+        taus = np.asarray(r["windows"][w], float)
+        t = np.arange(len(taus) + 1) * w / 24
+        for i, nm, col, ls in ((0, "CPU", te.BLUE, "-"), (1, "RAM", te.ORANGE, "--")):
+            ax.stairs(taus[:, i], t, color=col, lw=1.3, ls=ls,
+                      label=f"tau {nm} (> 0 in {100 * (taus[:, i] > 0).mean():.0f}% of windows)")
+        for x in starts:
+            ax.axvline(x, color=te.INK2, lw=0.7, ls=":")
+        _limit_axes(ax, "days since the start of the stream" if w == hours[-1] else "", "tau ($ per machine-tick)",
+                    f"tau per {w} h window ({len(taus)} windows); dotted: phase boundaries of the run")
+        ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    return fig
 
 
 def checks_run(run: dict, cfg) -> pd.DataFrame:

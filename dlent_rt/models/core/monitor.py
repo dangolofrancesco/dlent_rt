@@ -70,8 +70,10 @@ class PhaseMonitor:
         self.base = cfg.test3.geometric_base
         self.wlp = WindowLP(np.asarray(r_tilde, float) / self.r_unit, v, capacity, tol=cfg.tests.piecewise_tol)
         self.fac = 1.0 - ep.eps_D - ep.xi
-        self.arr_ticks: list[int] = []
-        self.arr_types: list[int] = []
+        # the phase's arrivals (tick, type id) in growing arrays: _counts slices them without copying a list
+        self._n = 0
+        self._tk = np.empty(1024, np.int64)
+        self._ty = np.empty(1024, np.int64)
         self.R: dict[int, float] = {}
         self.t1 = WindowOccupancy(len(self.c))
         self.last = self.tau_prev            # ticks <= last are committed
@@ -83,18 +85,21 @@ class PhaseMonitor:
     def register_arrival(self, t: int, type_id: int, R: float,
                          admitted: bool, job: int, A: np.ndarray, D: int):
         assert t == self.last + 1, "scan() must commit all ticks before the arrival"
-        self.arr_ticks.append(int(t))
-        self.arr_types.append(int(type_id))
+        if self._n == self._tk.size:
+            self._tk = np.concatenate([self._tk, np.empty_like(self._tk)])
+            self._ty = np.concatenate([self._ty, np.empty_like(self._ty)])
+        self._tk[self._n], self._ty[self._n] = int(t), int(type_id)
+        self._n += 1
         self.R[int(t)] = float(R) / self.r_unit
         if admitted and t >= self.tau_bar + 1:
             self.t1.add(job, A, t, D)
 
     def _counts(self, s_excl: int, hi_incl: int):
         """Type counts of phase arrivals with s_excl < tick <= hi_incl."""
-        tk = np.asarray(self.arr_ticks, np.int64)
+        tk = self._tk[:self._n]
         lo = np.searchsorted(tk, s_excl, side="right")
         hi = np.searchsorted(tk, hi_incl, side="right")
-        ty = np.asarray(self.arr_types[lo:hi], np.int64)
+        ty = self._ty[lo:hi]
         ty = ty[ty >= 0]                     # IR rejects (type -1) belong to no type
         if ty.size == 0:
             return None

@@ -35,7 +35,8 @@ time:
 hardware:
   n_profiles: 32
   log_space: true             # k-means++ in log space
-  fit_on: "full"              # "full" (H + stream) | "H"
+  fit_on: "H"                 # profiles are part of the type definition: fit on H only (no stream leakage);
+                              # stream jobs map to the nearest H profile. ("full" = H + stream, legacy)
   hw_floor: 1.0e-5            # only for gamma's v_min term
 
 # D3: job quota Q_i = 0.2 x C_i of the cluster actually used (fixed point on H until Q moves by < 1%)
@@ -46,13 +47,16 @@ limits:
 
 # D3: C_i = f x D_bar_i, D_bar_i = sum_{j in H} r_ij d_j / |H|. ONE cluster for every model.
 capacity:
-  # f rule (fixed, week 33), on H ONLY (scripts/select_f.py; no stream job is read), over f in
+  # f rule (fixed, week 33), on H ONLY (scripts/select_f.py --seed 42; no stream job is read), over f in
   # {0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6}:
   #   (a) REQUIRED: tau > 0 (CPU or RAM) in the Phase 0 LP;
   #   (b) among those, replay H's jobs through the static Phase 0 policy (DLENT-RT's mechanism) with capacity C; the
-  #       f whose "% of H's time >= 95% full" is closest to the 20-30% band (ties: to 25%).
-  # f = 0.5 is the pick of the earlier rule (tau > 0 also in fluid OPT, static policy on the stream;
-  # reports/week33/final_theory.md). The rule on H has not been run yet: see reports/week33/discretization_and_f_on_H.md.
+  #       f whose "% of H's time >= 95% full" is closest to the 20-30% band; ties go to the LARGEST f (the
+  #       original wording: least artificial scarcity).
+  # Result (hardware profiles on H, stable sort): f = 0.3-0.55 pass (a), 0.6 does not. Inside the band: 0.3 (22.3%),
+  # 0.35 (25.9%), 0.4 (21.6%), 0.45 (23.2%), 0.5 (22.3%); 0.55 is at 16.8%. The largest f inside the band is 0.5.
+  # The earlier tie-break "closest to 25%" (it picked 0.35) was dropped: for 0.3-0.5 the % differ only by noise
+  # (not monotone in f). See reports/week33/final_results.md and notebook 01, section 6.
   f: 0.5
   job_level_enlarge: false    # off: enlarge C only if job-level models reject > 50% of positive-reward jobs for space
   job_level_reject_max: 0.5

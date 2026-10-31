@@ -173,6 +173,40 @@ plt.tight_layout(); plt.show()
 # bid grows with priority through (1 + ln q) only.
 
 # %% [markdown]
+# **The bid: definition.** For each job j with priority q_j, CPU r_j,CPU and RAM r_j,RAM (in machines):
+#
+# $$c_j = U_0\,(1 + \ln q_j) + \gamma_1\,\text{cores}_j + \gamma_2\,\text{GB}_j \quad [\$/\text{h}],
+# \qquad \text{cores}_j = 64\, r_{j,\text{CPU}}, \quad \text{GB}_j = 256\, r_{j,\text{RAM}}$$
+#
+# $$b_j = c_j\, m_j, \qquad \ln m_j \sim \mathcal N(-\sigma^2/2,\ \sigma^2), \quad \sigma = 0.3
+# \quad\Rightarrow\quad \mathbb E[m_j] = 1,\ \mathbb E[b_j] = c_j \quad [\$/\text{h}]$$
+#
+# $$U_0 = \gamma_1\,\text{cores} + \gamma_2\,\text{GB of the median job of H}, \qquad
+# V_j = b_j\, d_j \quad [\$]$$
+#
+# with γ1 = 0.0332 $/vCPU-h, γ2 = 0.00445 $/GiB-h and d_j the true duration in hours. U0 is fixed after Phase 0.
+# (a) The markups of H against the normal density of the formula. (b) H's bids against a new draw of the formula on
+# the same c_j. (c) The total value b·d.
+
+# %%
+fig = dg.plot_bid_model(BF, CFG.bid.sigma)
+plt.show()
+
+# %% [markdown]
+# **Hourly bid distribution.** (a) The hourly bids of H on a log axis. The thin lines are every 8th edge of the
+# grid of section 5; v_min and v_max are marked. (b) Each job's hourly bid against its hourly cost base c_j,
+# coloured by priority; the dotted line is b = c. (c) The hourly bid by priority tier. The table gives the hourly
+# bid and the total value b·d of H's jobs.
+
+# %%
+fig = dg.plot_bid_distribution(BF, ST, every=8)
+plt.show()
+display(dg.bid_value_table(BF))
+
+# %% [markdown]
+# **Reading.**
+
+# %% [markdown]
 # ## 3. Virtual value
 #
 # φ_j = cost_base_j · φ_m(b_j / cost_base_j) ($ per hour), with φ_m(m) = m − (1 − F(m)) / f(m) for the lognormal markup
@@ -222,8 +256,46 @@ show(tab, {("D1", "V = b d (results); Pi = phi d - C_elec; carbon = s_C K"): [
 display(pd.Series(summ, name="value").to_frame())
 
 # %% [markdown]
-# **Reading.** The shares say how much of Σ|term| each term carries over H's types. The ratio ΣpV / Σp|Π| says how
-# the customer value compares with the profit. s_C is in $ per kg CO2 and follows the dollar level of the bids.
+# The shares give how much of Σ|term| each term carries: (a) over the mass p·x the Phase 0 LP admits, (b) over the
+# types with r̃ > 0, p-weighted. A share over all types is not used: it is dominated by the many types with r̃ < 0
+# that are never admitted. s_C is in $ per kg CO2 and follows the dollar level of the bids.
+
+# %% [markdown]
+# **The three objectives, job by job.** Top row: H's jobs. Bottom row: the jobs admitted in the full theoretical
+# run (section 10, from the theory_run cache). Each panel is a histogram of one term per job, on a symlog x axis:
+# V = b·d, Π = φ·d − C_elec and carbon $ = s_C·K. The orange lines are p10 (dotted), p50 (solid), p90 (dashed).
+# The table gives the totals and means for H (all jobs), H (jobs at or above k* of their column in Phase 0) and
+# the run (admitted).
+
+# %%
+TH = dg.h_job_terms(DS, ST, CFG)
+ADM_I = RUN["arrivals"].loc[RUN["arrivals"].admit, "i"].to_numpy()
+fig = dg.plot_terms_by_job({"H (all jobs)": (TH, None), "run (admitted)": (TERMS, ADM_I)})
+plt.show()
+display(dg.terms_job_table({"H (all jobs)": (TH, None), "H (at or above k*)": (TH, dg.h_at_kstar(DS, ST)),
+                            "run (admitted)": (TERMS, ADM_I)}))
+
+# %% [markdown]
+# **Reading.**
+
+# %% [markdown]
+# **The three objectives, one at a time.** For each job j (true duration d_j in hours):
+#
+# $$V_j = b_j\, d_j, \qquad \Pi_j = \varphi_j(b_j)\, d_j - C^{\text{elec}}_j, \qquad
+# \text{carbon \$}_j = s_C\, K_j, \qquad R_j = V_j + \Pi_j - s_C K_j \ (\lambda = 1)$$
+#
+# with φ_j(b) = c_j φ_m(b / c_j) the hourly virtual value, C_elec the electricity cost in $ and K the kg of CO2.
+# One figure per objective. Each compares H (all jobs), H (at or above k*) and the run (admitted): (a) the share of
+# jobs per bin, (b) the CDF. Same bins for the three sets, symlog x axis.
+
+# %%
+SETS = {"H (all jobs)": (TH, None), "H (at or above k*)": (TH, dg.h_at_kstar(DS, ST)), "run (admitted)": (TERMS, ADM_I)}
+for term in dg.TERM_NAMES:
+    fig = dg.plot_objective(SETS, term)
+    plt.show()
+
+# %% [markdown]
+# **Reading.**
 
 # %% [markdown]
 # ## 5. Grid
@@ -248,7 +320,7 @@ display(pd.Series(summ, name="value").to_frame())
 #
 # * (a) REQUIRED: τ > 0 (CPU or RAM) in the Phase 0 LP;
 # * (b) among the f that pass (a): replay H's jobs through the static policy of that f's Phase 0 state, with capacity
-#   C; pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to the 20–30% band (ties to 25%).
+#   C; pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to the 20–30% band (ties to the largest f).
 #
 # Each f uses an H-only dataset (`data.load_history`): the hardware profiles are fit on H, and the stream is never
 # built. The static policy uses DLENT-RT's mechanism on the Phase 0 state (threshold k*, reserve, payment).
@@ -263,6 +335,11 @@ show(tab, {("D3", "C = f D_bar on H"): ["C = f x D_bar (H only)"],
            ("D3", "Q = 0.2 C fixed point at the actual f"): ["Q = 0.2 C at the fixed point (within 2%)",
                                                              "fixed point stopped with a move < 1%"]})
 display(dg.scan_table(SCAN))
+EM = CFG.energy_model
+C_, Q_ = np.asarray(DS.capacity, float), np.asarray(DS.limit_report.quota, float)
+display(Markdown(f"Cluster C = {C_[0]:,.2f} machines CPU = {C_[0] * EM.machine_cores:,.0f} cores, {C_[1]:,.2f} machines "
+                 f"RAM = {C_[1] * EM.machine_ram_gb:,.0f} GB; quota Q = {Q_[0] * EM.machine_cores:,.0f} cores, "
+                 f"{Q_[1] * EM.machine_ram_gb:,.0f} GB ({EM.machine_cores:g} cores, {EM.machine_ram_gb:g} GB per machine)."))
 display(Markdown(f"**Fixed point at f = {CFG.capacity.f}** (Q in machines):"))
 display(ITERS)
 
@@ -318,7 +395,7 @@ display(pd.Series(summ, name="value").to_frame())
 # Enlarging C does not help while Q grows with C. The row "C needed" keeps today's jobs fixed.
 
 # %% [markdown]
-# ## 8. Phase 0 output and the 9 checks
+# ## 8. Phase 0 output on H (the first 7 days)
 #
 # The row "r_max (Tests 2-3 reward unit, $)" is the paper's bound on the rewards of admissible actions: the LARGEST r̃
 # over Phase 0's populated types with r̃ > 0 (negative types are never admitted). With γ forced to 1, Tests 2 and 3
@@ -352,10 +429,15 @@ display(pd.DataFrame({k: {"admitted": R0[k]["mechanism"]["n_admitted"], "payment
 w24, w6 = R0["windows"][24], R0["windows"][6]
 display(pd.DataFrame({"windows": [len(w24), len(w6)], "tau CPU > 0 %": [100 * (w24[:, 0] > 0).mean(), 100 * (w6[:, 0] > 0).mean()],
                       "tau RAM > 0 %": [100 * (w24[:, 1] > 0).mean(), 100 * (w6[:, 1] > 0).mean()]}, index=["1 day", "6 h"]))
-fig, axs = plt.subplots(2, 2, figsize=(13, 5.5))
-te.fig_tau_windows(R0, axs[0], hours=24)
-te.fig_tau_windows(R0, axs[1], hours=6)
-plt.tight_layout(); plt.show()
+
+# %% [markdown]
+# **τ by window.** Each window's τ comes from an LP on that window's own arrivals, with the same capacity C.
+# τ > 0 means capacity is scarce in that window. This is a hindsight diagnostic: the model uses the per-phase τ of
+# section 10, not these.
+
+# %%
+fig = dg.plot_tau_windows_time(R0, RUN["phases"], CFG.time.tick_seconds, hours=(24, 6))
+plt.show()
 
 # %%
 HS = te.h_vs_stream(B, ST, CFG)

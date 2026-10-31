@@ -3,7 +3,8 @@ The f rule (D3) on H only: at each f, Phase 0 on H alone (data.load_history: the
 hardware profiles on H; no stream job is read), then H's jobs replayed through the static ThresholdPolicy of that
 Phase 0 state with capacity C.
   (a) tau > 0 (CPU or RAM) in the Phase 0 LP;
-  (b) among those, the f whose '% of H's time with the cluster >= 95% full' is closest to the 20-30% band (ties: 25%).
+  (b) among those, the f whose '% of H's time with the cluster >= 95% full' is closest to the 20-30% band. Ties
+      (several f inside the band) go to the LARGEST f: the least artificial scarcity.
 
     dlent_venv/bin/python scripts/select_f.py                              # f in theory_eval.F_SCAN, configured seed
     dlent_venv/bin/python scripts/select_f.py --f 0.3 0.4 0.5 --seed 42    # -> reports/week33/cache/f_scan_H.pkl

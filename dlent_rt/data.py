@@ -348,7 +348,7 @@ def _grid_data(cfg: Config):
 def load_history(cfg: Config) -> Dataset:
     """
     The Dataset of H ALONE, for the f rule (D3): the same quota fixed point, H, C = f x D_bar and Q as load_dataset,
-    but no stream job is used. The hardware profiles are fit on H's requests only (whatever hardware.fit_on says);
+    but no stream job is used. The hardware profiles are fit on H's requests only (as with hardware.fit_on "H");
     stream = NoStream() (any access raises); T = H's span and a_max = H's largest request (read only by Phase 0's
     data-xi / gamma diagnostics). H may be every job of the file.
     """

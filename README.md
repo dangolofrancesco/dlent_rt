@@ -20,9 +20,11 @@ Online admission of cloud jobs with a learned LP oracle (DLENT, Zhang & Cheung 2
   actually used: a fixed point on H, from the 99th percentile of H's requests, until Q moves by less than 1%.
 * **f.** Chosen on H ONLY (no stream job is read). Rule, in priority order, over f ∈ {0.3, 0.35, …, 0.6}:
   (a) required, τ > 0 (CPU or RAM) in the Phase 0 LP; (b) among those, replay H's jobs through the static Phase 0
-  policy with capacity C, and pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to 20–30%
-  (ties to 25%). Each f uses an H-only dataset (`data.load_history`: quota fixed point, C, Q and the hardware
-  profiles all from H). `scripts/select_f.py` runs it and prints the pick; the config holds the pick and a comment.
+  policy with capacity C, and pick the f whose "% of H's time with the cluster ≥ 95% full" is closest to 20–30%.
+  Ties (several f inside the band) go to the LARGEST f: the least artificial scarcity. Each f uses an H-only
+  dataset (`data.load_history`: quota fixed point, C, Q and the hardware profiles all from H).
+  `scripts/select_f.py` runs it and prints the pick; the config holds the pick and a comment. Result (seed 42):
+  f = 0.3–0.5 are inside the band, so **f = 0.5**.
 * **Job-level enlargement** (`capacity.job_level_enlarge`, off): if a job-level model rejects more than 50% of the
   positive-reward jobs for lack of space, C grows until it does not. The check is always computed.
 
@@ -74,6 +76,10 @@ Types = (bid bin, priority, hardware profile); a column = (priority, hardware pr
 HOURLY bids: L_k = v_min ρ^k, ρ = (v_max / v_min)^(1/128), with v_min / v_max the smallest / largest hourly bid of H
 (no fixed floor). The bins cover every bid: bin 1 = [0, L_1), bin 128 = [L_127, +∞). Allocation and payment use
 the same edges.
+
+**The hardware profiles are fit on H only** (`hardware.fit_on: "H"`): 32 k-means++ centroids in log space of H's
+requests. They are part of the type definition, so fitting them on the stream would be leakage. A stream job maps to
+the nearest H profile.
 
 **The grid and the types are fixed from Phase 0**, in every model (theoretical, practical, no-learning). Per type
 only the arrival rate p is estimated; the duration, energy, costs, request and cost base are column means. A column

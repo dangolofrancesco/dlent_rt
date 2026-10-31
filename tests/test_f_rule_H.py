@@ -1,6 +1,6 @@
-"""The f rule reads H only (week 33): Phase 0 and the f rule give identical outputs when the stream is NaN or empty,
-and nothing on the f rule's path touches the stream (a stream object that raises on access). Small synthetic trace
-(1,500 jobs), a few seconds."""
+"""The f rule and the type definition read H only (week 33): Phase 0, the hardware profiles and the f rule give
+identical outputs when the stream is NaN or empty, and nothing on their path touches the stream (a stream object that
+raises on access). Small synthetic trace (1,500 jobs), a few seconds."""
 import warnings
 from dataclasses import replace
 
@@ -21,7 +21,8 @@ def cfg(tmp_path_factory):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         c = synthetic_config(tmp_path_factory.mktemp("fH"), n0=400, n_jobs=1500)
-        return replace(c, hardware=replace(c.hardware, fit_on="H")).validate()
+        assert c.hardware.fit_on == "H"                  # the default: profiles fit on H only
+        return c
 
 
 def outputs(ds, cfg):
@@ -88,7 +89,39 @@ def test_select_f_rule():
     res = [r(0.3, [0.0, 0.0], 0.25), r(0.4, [0.0, 1e-3], 0.35), r(0.5, [1e-4, 0.0], 0.31), r(0.6, [0.0, 0.0], 0.10)]
     assert select_f(res) == 0.5                        # 0.3 fails (a); 0.5 is 1 point from the band, 0.4 is 5
     res.append(r(0.45, [1e-4, 1e-4], 0.22))
-    res.append(r(0.35, [1e-4, 1e-4], 0.26))
-    assert select_f(res) == 0.35                       # both inside the band: the tie goes to 25%
+    res.append(r(0.35, [1e-4, 1e-4], 0.25))
+    assert select_f(res) == 0.45                       # both inside the band: the tie goes to the largest f
+    res.append(r(0.55, [0.0, 0.0], 0.24))
+    assert select_f(res) == 0.45                       # inside the band but fails (a)
     with pytest.raises(ValueError):
         select_f([r(0.3, [0.0, 0.0], 0.25)])
+
+
+def types(ds, cfg):
+    """The type definition of Phase 0: hardware profiles, H's profile per job, the type space, p and r~."""
+    st = run_phase0(ds, cfg)
+    ts = st.type_space
+    return dict(centroids=ds.hw_catalogue.centroids, hw_H=ds.H.hw_idx, n_types=ts.n_types, n_cols=ts.n_cols,
+                priorities=np.asarray(ts.priorities), n_hw=ts.n_hw, p=st.p, r_tilde=st.r_tilde, v=st.v,
+                grid=st.grid.bnd_v)
+
+
+def test_profiles_and_types_fit_on_H_only(cfg, tmp_path):
+    """fit_on "H": the profiles and Phase 0's types are identical with a NaN, an empty or a raising stream, and every
+    stream job maps to the nearest H profile."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ds = load_dataset(cfg)
+        base = types(ds, cfg)
+
+        def nan(df, s):
+            df.loc[s, list(COLS)] = "nan"
+            return df
+        cfg_nan = with_csv(cfg, tmp_path, nan, "nan_t")
+        assert_same(base, types(load_dataset(cfg_nan), cfg_nan))                      # NaN stream
+        cfg_empty = with_csv(cfg, tmp_path, lambda df, s: df.loc[~s], "empty_t")
+        assert_same(base, types(load_history(cfg_empty), cfg_empty))                  # no stream at all
+        assert_same(base, types(replace(ds, stream=NoStream()), cfg))                 # stream raises on access
+        A = ds.stream.A
+        d2 = ((np.log(A)[:, None, :] - np.log(ds.hw_catalogue.centroids)[None]) ** 2).sum(2)
+        np.testing.assert_array_equal(ds.stream.hw_idx, d2.argmin(1))                # nearest H profile

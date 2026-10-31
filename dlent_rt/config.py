@@ -92,7 +92,7 @@ class HardwareCfg:
     n_profiles: int = 32
     # profiles = k-means++ centroids, in log space if log_space (the only method)
     log_space: bool = True
-    fit_on: str = "full"            # "full" | "H" (the f rule always fits on H: data.load_history)
+    fit_on: str = "H"               # "H" (stream jobs map to the nearest H profile) | "full" (H + stream, legacy)
     # Minimum hardware-profile component that may enter gamma's v_min term (degenerate k-means centroids are
     # left out of that term only; it is NOT a filter on which types are served).
     hw_floor: float = 1.0e-5

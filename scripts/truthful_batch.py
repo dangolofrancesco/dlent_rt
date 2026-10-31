@@ -68,9 +68,9 @@ def phase0_numbers(ds, st, cfg) -> dict:
         "grid": {"v_min ($/h)": float(g.bnd_v[0]), "v_max ($/h)": float(g.bnd_v[-1]), "rho": g.ratio,
                  "K*": g.k_star, "bins used by H": int(np.unique(kH).size)},
         "s_C ($/kg)": st.carbon_price, "norm_info": {k: float(v) for k, v in st.norm_info.items()},
-        "term shares, p-weighted over H's types": term_shares(tt),
-        "term shares, over the LP's admitted mass p x": term_shares(tt, x),
-        "term shares, p-weighted over H's types with r~ > 0": term_shares(tt, (st.r_tilde > 0).astype(float)),
+        "term shares, p-weighted over H's types": term_shares(tt, st.p),
+        "term shares, over the LP's admitted mass p x": term_shares(tt, st.p * x),
+        "term shares, p-weighted over H's types with r~ > 0": term_shares(tt, st.p * (st.r_tilde > 0)),
         "r~ quantiles over H's types, p-weighted (1, 10, 50, 90, 99 %)":
             [weighted_quantile(st.r_tilde[pop], st.p[pop], q) for q in (0.01, 0.1, 0.5, 0.9, 0.99)],
         "% of H's arrival rate on types with phi(L_k) at the floor": float(

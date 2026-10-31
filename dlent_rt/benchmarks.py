@@ -57,9 +57,12 @@ def regret(alg_total: float, benchmark_total: float) -> float:
     return float(benchmark_total) - float(alg_total)
 
 
-def _highs_max(M, obj, ub, integer: bool, time_limit: float) -> dict:
+def _highs_max(M, obj, ub, integer: bool, time_limit: float, x0=None) -> dict:
     """max obj^T x, M x <= ub, 0 <= x <= 1 (x integer if `integer`) on a NEW HiGHS instance with its own time
-    limit, so every solve gets its full budget (no clock shared with earlier solves)."""
+    limit, so every solve gets its full budget (no clock shared with earlier solves). x0: a feasible starting
+    solution (warm start; the incumbent is then never worse than x0). Three clocks: runtime_s (perf_counter, which
+    stops while the machine sleeps), wall_s (time.time, which does not) and HiGHS's own run time: a sleep shows as
+    wall_s or highs_run_time_s >> runtime_s."""
     import highspy
     M = sp.csc_matrix(M)
     n = M.shape[1]
@@ -79,19 +82,21 @@ def _highs_max(M, obj, ub, integer: bool, time_limit: float) -> dict:
     if integer:
         lp.integrality_ = [highspy.HighsVarType.kInteger] * n
     h.passModel(lp)
-    t0 = time.perf_counter()
+    if x0 is not None:
+        h.setSolution(n, np.arange(n, dtype=np.int32), np.asarray(x0, float))
+    t0, w0 = time.perf_counter(), time.time()
     h.run()
-    wall = time.perf_counter() - t0
+    wall, wall_clock = time.perf_counter() - t0, time.time() - w0
     info = h.getInfo()
     x = np.array(h.getSolution().col_value, float) if info.primal_solution_status > 0 else np.zeros(n)
     return dict(x=x, obj=float(np.asarray(obj, float) @ x), status=h.modelStatusToString(h.getModelStatus()),
                 gap=float(info.mip_gap) if integer else 0.0,
                 dual_bound=float(info.mip_dual_bound) if integer else float(info.objective_function_value),
-                runtime_s=wall, highs_run_time_s=float(h.getRunTime()))
+                runtime_s=wall, wall_s=wall_clock, highs_run_time_s=float(h.getRunTime()))
 
 
 def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0, lp_time_limit: float | None = None,
-                   tail_step: int | None = None) -> dict:
+                   tail_step: int | None = None, x0=None) -> dict:
     """
     max obj^T x, x in {0,1}^n, s.t. at the arrival tick of every job k the occupancy of the chosen
     jobs is <= c: job j occupies the arrival rows k = j .. last[j] (arrivals with t_k < t_j + D_j).
@@ -126,9 +131,10 @@ def occupancy_milp(t, D, A, obj, c, time_limit: float = 300.0, lp_time_limit: fl
                    for r in range(A.shape[1])]).tocsr()                     # one block per resource
     ub = np.repeat(np.asarray(c, float), n_rows)
     lp = _highs_max(M, obj, ub, integer=False, time_limit=time_limit if lp_time_limit is None else lp_time_limit)
-    ip = _highs_max(M, obj, ub, integer=True, time_limit=time_limit)
+    ip = _highs_max(M, obj, ub, integer=True, time_limit=time_limit, x0=x0)
     return dict(x=np.round(ip["x"]).astype(bool), ip_obj=ip["obj"], lp_obj=lp["obj"], gap=ip["gap"],
-                status=ip["status"], runtime_s=ip["runtime_s"], highs_run_time_s=ip["highs_run_time_s"],
+                status=ip["status"], runtime_s=ip["runtime_s"], wall_s=ip["wall_s"],
+                highs_run_time_s=ip["highs_run_time_s"], lp_wall_s=lp["wall_s"], lp_highs_run_time_s=lp["highs_run_time_s"],
                 dual_bound=ip["dual_bound"], lp_runtime_s=lp["runtime_s"], n_tail_checks=int(n_tail),
                 nonzeros=int(M.nnz))
 
@@ -161,10 +167,15 @@ def discretization_milps(S, state, lam, c, time_limit: float = 3600.0) -> dict:
     Candidates = the jobs with R_true > 0, for both. A candidate with R_bin <= 0 is left out of MILP_bin: a job with
     a negative reward is never in an optimal schedule, so OPT_bin does not change. L_k <= b_j and phi is increasing,
     so R_bin <= R_true for every job and OPT_bin <= OPT_true.
-        value loss     OPT_true - OPT_bin (best - best; the range uses the MILPs' bounds)
-        decision loss  OPT_true - (MILP_bin's schedule valued at the true rewards)
+    MILP_bin is solved FIRST; its schedule (feasible for MILP_true: the constraints are identical) is MILP_true's warm
+    start, so OPT_true's best >= MILP_bin's schedule valued at the true rewards.
+        value loss     OPT_true - OPT_bin, as a range [true best - bin bound, true bound - bin best] (value_loss = the
+                       best-vs-best point)
+        decision loss  OPT_true - (MILP_bin's schedule at the true rewards), as a range [true best - that, true bound
+                       - that]; >= 0 by construction (warm start)
         worst case     1 - 1/rho of the grid
-    Each MILP (and its LP relaxation) runs on its own HiGHS instance with its own time limit.
+    Each MILP (and its LP relaxation) runs on its own HiGHS instance with its own time limit; every solve reports
+    our timer (runtime_s), the wall clock (wall_s) and HiGHS's run time.
     """
     terms = lambda b: reward.job_terms(b, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state.myerson,
                                        state.carbon_price, lam).R
@@ -173,30 +184,34 @@ def discretization_milps(S, state, lam, c, time_limit: float = 3600.0) -> dict:
     c = np.asarray(c, float)
     n = len(R_true)
 
-    def solve(R, cand):
+    def solve(R, cand, x_start=None):
         x = np.zeros(n, bool)
         if cand.size == 0:
-            return x, dict(best=0.0, bound=0.0, lp=0.0, gap=0.0, status="no candidates", runtime_s=0.0,
-                           n_candidates=0, nonzeros=0)
-        o = occupancy_milp(S.tick[cand], S.D[cand], S.A[cand], R[cand], c, time_limit)
+            return x, dict(best=0.0, bound=0.0, lp=0.0, gap=0.0, status="no candidates", runtime_s=0.0, wall_s=0.0,
+                           highs_run_time_s=0.0, n_candidates=0, nonzeros=0, warm_start=None)
+        x0 = None if x_start is None else x_start[cand].astype(float)
+        o = occupancy_milp(S.tick[cand], S.D[cand], S.A[cand], R[cand], c, time_limit, x0=x0)
         x[cand] = o["x"]
         return x, dict(best=float(R[x].sum()), bound=max(o["dual_bound"], float(R[x].sum())), lp=o["lp_obj"],
-                       gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"], n_candidates=int(cand.size),
-                       nonzeros=o["nonzeros"])
+                       gap=o["gap"], status=o["status"], runtime_s=o["runtime_s"], wall_s=o["wall_s"],
+                       highs_run_time_s=o["highs_run_time_s"], lp_wall_s=o["lp_wall_s"],
+                       lp_highs_run_time_s=o["lp_highs_run_time_s"], n_candidates=int(cand.size),
+                       nonzeros=o["nonzeros"], warm_start=None if x0 is None else float(R[cand] @ x0))
     cand = np.flatnonzero(R_true > 0)
-    x_true, true = solve(R_true, cand)
     x_bin, binm = solve(R_bin, cand[R_bin[cand] > 0])
+    x_true, true = solve(R_true, cand, x_start=x_bin)                         # warm start: MILP_bin's schedule
     peak = lambda x: peak_occupancy(S.tick[x], S.D[x], S.A[x])
     for o, x in ((true, x_true), (binm, x_bin)):
         o["feasible_true"] = bool(np.all(peak(x) <= c * (1 + 1e-9)))
     at_true = float(R_true[x_bin].sum())
     pct = lambda d: 100 * d / true["best"] if true["best"] > 0 else float("nan")
     rho = state.grid.ratio
+    vl, dl = (true["best"] - binm["bound"], true["bound"] - binm["best"]), (true["best"] - at_true, true["bound"] - at_true)
     return dict(n_jobs=int(n), n_candidates=int(cand.size), true=true, bin=binm,
                 value_loss=true["best"] - binm["best"], value_loss_pct=pct(true["best"] - binm["best"]),
-                value_loss_range=(true["best"] - binm["bound"], true["bound"] - binm["best"]),
-                bin_schedule_at_true=at_true, decision_loss=true["best"] - at_true,
-                decision_loss_pct=pct(true["best"] - at_true), decision_loss_max=true["bound"] - at_true,
+                value_loss_range=vl, value_loss_range_pct=tuple(pct(x) for x in vl),
+                bin_schedule_at_true=at_true, decision_loss=dl[0], decision_loss_pct=pct(dl[0]),
+                decision_loss_max=dl[1], decision_loss_range=dl, decision_loss_range_pct=tuple(pct(x) for x in dl),
                 rho=float(rho), worst_case_pct=100 * (1 - 1 / rho), n_jobs_reward_bin_gt_true=int((R_bin > R_true + 1e-12).sum()),
                 x_true=x_true, x_bin=x_bin, R_true=R_true, R_bin=R_bin, time_limit=float(time_limit))
 

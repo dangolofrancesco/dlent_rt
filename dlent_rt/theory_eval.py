@@ -243,17 +243,18 @@ def band_distance(r, band=(0.20, 0.30)) -> float:
     return max(band[0] - x, 0.0, x - band[1])
 
 
-def select_f(results, band=(0.20, 0.30), target=0.25):
+def select_f(results, band=(0.20, 0.30)):
     """
     The f rule (D3), on H only (results = evaluate_f_H over the scan), in priority order:
       (a) REQUIRED: tau > 0 (CPU or RAM) in the Phase 0 LP;
       (b) among the f that pass (a): the '% of H's time with the cluster >= 95% full' of H's replay through the static
-          policy closest to the band (0 inside), ties to the target 25%.
+          policy closest to the band (0 inside); ties (e.g. several f inside the band) go to the LARGEST f, the
+          least artificial scarcity.
     """
     ok = [r for r in results if tau_positive(r)]
     if not ok:
         raise ValueError("f rule: no f of the scan has tau > 0 in the Phase 0 LP")
-    return min(ok, key=lambda r: (band_distance(r, band), abs(r["full_time"] - target)))["f"]
+    return min(ok, key=lambda r: (band_distance(r, band), -r["f"]))["f"]
 
 
 # --------------------------------------------------------------------------- #

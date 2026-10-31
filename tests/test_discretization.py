@@ -80,3 +80,35 @@ def test_window_discretization_on_the_synthetic_trace(tmp_path):
     assert w["n_jobs_reward_bin_gt_true"] == 0 and w["true"]["feasible_true"] and w["bin"]["feasible_true"]
     assert w["bin"]["best"] <= w["true"]["bound"] + 1e-6
     assert "R_true" not in w and w["f"] == cfg.capacity.f
+
+
+def test_warm_start_keeps_opt_true_above_the_bin_schedule():
+    """MILP_bin first, its schedule warm-starts MILP_true: OPT_true's best >= MILP_bin's schedule at the true rewards,
+    so the decision loss is >= 0 by construction; the ranges are ordered and every solve reports its three clocks."""
+    rng = np.random.default_rng(4)
+    S, state, c = world(np.exp(rng.uniform(np.log(0.012), np.log(0.95), 40)), seed=4)
+    o = discretization_milps(S, state, LAM, c, time_limit=10)
+    assert o["true"]["warm_start"] == pytest.approx(o["bin_schedule_at_true"])
+    assert o["true"]["best"] >= o["bin_schedule_at_true"] - 1e-9
+    lo, hi = o["decision_loss_range"]
+    assert 0 <= lo + 1e-9 and lo <= hi + 1e-9
+    vlo, vhi = o["value_loss_range"]
+    assert vlo <= o["value_loss"] + 1e-9 <= vhi + 2e-9
+    for k in ("true", "bin"):
+        assert {"runtime_s", "wall_s", "highs_run_time_s"} <= set(o[k])
+
+
+def test_warm_start_holds_even_without_time_to_search():
+    """A hard knapsack and a near-zero time limit: the MILP returns at least the starting solution's value."""
+    import scipy.sparse as sp
+    from dlent_rt.benchmarks import _highs_max
+    r = np.random.default_rng(0)
+    A = r.integers(1, 100, (60, 400)).astype(float)
+    obj, ub = r.integers(1, 100, 400).astype(float), A.sum(1) / 4
+    x0 = np.zeros(400)
+    for j in np.argsort(-obj / A.sum(0)):                       # a greedy feasible start
+        if np.all(A @ x0 + A[:, j] <= ub):
+            x0[j] = 1
+    ip = _highs_max(sp.csr_matrix(A), obj, ub, integer=True, time_limit=1e-3, x0=x0)
+    assert ip["obj"] >= obj @ x0 - 1e-9
+    assert ip["wall_s"] >= 0 and ip["highs_run_time_s"] >= 0
