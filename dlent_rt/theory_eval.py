@@ -30,7 +30,7 @@ from .benchmarks import Benchmarks, discretization_milps
 from .data import _occupancy_stats, _OccupancyBasis, load_dataset, load_history
 from .lp_oracle import solve_lp_rs
 from .models.core.occupancy import Occupancy
-from .models.core.reinit import build_window_state
+from .models.core.reinit import build_window_state, hindsight_cfg
 from .models.core.stream import build_history_stream, build_stream
 from .models.core.error_params import make_error_params
 from .models.policy import ThresholdPolicy, mechanism_summary, simulate
@@ -102,7 +102,7 @@ def occupancy_series(tick, D, A, admit):
 def window_taus(B, window_ticks: int) -> np.ndarray:
     """tau of the fluid LP on each full window of the stream (its own type rates, no fallback), (n_windows, |I|)."""
     S, cfg = B.S, B.cfg
-    cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
+    cfg_h = hindsight_cfg(cfg)
     taus = []
     for k in range(int(B.T // window_ticks)):
         idx = np.flatnonzero((S.tick > k * window_ticks) & (S.tick <= (k + 1) * window_ticks))
@@ -435,7 +435,7 @@ def h_vs_stream(B, st0, cfg) -> dict:
     tab["hw profile"] = ids % ts.n_hw
     top = tab.reindex(tab["load gap"].abs().sort_values(ascending=False).index).head(10)
     # decomposition
-    cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
+    cfg_h = hindsight_cfg(cfg)
     idx = np.arange(S.n)
     sS, _ = build_window_state(S, idx, idx, T, st0, B.ds, cfg_h)
     x0, lp0 = lp_x(st0, c, cfg)

@@ -12,7 +12,12 @@ updates only the statistics.
   3. A column with no arrival (for c) or no admitted job (for the rest) keeps its previous values: carry-forward
      (previous phase, then Phase 0). A column never seen since Phase 0 keeps Phase 0's fallback estimates
      (phase0.column_fallback). So every type always has an r~.
-  4. sigma is refit on the window's markups if bid.refit_sigma and the window has >= phase_transition.n_min arrivals.
+     stats.update "by_end_reason" (practical ablation): after a phase that ended by timeout or Test 1, the window's
+     statistics are MERGED with the old ones, weighted by their number of jobs (PhaseState.n_type / T_obs /
+     n_col_arr / n_col_obs: p = total arrivals / total ticks, column means count-weighted); after Test 2 or Test 3,
+     the window's statistics replace them ("replace", the theoretical model, always).
+  4. sigma (bid.sigma_update): "phase" refit on the window's markups if it has >= phase_transition.n_min arrivals;
+     "cumulative" refit on the pooled markups the caller passes (H and every phase so far); "fixed" kept.
   5. The carbon price s_C is Phase 0's (frozen), so r~ (in $) lives on one scale.
 Source codes per column (PhaseState.src_cost / src_dur): 0 = fresh (this window, or H in Phase 0), 1 = carried
 forward, 2 = fallback estimate.
@@ -23,13 +28,29 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...bid import BidResult, bid_model
+from ...bid import BidResult, MyersonModel, bid_model
 from ...lp_oracle import solve_lp_rs
 from ...phase0 import PhaseState, assign_type_ids, column_ids, column_means, cols_to_types, type_values
 from ...reward import type_reward
 from .stream import StreamData
 
 FRESH, CARRY, FALLBACK = 0, 1, 2
+MERGE_REASONS = ("timeout", "test1")          # stats.update "by_end_reason": merge after these, replace after the rest
+
+
+def hindsight_cfg(cfg):
+    """The config of a hindsight (benchmark) state: n_min = 2, sigma refit on the window, statistics replaced. The
+    benchmarks do not depend on the practical-model switches."""
+    return replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2),
+                   bid=replace(cfg.bid, sigma_update="phase"), stats=replace(cfg.stats, update="replace"))
+
+
+def _merge(prev_x, n_prev, new_x, n_new):
+    """Count-weighted mean of two column statistics (n_prev, n_new per column; x may be (n_cols, |I|))."""
+    shp = (-1,) + (1,) * (np.ndim(new_x) - 1)
+    a, b = np.reshape(n_prev, shp), np.reshape(n_new, shp)
+    merged = np.divide(a * prev_x + b * new_x, a + b, out=np.array(prev_x, float, copy=True), where=(a + b) > 0)
+    return np.where(b > 0, merged, prev_x)                  # no new data: the old value, exactly (carry-forward)
 
 
 @dataclass
@@ -40,6 +61,7 @@ class ReinitDiag:
     rho: float                 # grid ratio (fixed from Phase 0)
     sigma: float               # sigma of the new state's bid model
     sigma_refit: bool
+    stats_merged: bool         # stats.update "by_end_reason" merged old and new statistics
     n_types_seen: int          # types with an arrival in the window
     n_cost_carry: int          # columns whose cost base c is carried forward
     n_cost_fallback: int       # columns whose cost base c is still Phase 0's fallback estimate
@@ -57,8 +79,11 @@ def _source(has: np.ndarray, prev_src) -> np.ndarray:
 
 def build_window_state(
     stream: StreamData, idx_arr: np.ndarray, idx_obs: np.ndarray, W: int,
-    prev: PhaseState, ds, cfg,
+    prev: PhaseState, ds, cfg, reason: str | None = None, pooled_log_markups: np.ndarray | None = None,
 ) -> tuple[PhaseState, ReinitDiag]:
+    """The state of the next phase from the window's arrivals (idx_arr) and admitted jobs (idx_obs). reason: how the
+    window's phase ended (stats.update "by_end_reason"); pooled_log_markups: ln(b / c) of H and every phase so far
+    (bid.sigma_update "cumulative")."""
     ts, grid = prev.type_space, prev.grid                 # fixed from Phase 0
     n_types = ts.n_types
     idx_arr = np.asarray(idx_arr, np.int64)
@@ -66,8 +91,16 @@ def build_window_state(
     v_arr = stream.v[idx_arr]
     c_arr = stream.cost_base[idx_arr]
 
-    refit = cfg.bid.refit_sigma and idx_arr.size >= max(cfg.phase_transition.n_min, 2)
-    myerson = bid_model(cfg, v_arr, c_arr) if refit else prev.myerson
+    mode = cfg.bid.sigma_update
+    if mode == "cumulative":
+        if pooled_log_markups is None:
+            raise ValueError("bid.sigma_update cumulative: pass the pooled log-markups (H and every phase so far)")
+        refit = np.size(pooled_log_markups) >= 2
+        myerson = MyersonModel.known_markup(float(np.std(pooled_log_markups))) if refit else prev.myerson
+    else:
+        refit = mode == "phase" and idx_arr.size >= max(cfg.phase_transition.n_min, 2)
+        myerson = bid_model(cfg, v_arr, c_arr) if refit else prev.myerson
+    merge = cfg.stats.update == "by_end_reason" and reason in MERGE_REASONS
 
     k_arr = grid.assign(v_arr) if idx_arr.size else np.zeros(0, np.int64)
     N = np.bincount(assign_type_ids(ts, k_arr, stream.priority[idx_arr], stream.hw_idx[idx_arr]), minlength=n_types)
@@ -83,14 +116,28 @@ def build_window_state(
         C_elec_bar=stream.C_elec[o], C_carbon_bar=stream.C_carbon[o], A_type=stream.A[o]))
 
     has_c, has_d = Na > 0, M > 0                          # carry-forward (previous phase, then Phase 0 / fallback)
-    c_col = np.where(has_c, mc["c_col"], prev.c_col)
-    for k in md:
-        md[k] = np.where(has_d.reshape((-1,) + (1,) * (md[k].ndim - 1)), md[k], prev.col(getattr(prev, k)))
+    zc = np.zeros(n_cols)
+    na_prev = zc if prev.n_col_arr is None else np.asarray(prev.n_col_arr, float)
+    no_prev = zc if prev.n_col_obs is None else np.asarray(prev.n_col_obs, float)
+    if merge:               # count-weighted means of old and new; a column with no new data keeps its old values
+        c_col = _merge(prev.c_col, na_prev, mc["c_col"], Na)
+        for k in md:
+            md[k] = _merge(prev.col(getattr(prev, k)), no_prev, md[k], M)
+        n_col_arr, n_col_obs = na_prev + Na, no_prev + M
+    else:
+        c_col = np.where(has_c, mc["c_col"], prev.c_col)
+        for k in md:
+            md[k] = np.where(has_d.reshape((-1,) + (1,) * (md[k].ndim - 1)), md[k], prev.col(getattr(prev, k)))
+        n_col_arr, n_col_obs = np.where(has_c, Na, na_prev), np.where(has_d, M, no_prev)
     src_cost, src_dur = _source(has_c, prev.src_cost), _source(has_d, prev.src_dur)
 
     T = {k: cols_to_types(ts, x) for k, x in md.items()}
     v_bar, phi_bar = type_values(ts, grid, myerson, c_col, md["d_bar"] * cfg.time.tick_seconds / 3600.0)
-    p = N / max(W, 1)
+    if merge and prev.n_type is not None:
+        n_type, T_obs = np.asarray(prev.n_type, float) + N, float(prev.T_obs) + max(W, 1)
+    else:
+        n_type, T_obs = N.astype(float), float(max(W, 1))
+    p = n_type / T_obs
     v = T["A_type"] * T["d_bar"][:, None]
     r_tilde, r_nocarbon, _ = type_reward(
         v_bar, phi_bar, T["C_elec_bar"], T["C_carbon_bar"],
@@ -107,10 +154,11 @@ def build_window_state(
         power_bar=T["power_bar"], r_tilde=r_tilde, r_nocarbon=r_nocarbon,
         C_elec_bar=T["C_elec_bar"], C_carbon_bar=T["C_carbon_bar"], v=v, A_type=T["A_type"],
         tau=tau, lam_star=lp.optimum, n_assigned=int(idx_arr.size), c_col=c_col, src_cost=src_cost, src_dur=src_dur,
+        n_type=n_type, T_obs=T_obs, n_col_arr=n_col_arr, n_col_obs=n_col_obs,
     )
     diag = ReinitDiag(
         n_arrivals=int(idx_arr.size), n_observed=int(idx_obs.size), W=int(W),
-        rho=float(grid.ratio), sigma=float(myerson.sigma), sigma_refit=bool(refit),
+        rho=float(grid.ratio), sigma=float(myerson.sigma), sigma_refit=bool(refit), stats_merged=bool(merge),
         n_types_seen=int((N > 0).sum()),
         n_cost_carry=int((src_cost == CARRY).sum()), n_cost_fallback=int((src_cost == FALLBACK).sum()),
         n_dur_carry=int((src_dur == CARRY).sum()), n_dur_fallback=int((src_dur == FALLBACK).sum()),
@@ -126,6 +174,5 @@ def hindsight_lambda(stream, idx, W, prev, ds, cfg) -> tuple[float, ReinitDiag]:
     the LP. Returns lam_hat
     per tick.
     """
-    cfg_h = replace(cfg, phase_transition=replace(cfg.phase_transition, n_min=2))
-    st, dg = build_window_state(stream, idx, idx, W, prev, ds, cfg_h)
+    st, dg = build_window_state(stream, idx, idx, W, prev, ds, hindsight_cfg(cfg))
     return float(st.lam_star), dg

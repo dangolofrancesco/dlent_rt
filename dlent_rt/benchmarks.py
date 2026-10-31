@@ -46,7 +46,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from . import reward
-from .models.core.reinit import build_window_state
+from .models.core.reinit import build_window_state, hindsight_cfg
 from .models.core.stream import StreamData, build_stream
 from .lp_oracle import solve_lp_rs
 from .phase0 import assign_type_ids
@@ -235,7 +235,7 @@ class Benchmarks:
     def reference_state(self):
         """Full-stream hindsight state (ORACLE): every arrival, true D, Phase 0's grid, sigma refit on the whole
         stream. tau* and lambda_hat_ref come from it (types without arrivals have p = 0)."""
-        cfg_h = replace(self.cfg, phase_transition=replace(self.cfg.phase_transition, n_min=2))
+        cfg_h = hindsight_cfg(self.cfg)
         idx = np.arange(self.S.n)
         st, _ = build_window_state(self.S, idx, idx, self.T, self.state0, self.ds, cfg_h)
         return st

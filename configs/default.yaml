@@ -1,8 +1,11 @@
 # DLENT-RT, the final model (week 33, decisions D1-D6; reports/week33/model_check.md).
 # The ONE configuration. The model variants are switches inside it:
-#   theoretical model  oracle.kind frozen, ablation.thinning_off false, bid.refit_sigma true   (as written here)
-#   practical model    oracle.kind live,   ablation.thinning_off true
-#   no-learning model  the Phase 0 state forever (models.policy.NoLearningPolicy); sigma = bid.sigma, never refit
+#   theoretical model  oracle.kind frozen, ablation.thinning_off false, bid.sigma_update phase, stats.update replace
+#                      (as written here)
+#   practical model    ablations of the theoretical model, one switch each (scripts/run_ablations.py):
+#                      ablation.thinning_off true, stats.update by_end_reason, bid.sigma_update cumulative | fixed,
+#                      oracle.kind live
+#   no-learning model  the Phase 0 state forever (models.policy.ThresholdPolicy with thinning); Phase 0's sigma
 run:
   name: "default"
   seed: 42                    # single seed controls every stochastic element
@@ -73,7 +76,9 @@ bid:
   gamma1: 0.0332              # $ per vCPU-hour
   gamma2: 0.00445             # $ per GiB-hour
   sigma: 0.3                  # log-space std of the markup b / cost_base
-  refit_sigma: true           # theoretical model: sigma refit on the markups in Phase 0 and at every ReInit
+  # sigma is fit on H's markups in Phase 0; at every ReInit: "phase" (theoretical: refit on the previous phase's
+  # markups) | "cumulative" (refit on H's and every phase's markups pooled) | "fixed" (the Phase 0 estimate)
+  sigma_update: "phase"
 
 # D1: s_C = D_q / K_q, D_q = (Q_0.9(V) + Q_0.9(|Pi|)) / 2, K_q = Q_0.9(K), over H's types, frozen at Phase 0
 normalization:
@@ -130,6 +135,11 @@ online:
   bid_seed_offset: 1
   thinning_seed_offset: 2
 
-# D5: practical model = thinning off (with oracle.kind live)
+# D5: practical-model ablation: thinning off (p_U = 1)
 ablation:
   thinning_off: false
+
+# ReInit statistics: "replace" (theoretical: the previous phase replaces them; empty columns / types carry forward) |
+# "by_end_reason" (merge old and new, job-count weighted, after a timeout or Test 1; replace after Test 2 or Test 3)
+stats:
+  update: "replace"

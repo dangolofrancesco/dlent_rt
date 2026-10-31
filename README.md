@@ -38,7 +38,8 @@ b_j         ~ LogNormal(ln c_j − σ²/2, σ),  σ = 0.3                       
 **The bid is an hourly price.** It does not depend on the job's duration; c_j is known at arrival (priority and
 request). γ1 = 0.0332 $/vCPU-h, γ2 = 0.00445 $/GiB-h, cores = CPU × 64, GB = RAM × 256 (a declared machine size). U0
 is computed in Phase 0 and then fixed. The theoretical model refits σ on the markups b / c (on H in Phase 0, then on
-the previous phase's arrivals at every ReInit). The no-learning model keeps σ = 0.3. φ_m is computed in log space
+the previous phase's arrivals at every ReInit: `bid.sigma_update: phase`). The no-learning model keeps Phase 0's σ.
+φ_m is computed in log space
 (m (1 − σ · Mills(z))) and floored at −10¹² for markups near 0.
 
 ## Reward (D1)
@@ -105,9 +106,18 @@ rewards), and the grid's worst case 1 − 1/ρ (`benchmarks.discretization_milps
   volume from the admitted jobs only. A column with no job in the phase keeps its previous values (carry-forward:
   previous phase, then Phase 0); a column never seen since Phase 0 keeps the fallback estimates. The carbon price
   stays Phase 0's.
-* **Practical model** = switches: `oracle.kind: live` (every bin scored with the job's own electricity cost and
-  carbon, estimated at arrival as its power × the column's d̄ × the price / carbon intensity at arrival; k* per job)
-  and `ablation.thinning_off: true`.
+* **Practical model** = ablations of the theoretical model. Each element is one config switch on top of the default
+  (theoretical) config; `scripts/run_ablations.py` runs them alone (`--single`) or added one by one (`--cumulative`,
+  in this order: thinning off, statistics by end reason, σ cumulative, live oracle):
+
+  | element | switch | theoretical (default) |
+  |---|---|---|
+  | thinning off | `ablation.thinning_off: true` (p_U = 1) | `false` |
+  | statistics by end reason | `stats.update: by_end_reason`: after a timeout or Test 1, ReInit merges the old and new statistics, weighted by their number of jobs (p = total arrivals / total time; column means count-weighted); after Test 2 or Test 3, the new ones replace them | `replace` |
+  | σ update | `bid.sigma_update: cumulative` (refit on H's and every phase's markups pooled) or `fixed` (Phase 0's σ, never updated) | `phase` (refit on the previous phase) |
+  | live oracle | `oracle.kind: live`: every bin scored with the job's own electricity cost and carbon, estimated at arrival as its power × the column's d̄ × the price / carbon intensity at arrival (never the bid or the true duration; k* per job) | `frozen` |
+
+  The benchmarks (fluid OPT, the per-phase hindsight LP) always use the theoretical rules (`reinit.hindsight_cfg`).
 * **No-learning model** = the Phase 0 state forever: the static Phase 0 policy and the thinning
   (`models.policy.ThresholdPolicy` with `thin`).
 

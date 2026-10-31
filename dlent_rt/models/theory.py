@@ -9,9 +9,14 @@ Algorithm 2). Theoretical model (the default config):
   * Bernoulli thinning AFTER the oracle decision: U(t) ~ Bern((1 - xi) / (1 + eps~_U(t))), admit only if k_hat and U;
   * physical gate: an admission that would exceed the physical capacity c is rejected (`phys_reject`).
 
-Practical-model switches (D5): oracle.kind = "live" scores every bin of the arrival's column with the type value
-terms and the job's OWN electricity cost and carbon, estimated at arrival as its power x the column's d_bar x the
-price / carbon intensity at arrival (bid-independent); ablation.thinning_off = true sets p_U = 1.
+Practical model = ablations of this model, one config switch each (scripts/run_ablations.py):
+  * ablation.thinning_off = true: p_U = 1;
+  * stats.update = "by_end_reason": after a timeout or Test 1, ReInit merges old and new statistics (job-count
+    weighted); after Test 2 or Test 3 it replaces them (models.core.reinit);
+  * bid.sigma_update = "cumulative" (sigma refit on H's and every phase's markups pooled) or "fixed" (Phase 0's);
+  * oracle.kind = "live": every bin of the arrival's column is scored with the type value terms and the job's OWN
+    electricity cost and carbon, estimated at arrival as its power x the column's d_bar x the price / carbon
+    intensity at arrival (bid-independent, never the true duration).
 
 Admission and payment (dlent_rt.mechanism, week 33): a truthful threshold on HOURLY bids. The margin
 r~ - tau^T v is increasing in the bin inside a column, so k* = the lowest bin with margin > 0 (frozen: per phase;
@@ -41,6 +46,7 @@ import numpy as np
 from ..config import Config
 from ..data import Dataset
 from ..phase0 import PhaseState, assign_type_ids
+from ..bid import log_markups
 from ..mechanism import admit_and_pay, reserve_price, threshold_kstar
 from ..reward import job_terms
 from .core.error_params import ErrorParams, make_error_params
@@ -85,6 +91,8 @@ class TheoryModel:
         S = self.stream
         self.J = job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state0.myerson, self.tax,
                            cfg.objective)
+        # bid.sigma_update "cumulative": the log-markups of H, then of every ended phase's arrivals
+        self.markup_pool = [log_markups(state0.bids.v_rate, state0.bids.cost_base)]
 
     # ------------------------------------------------------------------ #
     def _new_phase(self, state: PhaseState, tau_prev: int, W_prev: int):
@@ -130,8 +138,14 @@ class TheoryModel:
             short=bool(arr.size < self.cfg.phase_transition.n_min),
         )
         if reinit:
-            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg)
+            pooled = None
+            if self.cfg.bid.sigma_update == "cumulative":
+                self.markup_pool.append(log_markups(S.v[arr], S.cost_base[arr]))
+                pooled = np.concatenate(self.markup_pool)
+            new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg, reason=reason,
+                                         pooled_log_markups=pooled)
             rec.update(next_rho=dg.rho, next_sigma=dg.sigma, reinit_sigma_refit=dg.sigma_refit,
+                       reinit_stats_merged=dg.stats_merged,
                        reinit_n_arrivals=dg.n_arrivals, reinit_n_observed=dg.n_observed,
                        reinit_types_seen=dg.n_types_seen,
                        reinit_cost_carry=dg.n_cost_carry, reinit_cost_fallback=dg.n_cost_fallback,
