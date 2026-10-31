@@ -152,7 +152,74 @@ and τ RAM > 0). The per-phase LP counts of the stopped run were never written, 
   thinning: it removes 54,549 jobs that the threshold would admit. The no-learning model, which has the same
   thinning, is close to DLENT-RT (2,314 $ vs 2,256 $).
 
-## 4. Files changed
+## 4. The full run per phase
+
+The no-learning and static columns are those baselines' rewards over the same time windows, from their admitted
+jobs in `benchmarks_f.pkl`. "Fluid on the phase" is the hindsight LP on the phase's own arrivals.
+
+| Phase | Start h | Length h | End | Arrivals | Admitted | τ CPU | τ RAM | σ | DLENT-RT $ | no-learning $ | Δ $ | static $ | fluid on the phase $ |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | 48.0 | timeout | 15,804 | 6,925 | 0 | 0.000947 | 0.3010 | 220.6 | 220.6 | 0.0 | 279.7 | 322.7 |
+| 2 | 48.0 | 95.3 | Test 1 | 34,024 | 14,121 | 0 | 0.001757 | 0.3014 | 309.0 | 341.2 | −32.2 | 485.7 | 563.4 |
+| 3 | 143.3 | 47.3 | Test 1 | 14,787 | 6,997 | 0 | 0.000079 | 0.2988 | 190.3 | 204.2 | −13.9 | 260.1 | 285.7 |
+| 4 | 190.6 | 94.6 | timeout | 21,945 | 9,717 | 0 | 0.000919 | 0.2978 | 331.5 | 326.4 | +5.1 | 462.6 | 531.0 |
+| 5 | 285.2 | 45.3 | Test 1 | 17,492 | 7,942 | 0.000086 | 0.000734 | 0.2982 | 190.2 | 191.9 | −1.7 | 251.3 | 295.3 |
+| 6 | 330.5 | 48.2 | Test 1 | 28,295 | 12,566 | 0.000160 | 0.000902 | 0.2992 | 199.8 | 205.1 | −5.3 | 261.9 | 317.9 |
+| 7 | 378.7 | 46.3 | Test 1 | 24,887 | 9,263 | 0.000520 | 0.000362 | 0.2996 | 175.2 | 174.1 | +1.1 | 234.3 | 285.2 |
+| 8 | 425.0 | 50.0 | Test 1 | 29,412 | 11,998 | 0.000246 | 0.000407 | 0.2980 | 186.4 | 198.8 | −12.4 | 257.2 | 292.2 |
+| 9 | 475.0 | 50.9 | Test 1 | 19,790 | 7,546 | 0.000109 | 0.000699 | 0.2993 | 232.8 | 236.1 | −3.3 | 275.7 | 329.3 |
+| 10 | 525.9 | 50.0 | horizon | 35,039 | 12,953 | 0.000206 | 0.001069 | 0.2992 | 220.4 | 215.8 | +4.6 | 276.7 | 357.8 |
+| **Total** | | 575.9 | | 241,475 | 100,028 | | | | **2,256.2** | **2,314.2** | **−58.0** | 3,045.2 | 3,580.5 |
+
+τ and σ are the values used in each phase; phase 1 uses Phase 0's state.
+
+**Learning still does not help.** DLENT-RT earns 2.5% less than the no-learning model. It wins 3 of the 10 phases.
+Phase 1 is identical, as expected: same state, same thinning draws. The biggest loss is phase 2 (−32 $). That phase
+ran with Phase 0's state, but it was twice as long as phase 1, because the timeout is 2 × the previous length. σ
+stays between 0.298 and 0.301. So, as on 10-30, ReInit only re-estimates τ on 45–95 h windows. Those estimates are
+noisier than Phase 0's estimate from H's 7 days. The gap to the static policy (2,256 vs 3,045 $) is the thinning.
+
+## 5. What changed since the f = 0.5 run of 10-30
+
+Both runs use f = 0.5 and seed 42 on the same 241,475 stream jobs. Two things changed in between:
+
+* **Stable sort by arrival time** (`data._read_csv`, commit f0234d6). The old sort was not stable: 17,984 tied rows
+  could come out in a different order depending on the rows after H. Now ties keep the file's order. H's bids, U0,
+  σ and the grid are unchanged to the digits shown below.
+* **Hardware profiles fit on H only** (`hardware.fit_on: "H"`; before: H + stream). The 32 profiles, and so the
+  columns and types, now come from H alone. Stream jobs map to the nearest H profile. This changes the types, so it
+  changes s_C, τ, r_max and every result.
+
+There was also one code change with no effect on results: `PhaseMonitor` keeps its counts in arrays (section 2).
+
+| | 10-30 run | Now |
+|---|---|---|
+| U0 ($/h) | 0.02138 | 0.02138 |
+| σ (Phase 0) | 0.301 | 0.301 |
+| grid v_min / v_max ($/h), ρ, bins used | 0.01385 / 0.7526, 1.0317, 125 | 0.01385 / 0.7526, 1.0317, 125 |
+| s_C ($/kg) | 10.62 | 9.88 |
+| τ Phase 0 (CPU, RAM) | 0, 0.000831 | 0, 0.000947 |
+| LP fill (CPU, RAM) | 91.7%, 100% | 97.4%, 100% |
+| LP optimum ($/h) | 5.79 | 6.09 |
+| r_max, Tests 2–3 unit ($) | 1.19 | 1.25 |
+| H jobs at or above k* | 69.5% | 70.6% |
+| fluid OPT $ | 3,363.2 | 3,522.8 |
+| static Phase 0 $ (admitted) | 2,932.7 (139,732) | 3,045.1 (142,410) |
+| no-learning $ (admitted) | 2,214.9 (101,292) | 2,314.2 (103,154) |
+| DLENT-RT $ (admitted) | 2,190.8 (101,016) | 2,256.2 (100,028) |
+| DLENT-RT, % of fluid OPT | 65.1% | 64.0% |
+| DLENT-RT − no-learning | −24.0 $ (−1.1%) | −58.0 $ (−2.5%) |
+| social welfare / payments $ | 744.8 / 1,439.0 | 817.0 / 1,428.5 |
+| Myerson: Σ(φd − C_elec) vs payments − C_elec $ | 1,439.5 vs 1,432.5 | 1,432.6 vs 1,421.9 |
+| phases (Test 1 / timeout / horizon) | 11 (8 / 2 / 1) | 10 (7 / 2 / 1) |
+| IR, upper set, spot-check violations | 0, 0, 0 | 0, 0, 0 |
+| runtime | 323 min | 223 min |
+| discretization cost | bucketed MILP (not valid) | MILP_true vs MILP_bin, section 3 |
+
+The levels move by 3–5%, and every check still passes. The main finding is the same: learning does not beat the
+no-learning model, and the thinning costs about a quarter of the reward.
+
+## 6. Files changed
 
 * `dlent_rt/theory_eval.py`: `select_f` tie-break goes to the largest f.
 * `tests/test_f_rule_H.py`: the tie-break test.
