@@ -162,12 +162,15 @@ def run_one(name: str, elements: tuple, seed=None) -> dict:
         admitted=int(sm["n_admitted"]), rejections={r: int(reasons.get(r, 0)) for r in REASONS},
         n_phases=int(sm["n_phases"]), end_reasons=sm["phase_end_reasons"],
         phases=pd.DataFrame(res.phases), ir_violations=int(sm["n_ir_violations"]),
-        upper_set_violations=upper_set(m, res), spot_check=spot_check(m, res, cfg.run.seed), summary=sm)
+        upper_set_violations=upper_set(m, res), spot_check=spot_check(m, res, cfg.run.seed), summary=sm,
+        # per arrival (stream order), for comparisons over the same time windows
+        tick=np.asarray(m.stream.tick), R_arr=np.array([a["R"] for a in res.arrivals], float),
+        admit_arr=np.array([a["admit"] for a in res.arrivals], bool))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUT_DIR / f"{name}.pkl", "wb") as fh:
         pickle.dump(out, fh)
     print(f"[{name}] done in {out['runtime_s'] / 60:,.0f} min: reward {out['split']['reward']:,.2f}", flush=True)
-    return {k: v for k, v in out.items() if k != "phases"}
+    return {k: v for k, v in out.items() if k not in ("phases", "tick", "R_arr", "admit_arr")}
 
 
 def _cached(name, elements, seed) -> bool:
