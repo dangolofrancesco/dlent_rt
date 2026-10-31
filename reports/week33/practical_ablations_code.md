@@ -1,7 +1,7 @@
 # Practical model as ablations of the theoretical model (code only)
 
 Branch `practical-ablations`, from cleanup-week30 at f0234d6. Nothing was simulated. Only the new and changed tests
-were run: 24 passed in about 40 s, on hand-made jobs and a 1,500-job synthetic trace.
+were run: 23 passed in about 35 s (`test_practical_ablations.py`, `test_bid.py`, `test_config_defaults.py`), on hand-made jobs and a 1,500-job synthetic trace.
 
 **The default config is still the theoretical model, with the same behavior.** The synthetic regression snapshot
 (Phase 0 and a full online run) is bit-identical between this branch and f0234d6: 15 of 15 arrays.
