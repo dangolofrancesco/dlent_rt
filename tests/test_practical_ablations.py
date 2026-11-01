@@ -299,10 +299,10 @@ def test_ablation_runner_plan_and_configs():
     single = ra.plan(True, False)
     assert [e for _, e in single] == [(k,) for k in ra.ELEMENTS]
     cum = ra.plan(False, True)
-    assert [e for _, e in cum] == [ra.CUMULATIVE[:k] for k in range(1, 5)]
-    assert ra.CUMULATIVE == ("thinning_off", "stats_by_end_reason", "sigma_cumulative", "live_oracle")
+    assert [e for _, e in cum] == [ra.CUMULATIVE[:k] for k in range(1, 4)]
+    assert ra.CUMULATIVE == ("thinning_off", "live_oracle", "stats_by_end_reason")
     c = ra.config_for(ra.CUMULATIVE)
-    assert c.ablation.thinning_off and c.stats.update == "by_end_reason" and c.bid.sigma_update == "cumulative"
+    assert c.ablation.thinning_off and c.stats.update == "by_end_reason" and c.bid.sigma_update == "phase"
     assert c.oracle.kind == "live"
     base = ra.config_for(())
     assert not base.ablation.thinning_off and base.stats.update == "replace" and base.bid.sigma_update == "phase"
@@ -330,5 +330,22 @@ def test_ablation_report_tables_on_fake_runs():
     text = ra.report(runs, 42, res=res, base=base)
     assert "## Each element alone (--single)" in text and "## Added one by one (--cumulative)" in text
     assert "delta of this step $" in text and "% of fluid OPT" in text and "delta vs no-learning $" in text
-    row = ra.row(res["cum4_live_oracle"], base)
-    assert row["delta vs theoretical $"] == 8.0 and row["% of fluid OPT"] == 54.0
+    row = ra.row(res["cum3_stats_by_end_reason"], base)
+    assert row["delta vs theoretical $"] == 7.0 and row["% of fluid OPT"] == 53.5
+
+
+def test_ablation_runner_reuses_a_run_with_the_same_config(tmp_path, monkeypatch):
+    """C1 (thinning off) has the same config as the single thinning-off run: it is copied, not rerun."""
+    import pickle, sys
+    from dataclasses import asdict
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import run_ablations as ra
+    monkeypatch.setattr(ra, "OUT_DIR", tmp_path)
+    cfg = asdict(ra.config_for(("thinning_off",)))
+    with open(tmp_path / "single_thinning_off.pkl", "wb") as fh:
+        pickle.dump(dict(name="single_thinning_off", elements=("thinning_off",), config=cfg, reward=1.0), fh)
+    assert ra._cached("cum1_thinning_off", ("thinning_off",), None)
+    r = pickle.load(open(tmp_path / "cum1_thinning_off.pkl", "rb"))
+    assert r["name"] == "cum1_thinning_off" and r["reused_from"] == "single_thinning_off" and r["reward"] == 1.0
+    assert not ra._cached("cum2_live_oracle", ("thinning_off", "live_oracle"), None)

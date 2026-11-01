@@ -9,8 +9,9 @@ configs/default.yaml (the theoretical model); everything else (seed, f, data) is
   live_oracle          oracle.kind = "live"                  (the job's own power x d_bar x price / carbon at arrival)
 
     dlent_venv/bin/python scripts/run_ablations.py --single               # each element alone (5 runs)
-    dlent_venv/bin/python scripts/run_ablations.py --cumulative           # thinning off, + stats by end reason,
-                                                                          # + sigma cumulative, + live oracle (4 runs)
+    dlent_venv/bin/python scripts/run_ablations.py --cumulative           # C1 thinning off, C2 + live oracle,
+                                                                          # C3 + stats by end reason (3 runs; C3 = the
+                                                                          # final practical model)
     dlent_venv/bin/python scripts/run_ablations.py --single --dry-run     # the runs and the commands, nothing run
     options: --workers N (parallel processes, default 1), --force (rerun cached runs), --seed S, --report-only
 
@@ -48,7 +49,9 @@ ELEMENTS = {
     "sigma_fixed": lambda c: replace(c, bid=replace(c.bid, sigma_update="fixed")),
     "live_oracle": lambda c: replace(c, oracle=replace(c.oracle, kind="live")),
 }
-CUMULATIVE = ("thinning_off", "stats_by_end_reason", "sigma_cumulative", "live_oracle")
+# the final practical model, built one switch at a time (sigma update is left out: it has no effect, see
+# reports/week33/ablations_results.md)
+CUMULATIVE = ("thinning_off", "live_oracle", "stats_by_end_reason")
 REASONS = ("bin below k*", "below reserve", "thinning", "no space")
 
 
@@ -174,11 +177,24 @@ def run_one(name: str, elements: tuple, seed=None) -> dict:
 
 
 def _cached(name, elements, seed) -> bool:
+    """True if `name` is cached with this config. A run with the same config cached under another name (e.g. C1 =
+    the single thinning-off run) is reused: copied under `name`, not rerun."""
+    want = asdict(config_for(elements, seed))
     p = OUT_DIR / f"{name}.pkl"
-    if not p.is_file():
-        return False
-    with open(p, "rb") as fh:
-        return pickle.load(fh)["config"] == asdict(config_for(elements, seed))
+    if p.is_file():
+        with open(p, "rb") as fh:
+            if pickle.load(fh)["config"] == want:
+                return True
+    for q in sorted(OUT_DIR.glob("*.pkl")) if OUT_DIR.is_dir() else []:
+        with open(q, "rb") as fh:
+            r = pickle.load(fh)
+        if q != p and r["config"] == want:
+            r.update(name=name, elements=tuple(elements), reused_from=q.stem)
+            with open(p, "wb") as fh:
+                pickle.dump(r, fh)
+            print(f"[{name}] same config as {q.stem}: reused, not rerun", flush=True)
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
