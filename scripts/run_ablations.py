@@ -19,7 +19,8 @@ Each run is its own process (spawn) and is cached in reports/week33/cache/ablati
 exists and was made with the same config, unless --force). The comparison uses the theoretical run
 (reports/week33/cache/theory_run.pkl) and the stream benchmarks at the same f (benchmarks_f.pkl: fluid OPT and the
 no-learning model); run scripts/model_check_cache.py theory / bench first. The tables go to stdout and to
-reports/week33/ablations_results.md.
+reports/week33/ablations_runner.md (the written report, reports/week33/ablations_results.md, is never
+touched; scripts/ablations_tables.py builds its tables).
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 CACHE = ROOT / "reports" / "week33" / "cache"
 OUT_DIR = CACHE / "ablations"
-REPORT = ROOT / "reports" / "week33" / "ablations_results.md"
+REPORT = ROOT / "reports" / "week33" / "ablations_runner.md"      # the runner's raw tables
 
 ELEMENTS = {
     "thinning_off": lambda c: replace(c, ablation=replace(c.ablation, thinning_off=True)),

@@ -6,6 +6,10 @@ cache; without it, it recomputes the same things itself).
     dlent_venv/bin/python scripts/model_check_cache.py bench     # the stream models at the configured f -> benchmarks_f.pkl
     dlent_venv/bin/python scripts/model_check_cache.py disc      # MILP_true vs MILP_bin, 7 days, 3,600 s each
                                                                  # (scripts/discretization_milp.py) -> discretization_milp.pkl
+    dlent_venv/bin/python scripts/model_check_cache.py greedy    # Greedy-Pos (DLENT-RT's mechanism, tau = 0) on the
+                                                                 # stream at the configured f -> greedy_pos.pkl
+    dlent_venv/bin/python scripts/model_check_cache.py week_fluid  # the fluid LP on the discretization MILP's window
+                                                                 # (first 7 days, volume inside it) -> week_fluid.pkl
     dlent_venv/bin/python scripts/model_check_cache.py theory    # one theoretical DLENT-RT run -> theory_run.pkl
                                                                  # (+ IR / upper set / truthfulness spot check)
     dlent_venv/bin/python scripts/model_check_cache.py all       # select_f and bench, then disc and theory in two processes
@@ -45,6 +49,33 @@ def bench() -> dict:
     r = te.evaluate_f(cfg, cfg.capacity.f, seed=cfg.run.seed)
     r["runtime_s"] = time.perf_counter() - t
     _save(r, "benchmarks_f.pkl")
+    return r
+
+
+def greedy() -> dict:
+    """Greedy-Pos at the configured f: the static Phase 0 policy's mechanism (threshold k*, reserve, payment) with
+    tau = 0, i.e. admit every bin with r~ > 0 that fits (theory_eval.static_run(tau=0))."""
+    from dlent_rt import theory_eval as te
+    from dlent_rt.benchmarks import Benchmarks
+    from dlent_rt.config import default_config
+    from dlent_rt.data import load_dataset
+    from dlent_rt.phase0 import run_phase0
+    cfg = default_config()
+    ds = load_dataset(cfg)
+    st0 = run_phase0(ds, cfg)
+    t = time.perf_counter()
+    r = te.static_run(Benchmarks(ds, st0, cfg), st0, cfg, tau=0.0)
+    r.pop("occupancy")
+    r.update(f=cfg.capacity.f, seed=cfg.run.seed, runtime_s=time.perf_counter() - t)
+    _save(r, "greedy_pos.pkl")
+    return r
+
+
+def week_fluid() -> dict:
+    from dlent_rt import theory_eval as te
+    from dlent_rt.config import default_config
+    r = te.window_fluid(default_config(), days=(0.0, 7.0))
+    _save(r, "week_fluid.pkl")
     return r
 
 
@@ -92,7 +123,8 @@ def _save(obj, name):
 
 def _run(name):
     warnings.simplefilter("ignore")
-    return {"select_f": select_f, "bench": bench, "disc": disc, "theory": theory}[name]()
+    return {"select_f": select_f, "bench": bench, "disc": disc, "theory": theory, "greedy": greedy,
+            "week_fluid": week_fluid}[name]()
 
 
 if __name__ == "__main__":

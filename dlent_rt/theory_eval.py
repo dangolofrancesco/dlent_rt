@@ -462,6 +462,36 @@ def sub_stream(S, mask):
     return type(S)(n=int(mask.sum()), **kw)
 
 
+def window_fluid(cfg, days=(0.0, 7.0)) -> dict:
+    """
+    The fluid LP on the stream arrivals of days [days[0], days[1]) after H (the discretization MILP's window), T = the
+    window length: the hindsight state of the window (its own type rates and means, Phase 0's grid), with each type's
+    volume counted only INSIDE the window (mean over its jobs of A x min(D_j, window end - t_j)). Also the same LP
+    without the types whose request exceeds C, and with each type's whole volume. In $ over the window.
+    """
+    ds = load_dataset(cfg)
+    st0 = run_phase0(ds, cfg)
+    S = build_stream(ds, cfg)
+    t0, t1 = days[0] * 86400 / cfg.time.tick_seconds, days[1] * 86400 / cfg.time.tick_seconds
+    m = (S.tick > t0) & (S.tick <= t1)
+    Sw = sub_stream(S, m)
+    T = int(t1 - t0)
+    idx = np.arange(Sw.n)
+    ref, _ = build_window_state(Sw, idx, idx, T, st0, ds, hindsight_cfg(cfg))
+    j = assign_type_ids(ref.type_space, np.asarray(ref.grid.assign(Sw.v)), Sw.priority, Sw.hw_idx)
+    inside = np.minimum(Sw.D, T - (Sw.tick - t0) + 1).astype(float)              # ticks of each job inside the window
+    N = np.bincount(j, minlength=ref.n_types)
+    d_in = np.divide(np.bincount(j, weights=inside, minlength=ref.n_types), N, out=np.zeros(ref.n_types), where=N > 0)
+    c = np.asarray(ds.capacity, float)
+    feas = ~np.any(ref.A_type > c[None, :], axis=1)
+    lp_in = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=ref.A_type * d_in[:, None], c=c, presolve=cfg.lp.presolve)
+    lp_inf = solve_lp_rs(p=ref.p * feas, r=ref.r_tilde, v=ref.A_type * d_in[:, None], c=c, presolve=cfg.lp.presolve)
+    lp_whole = solve_lp_rs(p=ref.p, r=ref.r_tilde, v=ref.v, c=c, presolve=cfg.lp.presolve)
+    return dict(f=cfg.capacity.f, seed=cfg.run.seed, days=tuple(days), n_jobs=int(Sw.n), T=T,
+                fluid=float(lp_in.optimum) * T, fluid_feasible=float(lp_inf.optimum) * T,
+                fluid_whole_volume=float(lp_whole.optimum) * T, tau=np.asarray(lp_in.tau).tolist())
+
+
 def window_discretization(cfg, days=(0.0, 7.0), time_limit: float = 3600.0) -> dict:
     """
     The discretization cost of the grid on the stream arrivals of days [days[0], days[1]) after H (D6):

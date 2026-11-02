@@ -112,3 +112,17 @@ def test_warm_start_holds_even_without_time_to_search():
     ip = _highs_max(sp.csr_matrix(A), obj, ub, integer=True, time_limit=1e-3, x0=x0)
     assert ip["obj"] >= obj @ x0 - 1e-9
     assert ip["wall_s"] >= 0 and ip["highs_run_time_s"] >= 0
+
+
+def test_window_fluid_on_the_synthetic_trace(tmp_path):
+    """theory_eval.window_fluid: the volume inside the window is at most the whole volume, so its LP is at least the
+    whole-volume LP; removing oversize types can only lower it."""
+    import warnings
+    from dlent_rt.theory_eval import window_fluid
+    from tests.synthetic import synthetic_config
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        cfg = synthetic_config(tmp_path, n0=400, n_jobs=1500)
+        w = window_fluid(cfg, days=(0.0, 0.25))
+    assert w["n_jobs"] > 0 and w["T"] == int(0.25 * 86400 / cfg.time.tick_seconds)
+    assert w["fluid"] >= w["fluid_whole_volume"] - 1e-9 and w["fluid"] >= w["fluid_feasible"] - 1e-9

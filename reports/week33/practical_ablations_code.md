@@ -93,7 +93,8 @@ were run: 23 passed in about 35 s (`test_practical_ablations.py`, `test_bid.py`,
     per job);
   * % of fluid OPT, delta vs the theoretical run, delta vs no-learning.
 
-  It goes to `reports/week33/ablations_results.md`.
+  The runner's raw tables go to `reports/week33/ablations_runner.md`. The written report is
+  `reports/week33/ablations_results.md`; `scripts/ablations_tables.py` builds its tables from the caches.
 
 **Run it only after this branch is merged** into cleanup-week30 and the running work there is finished. The runner
 needs f = 0.5, `fit_on: "H"`, `data/` (not in this worktree) and the caches `theory_run.pkl` and `benchmarks_f.pkl`
