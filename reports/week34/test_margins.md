@@ -85,3 +85,57 @@ To make the tests able to fire, the options would change the model or the experi
 * use far larger changes.
 
 I did not change anything. This is your decision.
+
+## 4. Calibrated thresholds (decision: `tests.threshold: calibrated`)
+
+**What changes.** Each test's threshold is multiplied by one constant (`dlent_rt/models/core/calibration.py`):
+* **Test 2:** ε̃_Test2 × κ2.
+* **Test 3:** **κ3 scales every confidence term of Test 3**, i.e. ε̃_Test3 and also ε_A′ + ε_B′ inside λ̃.
+  ε_A′ + ε_B′ alone is about 0.19 per tick, about 100 times λ. So scaling ε̃_Test3 alone could never make Test 3
+  fire.
+
+**How κ is chosen.** Once, in Phase 0, from H alone (7 days, 44,719 jobs):
+1. H is replayed through the no-learning model (Phase 0's state, practical switches). Phases end by Test 1 or
+   timeout and restart from Phase 0's state. On H: 4 phases, ending at 47, 96 and 144 h by Test 1, then at the
+   horizon (168 h).
+2. Each test's LHS / threshold ratio is traced at every tick.
+3. κ is set so that the largest ratio on H is **0.5**, a **safety factor of 2**.
+
+No stream data is read; a test checks this. κ depends only on H, which is the same in every environment. So it is
+computed once (`scripts/calibrate_tests.py --set-kappa`) and reused by every calibrated run.
+
+| | Largest ratio on H, paper's threshold | κ | Threshold lowered by |
+|---|---|---|---|
+| Test 2 | 0.0036 | **κ2 = 0.00725** | about 138 times |
+| Test 3 | 0.0042 | **κ3 = 0.00427** | about 234 times |
+
+**False alarms on the stationary stream.** I replayed the cached stationary practical run
+(`scenarios/none/practical`, 576 h, 13 phases). No new run was needed:
+* the run's own arrivals, rewards and admissions were fed to the monitor;
+* each phase's state was rebuilt by ReInit;
+* the replayed phase ends match the cached ones exactly.
+
+A firing is one episode: a run of consecutive gaps of one phase with ratio > 1. Test 3's count uses the monitor's
+screen bound, so it is an upper bound.
+
+| Phase | Start h | Length h | End | Largest Test 2 ratio | Largest Test 3 ratio |
+|---|---|---|---|---|---|
+| 1 | 0.0 | 46.7 | Test 1 | 0.48 | 0.53 |
+| 2 | 46.7 | 48.9 | Test 1 | 0.50 | 0.54 |
+| 3 | 95.6 | 47.4 | Test 1 | 0.53 | 0.54 |
+| 4 | 143.1 | 50.8 | Test 1 | 0.47 | 0.54 |
+| 5 | 193.9 | 49.5 | Test 1 | 0.39 | 0.51 |
+| 6 | 243.4 | 48.1 | Test 1 | 0.37 | 0.47 |
+| 7 | 291.6 | 49.0 | Test 1 | 0.48 | 0.59 |
+| 8 | 340.6 | 46.5 | Test 1 | 0.66 | 0.59 |
+| 9 | 387.1 | 46.9 | Test 1 | 0.54 | 0.58 |
+| 10 | 434.0 | 46.3 | Test 1 | 0.60 | 0.57 |
+| 11 | 480.3 | 46.7 | Test 1 | 0.43 | 0.56 |
+| 12 | 527.0 | 48.4 | Test 1 | 0.40 | 0.61 |
+| 13 | 575.4 | 0.5 | horizon | < 0 | 0.61 |
+
+* **False alarms: 0 over 576 h** (Test 2: 0, Test 3: 0).
+* The largest ratios on the stream (0.66 for Test 2, 0.61 for Test 3) are above H's 0.5, but below 1. So the
+  stream's own noise uses about a third of the safety factor.
+* **By the decision rule** (at most one firing at target 0.5), the safety factor stays 2. The 4 extra runs
+  (`practical_calibrated` in none, s1, s6, s2) start right after Part C.
