@@ -232,7 +232,8 @@ class Benchmarks:
     @cached_property
     def terms(self) -> reward.JobTerms:
         """Job reward terms of every stream job (Phase 0's bid model and s_C)."""
-        return reward.job_reward(self.S, self.state0, self.cfg.objective)
+        from .scenarios import scored_job_terms          # 'none': reward.job_reward; scenario: post-change scoring
+        return scored_job_terms(self.S, self.state0.myerson, self.state0.carbon_price, self.cfg.objective, self.cfg)
 
     @property
     def R(self) -> np.ndarray:

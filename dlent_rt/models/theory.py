@@ -89,8 +89,9 @@ class TheoryModel:
         # realised job reward terms of every stream job, scored with Phase 0's bid model and s_C: one scale for every
         # model and benchmark (the decisions use each phase's own sigma through r~)
         S = self.stream
-        self.J = job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state0.myerson, self.tax,
-                           cfg.objective)
+        # (scenario: post-change jobs scored with the true post-change markup distribution, dlent_rt.scenarios)
+        from ..scenarios import scored_job_terms
+        self.J = scored_job_terms(S, state0.myerson, self.tax, cfg.objective, cfg)
         # bid.sigma_update "cumulative": the log-markups of H, then of every ended phase's arrivals
         self.markup_pool = [log_markups(state0.bids.v_rate, state0.bids.cost_base)]
 
@@ -126,7 +127,7 @@ class TheoryModel:
             reason=reason, n_arrivals=int(arr.size), n_admitted=int(adm.size),
             **{k: v for k, v in self.ph.items()},
             lam_hat_start=float(st.lam_star), tau_cpu=float(st.tau[0]),
-            sigma=float(st.myerson.sigma), rho=float(st.grid.ratio),
+            sigma=float(st.myerson.sigma), mu=float(st.myerson.mu), rho=float(st.grid.ratio),
             n_columns_kstar0=int((self.k_star == 0).sum()), n_columns=int(self.k_star.size),
             n_cols_cost_carry=int((st.src_cost == 1).sum()), n_cols_cost_fallback=int((st.src_cost == 2).sum()),
             n_cols_dur_carry=int((st.src_dur == 1).sum()), n_cols_dur_fallback=int((st.src_dur == 2).sum()),
@@ -144,7 +145,7 @@ class TheoryModel:
                 pooled = np.concatenate(self.markup_pool)
             new, dg = build_window_state(S, arr, adm, W, st, self.ds, self.cfg, reason=reason,
                                          pooled_log_markups=pooled)
-            rec.update(next_rho=dg.rho, next_sigma=dg.sigma, reinit_sigma_refit=dg.sigma_refit,
+            rec.update(next_rho=dg.rho, next_sigma=dg.sigma, next_mu=dg.mu, reinit_sigma_refit=dg.sigma_refit,
                        reinit_stats_merged=dg.stats_merged,
                        reinit_n_arrivals=dg.n_arrivals, reinit_n_observed=dg.n_observed,
                        reinit_types_seen=dg.n_types_seen,
@@ -323,3 +324,16 @@ class TheoryModel:
             a_max_eff=self.a_max_eff.tolist(), a_max_data=np.asarray(self.ds.a_max).tolist(),
             capacity=self.c.tolist(), d_max=self.d_max,
         )
+
+
+class FrozenModel(TheoryModel):
+    """
+    The no-learning model of the non-stationary experiment (week 34): the practical model frozen at Phase 0. Run it
+    with the practical switches (ablation.thinning_off, oracle.kind live). Phase 0's statistics, (mu, sigma), tau
+    and k* are used for the whole run: no test is evaluated, no phase ends, ReInit is never called. The live oracle
+    still scores each job with its own costs at arrival.
+    """
+    kind = "frozen"
+
+    def _advance(self, b: int):
+        self.mon.last = b - 1                  # commit the ticks before the arrival without any test

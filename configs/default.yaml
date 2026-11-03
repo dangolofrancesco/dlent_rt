@@ -147,3 +147,10 @@ ablation:
 # "by_end_reason" (merge old and new, job-count weighted, after a timeout or Test 1; replace after Test 2 or Test 3)
 stats:
   update: "replace"
+
+# Non-stationary bids (week 34, dlent_rt.scenarios; scripts/run_scenarios.py --scenario): the stream's markups change
+# once, t_star_hours after the stream start. none | s1_bids_fall (m -> 0.5 m) | s2_bids_rise (m -> 1.75 m) |
+# s6_bids_spread (sigma -> 0.5, E[m] = 1). H, c, arrivals, requests, durations, prices and carbon never change.
+scenario:
+  name: "none"
+  t_star_hours: 240.0

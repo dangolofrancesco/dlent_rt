@@ -210,6 +210,15 @@ class StatsCfg:
 
 
 @dataclass(frozen=True)
+class ScenarioCfg:
+    # Non-stationary bids (week 34, dlent_rt.scenarios): the stream's markups change once, at t_star_hours after the
+    # stream start. "none" | "s1_bids_fall" (m -> 0.5 m) | "s2_bids_rise" (m -> 1.75 m) | "s6_bids_spread"
+    # (sigma -> 0.5, E[m] = 1); aliases s1 / s2 / s6. H and every other stream field never change.
+    name: str = "none"
+    t_star_hours: float = 240.0
+
+
+@dataclass(frozen=True)
 class AblationCfg:
     # thinning_off (practical model): p_U(t) = 1; the oracle and the physical gate stay.
     thinning_off: bool = False
@@ -251,6 +260,7 @@ class Config:
     online: OnlineCfg = field(default_factory=OnlineCfg)
     ablation: AblationCfg = field(default_factory=AblationCfg)
     stats: StatsCfg = field(default_factory=StatsCfg)
+    scenario: ScenarioCfg = field(default_factory=ScenarioCfg)
 
     #  validation
     def validate(self) -> "Config":
@@ -260,6 +270,9 @@ class Config:
         assert self.oracle.kind in ("frozen", "live")
         assert self.bid.sigma_update in ("phase", "cumulative", "fixed")
         assert self.stats.update in ("replace", "by_end_reason")
+        from .scenarios import resolve
+        resolve(self.scenario.name)
+        assert self.scenario.t_star_hours >= 0
         assert self.capacity.f > 0
         assert 0 < self.capacity.job_level_reject_max < 1 and self.capacity.job_level_enlarge_step > 1
         assert 0 < self.limits.quota_share <= 1 and 0 < self.limits.quota_tol < 1
@@ -327,7 +340,7 @@ _DATACLASS_REGISTRY = {
     "LoggingCfg": LoggingCfg, "EnergyModelCfg": EnergyModelCfg,
     "BidCfg": BidCfg, "NormalizationCfg": NormalizationCfg,
     "ConstantsCfg": ConstantsCfg, "TestsCfg": TestsCfg, "OnlineCfg": OnlineCfg,
-    "AblationCfg": AblationCfg, "StatsCfg": StatsCfg,
+    "AblationCfg": AblationCfg, "StatsCfg": StatsCfg, "ScenarioCfg": ScenarioCfg,
 }
 
 

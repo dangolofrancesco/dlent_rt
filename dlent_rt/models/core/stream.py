@@ -43,6 +43,9 @@ class StreamData:
 
 
 def build_stream(ds: Dataset, cfg: Config) -> StreamData:
+    """The stream with its bids; with scenario.name != "none", the markups of the arrivals at or after t* are changed
+    (dlent_rt.scenarios.apply_scenario), so every model and benchmark sees the same changed stream."""
+    from ...scenarios import apply_scenario
     S = ds.stream
     bids = _synthesize_bids(S, cfg, seed=cfg.run.seed + cfg.online.bid_seed_offset, u0=calibrate_u0(ds.H, cfg))
     E = _compute_job_energy(S, cfg)
@@ -50,14 +53,14 @@ def build_stream(ds: Dataset, cfg: Config) -> StreamData:
     price, ci = _lookup_grid(S, ds)
     tick = np.asarray(S.arrival_step, np.int64) + 1
     assert np.all(np.diff(tick) > 0), "at most one arrival per tick"
-    return StreamData(
+    return apply_scenario(StreamData(
         n=S.n, tick=tick, v=bids.v_rate, phi_gen=bids.phi_rate,
         cost_base=bids.cost_base,
         priority=S.priority, hw_idx=S.hw_idx, A=S.A, D=np.asarray(S.duration_steps, np.int64),
         duration_hours=S.duration_hours, energy_kwh=E, power_kw=P,
         price=np.asarray(price, float), ci=np.asarray(ci, float),
         C_elec=electricity_cost(E, price), C_carbon=carbon_kg(E, ci),
-    )
+    ), cfg)
 
 
 def build_history_stream(ds: Dataset, state0, cfg: Config) -> StreamData:

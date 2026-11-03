@@ -16,8 +16,9 @@ updates only the statistics.
      statistics are MERGED with the old ones, weighted by their number of jobs (PhaseState.n_type / T_obs /
      n_col_arr / n_col_obs: p = total arrivals / total ticks, column means count-weighted); after Test 2 or Test 3,
      the window's statistics replace them ("replace", the theoretical model, always).
-  4. sigma (bid.sigma_update): "phase" refit on the window's markups if it has >= phase_transition.n_min arrivals;
-     "cumulative" refit on the pooled markups the caller passes (H and every phase so far); "fixed" kept.
+  4. The markup model (mu = mean ln m, sigma = std ln m; bid.sigma_update): "phase" refit on the window's markups
+     if it has >= phase_transition.n_min arrivals; "cumulative" refit on the pooled markups the caller passes (H and
+     every phase so far); "fixed" kept.
   5. The carbon price s_C is Phase 0's (frozen), so r~ (in $) lives on one scale.
 Source codes per column (PhaseState.src_cost / src_dur): 0 = fresh (this window, or H in Phase 0), 1 = carried
 forward, 2 = fallback estimate.
@@ -60,6 +61,7 @@ class ReinitDiag:
     W: int
     rho: float                 # grid ratio (fixed from Phase 0)
     sigma: float               # sigma of the new state's bid model
+    mu: float                  # mu of the new state's bid model (mean ln m)
     sigma_refit: bool
     stats_merged: bool         # stats.update "by_end_reason" merged old and new statistics
     n_types_seen: int          # types with an arrival in the window
@@ -96,7 +98,7 @@ def build_window_state(
         if pooled_log_markups is None:
             raise ValueError("bid.sigma_update cumulative: pass the pooled log-markups (H and every phase so far)")
         refit = np.size(pooled_log_markups) >= 2
-        myerson = MyersonModel.known_markup(float(np.std(pooled_log_markups))) if refit else prev.myerson
+        myerson = MyersonModel.fitted(pooled_log_markups) if refit else prev.myerson
     else:
         refit = mode == "phase" and idx_arr.size >= max(cfg.phase_transition.n_min, 2)
         myerson = bid_model(cfg, v_arr, c_arr) if refit else prev.myerson
@@ -158,7 +160,7 @@ def build_window_state(
     )
     diag = ReinitDiag(
         n_arrivals=int(idx_arr.size), n_observed=int(idx_obs.size), W=int(W),
-        rho=float(grid.ratio), sigma=float(myerson.sigma), sigma_refit=bool(refit), stats_merged=bool(merge),
+        rho=float(grid.ratio), sigma=float(myerson.sigma), mu=float(myerson.mu), sigma_refit=bool(refit), stats_merged=bool(merge),
         n_types_seen=int((N > 0).sum()),
         n_cost_carry=int((src_cost == CARRY).sum()), n_cost_fallback=int((src_cost == FALLBACK).sum()),
         n_dur_carry=int((src_dur == CARRY).sum()), n_dur_fallback=int((src_dur == FALLBACK).sum()),

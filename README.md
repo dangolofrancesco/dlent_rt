@@ -39,8 +39,10 @@ b_j         ~ LogNormal(ln c_j − σ²/2, σ),  σ = 0.3                       
 
 **The bid is an hourly price.** It does not depend on the job's duration; c_j is known at arrival (priority and
 request). γ1 = 0.0332 $/vCPU-h, γ2 = 0.00445 $/GiB-h, cores = CPU × 64, GB = RAM × 256 (a declared machine size). U0
-is computed in Phase 0 and then fixed. The theoretical model refits σ on the markups b / c (on H in Phase 0, then on
-the previous phase's arrivals at every ReInit: `bid.sigma_update: phase`). The no-learning model keeps Phase 0's σ.
+is computed in Phase 0 and then fixed. The mechanism estimates the markup model from the markups m = b / c: μ̂ =
+mean(ln m) and σ̂ = std(ln m) (week 34; before, μ = −σ̂²/2 was assumed). It does so on H in Phase 0, then on the
+previous phase's arrivals at every ReInit (`bid.sigma_update: phase`). φ uses (μ̂, σ̂). The no-learning model keeps
+Phase 0's (μ̂, σ̂). The effect on the stationary data is at most 0.5% (`reports/week34/mu_estimation.md`).
 φ_m is computed in log space
 (m (1 − σ · Mills(z))) and floored at −10¹² for markups near 0.
 
@@ -142,6 +144,27 @@ rewards), and the grid's worst case 1 − 1/ρ (`benchmarks.discretization_milps
   threshold k* per column, hourly reserve, payment max(L_k*, r_j) × hours, IR checked. The static policy has no
   thinning; the no-learning model has the theoretical thinning p_U(W0, t); Greedy-Pos uses τ = 0. Fluid OPT, fluid
   on feasible types stay as upper bounds.
+
+## Non-stationary bids (week 34)
+
+`scenario.name` (default `none`) changes the stream's markups once, `scenario.t_star_hours` (240 h) after the stream
+start (`dlent_rt/scenarios.py`):
+* `s1_bids_fall`: m → 0.5 m.
+* `s2_bids_rise`: m → 1.75 m.
+* `s6_bids_spread`: σ → 0.5, with E[m] = 1.
+
+The bids are b = c·m. H, c, the arrivals, requests, durations, prices and carbon never change. Every model and
+benchmark sees the same changed stream. The realised reward of a post-change job uses Phase 0's markup model moved by
+the same transform, i.e. the true post-change law on the same scale.
+
+`scripts/run_scenarios.py` runs five models in every environment (none, s1, s6, s2):
+* fluid OPT (hindsight, before and after t*);
+* Practical (C3);
+* Greedy-Pos;
+* No learning (`models.theory.FrozenModel`: the practical model frozen at Phase 0);
+* Theoretical.
+
+The expectations are in `reports/week34/scenarios_expectations.md`.
 
 ## Where things are
 

@@ -24,16 +24,24 @@ PHI_M_FLOOR = -1e12    # floor of phi_m (markup units): phi_m -> -inf as m -> 0 
 @dataclass
 class MyersonModel:
     """
-    The KNOWN markup distribution m = v / c ~ LogNormal(-sigma^2/2, sigma), c = the job's cost_base.
+    The markup distribution m = v / c ~ LogNormal(mu, sigma), c = the job's cost_base. The generator uses
+    mu = -sigma^2/2 (E[m] = 1; known_markup); the mechanism ESTIMATES both, mu = mean(ln m) and sigma = std(ln m)
+    (fitted; Phase 0 on H and every ReInit), so it follows a shift of the markups' level as well as their spread.
     phi_job(v, c) = c * phi_markup(v / c) is the ONLY entry point for the virtual value of a dollar bid; it is used
     by Phase 0, ReInit, the benchmarks and the online reward. phi_markup(m) takes a markup (a ratio).
     """
-    mu: float                 # log-space mean of the markup (= -sigma^2/2)
+    mu: float                 # log-space mean of the markup (-sigma^2/2 for the generator; estimated by `fitted`)
     sigma: float              # log-space std of the markup
 
     @classmethod
     def known_markup(cls, sigma: float) -> "MyersonModel":
         return cls(mu=-0.5 * float(sigma) ** 2, sigma=float(sigma))
+
+    @classmethod
+    def fitted(cls, log_m) -> "MyersonModel":
+        """mu = mean(ln m), sigma = std(ln m) of the given log-markups."""
+        lm = np.asarray(log_m, float)
+        return cls(mu=float(lm.mean()), sigma=float(lm.std()))
 
     def phi_job(self, v, c):
         """Virtual value of the DOLLAR bid v of a job with cost base c."""
@@ -42,7 +50,7 @@ class MyersonModel:
 
     def phi_markup(self, m):
         """
-        phi_m(m) = m - (1 - F(m)) / f(m) under LogNormal(-sigma^2/2, sigma), in the stable form
+        phi_m(m) = m - (1 - F(m)) / f(m) under LogNormal(mu, sigma), in the stable form
         m (1 - sigma Mills(z)), z = (ln m - mu) / sigma, Mills = (1 - Phi) / phi of the standard normal (log space).
         Increasing in m; floored at PHI_M_FLOOR (m <= 0 gives the floor).
         """
@@ -77,10 +85,10 @@ def fit_sigma(v: np.ndarray, cost_base: np.ndarray) -> float:
 
 
 def bid_model(cfg, v: Optional[np.ndarray] = None, cost_base: Optional[np.ndarray] = None) -> MyersonModel:
-    """The mechanism's bid model: sigma fit on (v, cost_base) when at least two bids are given (Phase 0 on H; ReInit
-    by bid.sigma_update), else bid.sigma (the generator's)."""
+    """The mechanism's bid model: mu and sigma fit on the markups of (v, cost_base) when at least two bids are given
+    (Phase 0 on H; ReInit by bid.sigma_update), else the generator's (bid.sigma, mu = -sigma^2/2)."""
     if v is not None and np.size(v) >= 2:
-        return MyersonModel.known_markup(fit_sigma(v, cost_base))
+        return MyersonModel.fitted(log_markups(v, cost_base))
     return MyersonModel.known_markup(cfg.bid.sigma)
 
 
