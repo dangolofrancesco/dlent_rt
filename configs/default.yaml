@@ -134,6 +134,10 @@ constants:
 tests:
   drop_dual_learning_terms: true   # exact LP-RS: eps_E = eps_F = 0
   piecewise_tol: 1.0e-7
+  threshold: theoretical           # theoretical | calibrated (Tests 2-3 x kappa, chosen on H; week 34)
+  kappa_test2: null                # null: computed in Phase 0 from H; a number: used as given
+  kappa_test3: null
+  calibration_target: 0.5          # the largest LHS / threshold ratio on H (safety factor 2)
 
 online:
   bid_seed_offset: 1

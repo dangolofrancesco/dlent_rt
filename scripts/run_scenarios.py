@@ -8,6 +8,8 @@ Non-stationary bids (week 34; reports/week34/scenarios_expectations.md): the fiv
                              oracle, no test, no ReInit)
                 practical    C3 = thinning off + live oracle + stats.update by_end_reason (the proposed model)
                 theoretical  the default config (thinning on, frozen oracle, stats.update replace)
+  extra model   practical_calibrated   C3 + tests.threshold calibrated (Tests 2-3 x kappa, chosen in Phase 0 on H;
+                             models.core.calibration). Not in the default plan: run it with --models practical_calibrated
 
 Same seed (42), f, data, bids and thinning draws everywhere; Phase 0 is the same in every environment (only the
 stream changes). Each run is its own process, cached in reports/week34/cache/scenarios/<env>/<model>.pkl and skipped
@@ -17,6 +19,7 @@ if cached with the same config (resumable).
     dlent_venv/bin/python scripts/run_scenarios.py --dry-run
     dlent_venv/bin/python scripts/run_scenarios.py --scenario s1 --models fluid greedy_pos     # a subset
     dlent_venv/bin/python scripts/run_scenarios.py --report-only                                # summary table
+    caffeinate -i dlent_venv/bin/python scripts/run_scenarios.py --models practical_calibrated --workers 2
 """
 from __future__ import annotations
 
@@ -40,7 +43,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 CACHE = ROOT / "reports" / "week34" / "cache" / "scenarios"
 ENVS = ("none", "s1_bids_fall", "s6_bids_spread", "s2_bids_rise")
 MODELS = ("fluid", "greedy_pos", "no_learning", "practical", "theoretical")
-LONG = ("practical", "theoretical")
+EXTRA = ("practical_calibrated",)
+LONG = ("practical", "theoretical", "practical_calibrated")
 REASONS = ("bin below k*", "below reserve", "thinning", "no space")
 
 
@@ -51,10 +55,12 @@ def config_for(env: str, model: str, seed=None):
     cfg = replace(cfg, scenario=replace(cfg.scenario, name=resolve(env)))
     if seed is not None:
         cfg = replace(cfg, run=replace(cfg.run, seed=int(seed)))
-    if model in ("practical", "no_learning"):
+    if model in ("practical", "no_learning", "practical_calibrated"):
         cfg = replace(cfg, ablation=replace(cfg.ablation, thinning_off=True), oracle=replace(cfg.oracle, kind="live"))
-    if model == "practical":
+    if model in ("practical", "practical_calibrated"):
         cfg = replace(cfg, stats=replace(cfg.stats, update="by_end_reason"))
+    if model == "practical_calibrated":
+        cfg = replace(cfg, tests=replace(cfg.tests, threshold="calibrated"))
     return cfg.validate()
 
 
@@ -66,8 +72,19 @@ def _cached(env, model, seed) -> bool:
     p = path(env, model)
     if not p.is_file():
         return False
+    from dlent_rt.config import default_config
     with open(p, "rb") as fh:
-        return pickle.load(fh)["config"] == asdict(config_for(env, model, seed))
+        return _same_config(pickle.load(fh)["config"], asdict(config_for(env, model, seed)), asdict(default_config()))
+
+
+def _same_config(cached, want, default) -> bool:
+    """cached == want, where a key missing from the cached config (a config field added after the run) counts as
+    equal when want's value is the field's default."""
+    if isinstance(want, dict):
+        return (isinstance(cached, dict) and set(cached) <= set(want)
+                and all(_same_config(cached[k], want[k], default[k]) if k in cached else want[k] == default[k]
+                        for k in want))
+    return cached == want
 
 
 # --------------------------------------------------------------------------- #
@@ -162,7 +179,7 @@ def _online(cfg, frozen: bool) -> dict:
                 rejections=dict(Counter(a["reason"] for a in A if not a["admit"])),
                 ir=int(sm["n_ir_violations"]), upper=upper_set(m, res), spot=spot_check(m, res, cfg.run.seed)["violations"],
                 phases=pd.DataFrame(res.phases), sw=float(sm["SW_total"]), grid=st0.grid,
-                end_reasons=sm["phase_end_reasons"])
+                end_reasons=sm["phase_end_reasons"], calibration=sm.get("calibration"))
 
 
 def run_one(env: str, model: str, seed=None) -> str:
@@ -200,7 +217,7 @@ def plan(envs, models):
 def summary_table() -> pd.DataFrame:
     rows = []
     for e in ENVS:
-        for m in MODELS:
+        for m in MODELS + EXTRA:
             p = path(e, m)
             if not p.is_file():
                 continue
@@ -218,7 +235,7 @@ def main(argv=None) -> None:
     from dlent_rt.scenarios import resolve
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", nargs="+", default=list(ENVS), help="environments (none, s1, s6, s2 or full names)")
-    ap.add_argument("--models", nargs="+", default=list(MODELS), choices=MODELS)
+    ap.add_argument("--models", nargs="+", default=list(MODELS), choices=MODELS + EXTRA)
     ap.add_argument("--workers", type=int, default=1, help="runs in parallel, each its own process")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--force", action="store_true", help="rerun cached runs")

@@ -25,6 +25,10 @@ gamma is forced to 1, so the monitor works with rewards in units of r_unit = Pha
 the rewards of admissible actions: the MAXIMUM r~ over Phase 0's populated types with r~ > 0 (phase0.reward_unit;
 fixed for the whole run, never changed at ReInit): r~ / r_unit in the window LPs and R / r_unit in Test 2's sum. Test 1
 compares occupancies with capacities (both in machines).
+
+Calibration (week 34, models.core.calibration): with `trace` set, every scan appends what the threshold calibration
+needs (the per-tick lam and lambda~ terms, Test 2's largest LHS / threshold ratio in the gap, and Test 3's screen
+pairs); with tests23=False, Tests 2 and 3 are evaluated but never end the phase.
 """
 from __future__ import annotations
 
@@ -56,7 +60,8 @@ def geometric_offsets(base: int, max_off: int) -> np.ndarray:
 
 class PhaseMonitor:
     def __init__(self, ep: ErrorParams, r_tilde, v, capacity, a_max_eff,
-                 tau_prev: int, W_prev: int, d_max: int, cfg, r_unit: float = 1.0):
+                 tau_prev: int, W_prev: int, d_max: int, cfg, r_unit: float = 1.0,
+                 trace=None, tests23: bool = True):
         if cfg.test3.s_grid != "geometric":
             raise NotImplementedError(
                 "test3.s_grid='full' needs O(n) LPs per tick; the exact event-driven "
@@ -80,6 +85,8 @@ class PhaseMonitor:
         self.S2 = 0.0                        # sum_{tau=tau_bar+1}^{last} term(tau)
         self.lam_tilde = np.inf              # min_{tau_prev < tau <= last} (lam + eps_A' + eps_B')
         self.sum_lam = 0.0                   # sum_{tau_prev < tau <= last} lam(tau)  (diagnostic)
+        self.trace, self.tests23 = trace, bool(tests23)
+        self._t3 = None
 
     # ------------------------------------------------------------------ #
     def register_arrival(self, t: int, type_id: int, R: float,
@@ -136,6 +143,7 @@ class PhaseMonitor:
         # checks at u = tau + 1, u in [lo+1, b]
         u = taus + 1
         fails: list[tuple[int, str]] = []
+        self._t3 = [] if self.trace is not None else None
 
         timeout = self.tau_prev + 2 * self.W_prev + 1       # first u with u > tau_prev + 2W
         if lo + 1 <= timeout <= b:
@@ -148,7 +156,7 @@ class PhaseMonitor:
             lhs2 = np.divide(S2_c, den, out=np.zeros_like(S2_c), where=den > 0)
             thr2 = ep.eps_test2(self.W_prev, n_tau)          # eps~_Test2(u-1), n = u-1-tau_prev
             bad = act & (lhs2 > thr2)
-            if np.any(bad):
+            if np.any(bad) and self.tests23:
                 fails.append((int(u[np.argmax(bad)]), "test2"))
 
             u0 = int(u[np.argmax(act)])                       # first active tick of the gap
@@ -157,7 +165,7 @@ class PhaseMonitor:
                 fails.append((u0, "test1"))
 
             f3, m3 = self._test3(u0, b, lo, lam, lt_c, taus)
-            if f3 is not None:
+            if f3 is not None and self.tests23:
                 fails.append((f3, "test3"))
         else:
             m3 = np.nan
@@ -170,10 +178,22 @@ class PhaseMonitor:
         if fails:
             u_star, reason = min(fails)
             k = u_star - 1 - lo                               # commit taus[0..k] (tau <= u*-1)
+            if self.trace is not None:
+                self._record(k, taus, lam, n_tau, act, lhs2, thr2)
             self._commit(S2_c[k], lt_c[k], lam[: k + 1].sum(), u_star - 1)
             return ScanResult(u_star, reason, diag)
+        if self.trace is not None:
+            self._record(taus.size - 1, taus, lam, n_tau, act, lhs2, thr2)
         self._commit(S2_c[-1], lt_c[-1], lam.sum(), hi)
         return ScanResult(None, "", diag)
+
+    def _record(self, k, taus, lam, n_tau, act, lhs2, thr2):
+        """Calibration trace of the committed ticks taus[0..k] (checks at u = taus + 1 <= taus[k] + 1)."""
+        r2 = np.nan
+        if lhs2 is not None and np.any(act[: k + 1]):
+            r2 = float(np.max((lhs2 / thr2)[: k + 1][act[: k + 1]]))
+        self.trace.add_gap(self.tau_prev, taus[: k + 1], lam[: k + 1], self.ep.lam_tilde_term(n_tau[: k + 1]), r2,
+                           self._t3)
 
     def _commit(self, S2, lt, lam_sum, last):
         self.S2, self.lam_tilde, self.last = float(S2), float(lt), int(last)
@@ -196,6 +216,8 @@ class PhaseMonitor:
             if s == self.tau_prev:             # phase window: lam already known per tick
                 lhs = lam[us - 1 - taus[0]]
                 margin = min(margin, float(rhs[-1] - lhs[0]))
+                if self._t3 is not None:
+                    self._t3.append((float(lhs[0]), float(ep.eps_test3(n_u[-1]))))
                 bad = lhs > rhs
             else:
                 cnt = self._counts(s, lo)
@@ -204,6 +226,8 @@ class PhaseMonitor:
                 self.wlp.set_counts(*cnt)
                 lhs0 = self.wlp.lam(float(n_u[0]))
                 margin = min(margin, float(rhs[-1] - lhs0))
+                if self._t3 is not None:
+                    self._t3.append((float(lhs0), float(ep.eps_test3(n_u[-1]))))
                 if lhs0 <= rhs[-1]:            # monotone screen certifies the whole gap
                     continue
                 lhs = self.wlp.lam_on_integers(int(n_u[0]), int(n_u[-1]))

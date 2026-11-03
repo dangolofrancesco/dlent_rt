@@ -11,6 +11,10 @@ from the paper are explicit and switchable:
     (cfg.tests.drop_dual_learning_terms, week 17): they bound the error of the
     stochastic dual-learning Algorithm 2, which we replace by the exact LP-RS.
 The practical model's switch (cfg.ablation.thinning_off) sets p_U = 1.
+Calibrated thresholds (cfg.tests.threshold = "calibrated", week 34; models.core.calibration): Test 2's threshold
+eps~_Test2 is multiplied by kappa2, and every confidence term of Test 3 by kappa3 (eps~_Test3 and eps_A' + eps_B'
+inside lambda~, eq. 7: the latter alone is about 100x the LP value per tick, so scaling eps~_Test3 alone could never
+bring Test 3 within reach). kappa = 1 (the default) is the paper's threshold, bit for bit.
 """
 from __future__ import annotations
 
@@ -32,6 +36,9 @@ class ErrorParams:
     xi_data: float = float("nan")
     # practical model: no thinning (cfg.ablation.thinning_off)
     thin_off: bool = False
+    # calibrated thresholds (week 34): 1.0 = the paper's
+    kappa2: float = 1.0
+    kappa3: float = 1.0
 
     # log terms
     @property
@@ -104,25 +111,25 @@ class ErrorParams:
                 + 2.0 * self.gamma * self.eta(n) + 4.0 * self.gamma / np.sqrt(n))
 
     def eps_test2(self, W_prev: int, n):
-        return (self.gamma * self.eps_E(W_prev, 0) + self.eps_F(W_prev, 0)
-                + self.gamma * self.eta(W_prev) + 4.0 * self.gamma / np.sqrt(W_prev)
-                + self.CI1(n))
+        return self.kappa2 * (self.gamma * self.eps_E(W_prev, 0) + self.eps_F(W_prev, 0)
+                              + self.gamma * self.eta(W_prev) + 4.0 * self.gamma / np.sqrt(W_prev)
+                              + self.CI1(n))
 
     # Test 3 (A.13), n = t - s
     def eps_test3(self, n):
         n = np.asarray(n, float)
-        return (self.eps_Ap(n) + self.eps_Bp(n) + self.eps_Cp(n)
-                + 2.0 * self.gamma ** 2 / np.sqrt(n))
+        return self.kappa3 * (self.eps_Ap(n) + self.eps_Bp(n) + self.eps_Cp(n)
+                              + 2.0 * self.gamma ** 2 / np.sqrt(n))
 
     # eq. (7): lambda~ = min_tau { lam^(s+1:tau) + eps_A' + eps_B' }
     def lam_tilde_term(self, n):
-        return self.eps_Ap(n) + self.eps_Bp(n)
+        return self.kappa3 * (self.eps_Ap(n) + self.eps_Bp(n))
 
     def as_dict(self) -> dict:
         return dict(gamma=self.gamma, xi=self.xi, gamma_data=self.gamma_data,
                     xi_data=self.xi_data, c_min=self.c_min, n_res=self.n_res,
                     T=self.T, delta=self.delta, eps_D=self.eps_D,
-                    drop_EF=self.drop_EF, thin_off=self.thin_off)
+                    drop_EF=self.drop_EF, thin_off=self.thin_off, kappa2=self.kappa2, kappa3=self.kappa3)
 
 
 def make_error_params(state, ds, cfg) -> ErrorParams:

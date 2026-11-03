@@ -189,6 +189,14 @@ class TestsCfg:
     # Exact LP-RS in place of the dual-learning Algorithm 2: eps_E (A.8) and eps_F (A.9) are 0.
     drop_dual_learning_terms: bool = True
     piecewise_tol: float = 1e-7   # relative tolerance of the parametric-LP reconstruction
+    # Thresholds of Tests 2-3 (week 34, models.core.calibration): "theoretical" (the paper's, Appendix A) or
+    # "calibrated": Test 2's threshold x kappa_test2 and Test 3's confidence terms x kappa_test3, chosen once in
+    # Phase 0 from H alone (the no-learning model replayed on H) so that the largest LHS / threshold ratio on H is
+    # calibration_target. kappa_test2 / kappa_test3 = null: computed; a number: used as given (1.0 = theoretical).
+    threshold: str = "theoretical"
+    kappa_test2: Optional[float] = None
+    kappa_test3: Optional[float] = None
+    calibration_target: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -270,6 +278,9 @@ class Config:
         assert self.oracle.kind in ("frozen", "live")
         assert self.bid.sigma_update in ("phase", "cumulative", "fixed")
         assert self.stats.update in ("replace", "by_end_reason")
+        assert self.tests.threshold in ("theoretical", "calibrated")
+        assert 0 < self.tests.calibration_target < 1
+        assert all(k is None or k > 0 for k in (self.tests.kappa_test2, self.tests.kappa_test3))
         from .scenarios import resolve
         resolve(self.scenario.name)
         assert self.scenario.t_star_hours >= 0

@@ -166,6 +166,24 @@ the same transform, i.e. the true post-change law on the same scale.
 
 The expectations are in `reports/week34/scenarios_expectations.md`.
 
+### Calibrated test thresholds (week 34)
+
+With the paper's thresholds, Tests 2 and 3 cannot fire on our data: they are out of reach by 2–3 orders of
+magnitude (`reports/week34/test_margins.md`). `tests.threshold: calibrated` (default `theoretical`) scales them:
+* Test 2's threshold ε̃_Test2 is multiplied by κ2.
+* Test 3's confidence terms are multiplied by κ3. These are ε̃_Test3 and also ε_A′ + ε_B′ inside λ̃. Scaling ε̃_Test3
+  alone could never bring Test 3 within reach, because ε_A′ + ε_B′ alone is about 100 times the LP value.
+
+κ is chosen once, in Phase 0, from H alone (`dlent_rt/models/core/calibration.py`):
+1. H is replayed through the no-learning model.
+2. Each test's LHS / threshold ratio is traced at every tick.
+3. κ is set so that the largest ratio on H is `tests.calibration_target`. The default is 0.5, a safety factor of 2.
+
+No stream data is read. With κ = 1 (`tests.kappa_test2` / `kappa_test3`) the run is exactly the theoretical one.
+`scripts/calibrate_tests.py` computes κ and the ratio curves on the real H. It also replays a cached stationary run
+to count how often the calibrated tests would fire. The model "practical + calibrated tests" is the extra
+`practical_calibrated` model in `scripts/run_scenarios.py`. It is not in the default plan.
+
 ## Where things are
 
 * `configs/default.yaml` — the one configuration.

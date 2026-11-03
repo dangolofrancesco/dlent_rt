@@ -36,7 +36,7 @@ Per arrival at tick t, through the shared event-driven loop dlent_rt.models.poli
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import time
@@ -68,11 +68,19 @@ class RunResult:
 class TheoryModel:
     kind = "theory"
 
-    def __init__(self, ds: Dataset, state0: PhaseState, cfg: Config):
+    def __init__(self, ds: Dataset, state0: PhaseState, cfg: Config, stream: Optional[StreamData] = None):
+        """stream: the arrivals to run on (default: the online stream, build_stream). Another stream (H's, for the
+        threshold calibration) is scored with Phase 0's bid model, without any scenario."""
         self.ds, self.cfg, self.state0 = ds, cfg, state0
         self.live = cfg.oracle.kind == "live"
-        self.stream: StreamData = build_stream(ds, cfg)
+        self.stream: StreamData = build_stream(ds, cfg) if stream is None else stream
         self.ep: ErrorParams = make_error_params(state0, ds, cfg)
+        # tests.threshold "calibrated" (week 34): Tests 2-3 x kappa, chosen once here from H alone
+        self.calibration: Optional[dict] = None
+        if cfg.tests.threshold == "calibrated":
+            from .core.calibration import calibrate
+            self.calibration = calibrate(ds, state0, cfg)
+            self.ep = replace(self.ep, kappa2=self.calibration["kappa2"], kappa3=self.calibration["kappa3"])
         self.c = np.asarray(ds.capacity, float)
         forced_xi = cfg.constants.xi_override is not None
         self.a_max_eff = self.ep.xi * self.c if forced_xi else np.asarray(ds.a_max, float)
@@ -91,7 +99,9 @@ class TheoryModel:
         S = self.stream
         # (scenario: post-change jobs scored with the true post-change markup distribution, dlent_rt.scenarios)
         from ..scenarios import scored_job_terms
-        self.J = scored_job_terms(S, state0.myerson, self.tax, cfg.objective, cfg)
+        self.J = (scored_job_terms(S, state0.myerson, self.tax, cfg.objective, cfg) if stream is None else
+                  job_terms(S.v, S.cost_base, S.duration_hours, S.C_elec, S.C_carbon, state0.myerson, self.tax,
+                            cfg.objective))
         # bid.sigma_update "cumulative": the log-markups of H, then of every ended phase's arrivals
         self.markup_pool = [log_markups(state0.bids.v_rate, state0.bids.cost_base)]
 
@@ -321,6 +331,7 @@ class TheoryModel:
             regret_global=float(lam_all * self.ds.T - R_tot),
             eps_D=self.ep.eps_D, one_minus_epsD_xi=1 - self.ep.eps_D - self.ep.xi,
             error_params=self.ep.as_dict(),
+            calibration=self.calibration,
             a_max_eff=self.a_max_eff.tolist(), a_max_data=np.asarray(self.ds.a_max).tolist(),
             capacity=self.c.tolist(), d_max=self.d_max,
         )
