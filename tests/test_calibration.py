@@ -115,13 +115,20 @@ def test_calibrated_tests_on_the_stationary_stream(world):
     assert e["test2"] + e["test3"] > 0
 
 
-def test_runner_extra_model_and_old_caches():
+def test_runner_extra_model_and_old_caches(tmp_path, monkeypatch):
+    import pickle
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     import run_scenarios as rs
+    monkeypatch.setattr(rs, "KAPPA", tmp_path / "kappa.pkl")                  # no cached kappa: computed per run
+    assert rs.config_for("s2", "practical_calibrated").tests.kappa_test2 is None
+    pickle.dump(dict(kappa2=0.007, kappa3=0.004, target=0.5), open(rs.KAPPA, "wb"))
+    for env in rs.ENVS:                                                       # cached once, the same everywhere
+        t = rs.config_for(env, "practical_calibrated").tests
+        assert (t.kappa_test2, t.kappa_test3, t.calibration_target) == (0.007, 0.004, 0.5)
     assert "practical_calibrated" not in rs.MODELS and rs.plan(rs.ENVS, rs.MODELS) == [
         (e, m) for e in rs.ENVS for m in rs.MODELS]
     c, p = rs.config_for("s1", "practical_calibrated"), rs.config_for("s1", "practical")
-    assert c.tests.threshold == "calibrated" and replace(c, tests=p.tests) == p
+    assert c.tests.threshold == "calibrated" and c.tests.kappa_test2 == 0.007 and replace(c, tests=p.tests) == p
     d = asdict(default_config())
     old = asdict(p)
     for f in ("threshold", "kappa_test2", "kappa_test3", "calibration_target"):    # a cache from before the switch

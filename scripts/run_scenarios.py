@@ -9,7 +9,10 @@ Non-stationary bids (week 34; reports/week34/scenarios_expectations.md): the fiv
                 practical    C3 = thinning off + live oracle + stats.update by_end_reason (the proposed model)
                 theoretical  the default config (thinning on, frozen oracle, stats.update replace)
   extra model   practical_calibrated   C3 + tests.threshold calibrated (Tests 2-3 x kappa, chosen in Phase 0 on H;
-                             models.core.calibration). Not in the default plan: run it with --models practical_calibrated
+                             models.core.calibration). Not in the default plan: run it with --models practical_calibrated.
+                             kappa depends only on H (the same in every environment): computed once by
+                             scripts/calibrate_tests.py --set-kappa into reports/week34/cache/calibration/kappa.pkl and
+                             used as given (if that file is missing, each run computes kappa in its own Phase 0)
 
 Same seed (42), f, data, bids and thinning draws everywhere; Phase 0 is the same in every environment (only the
 stream changes). Each run is its own process, cached in reports/week34/cache/scenarios/<env>/<model>.pkl and skipped
@@ -41,6 +44,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 CACHE = ROOT / "reports" / "week34" / "cache" / "scenarios"
+KAPPA = ROOT / "reports" / "week34" / "cache" / "calibration" / "kappa.pkl"
 ENVS = ("none", "s1_bids_fall", "s6_bids_spread", "s2_bids_rise")
 MODELS = ("fluid", "greedy_pos", "no_learning", "practical", "theoretical")
 EXTRA = ("practical_calibrated",)
@@ -60,7 +64,12 @@ def config_for(env: str, model: str, seed=None):
     if model in ("practical", "practical_calibrated"):
         cfg = replace(cfg, stats=replace(cfg.stats, update="by_end_reason"))
     if model == "practical_calibrated":
-        cfg = replace(cfg, tests=replace(cfg.tests, threshold="calibrated"))
+        t = replace(cfg.tests, threshold="calibrated")
+        if KAPPA.is_file():                         # kappa from H, computed once (scripts/calibrate_tests.py)
+            with open(KAPPA, "rb") as fh:
+                k = pickle.load(fh)
+            t = replace(t, kappa_test2=k["kappa2"], kappa_test3=k["kappa3"], calibration_target=k["target"])
+        cfg = replace(cfg, tests=t)
     return cfg.validate()
 
 

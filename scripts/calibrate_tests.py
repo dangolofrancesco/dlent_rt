@@ -8,10 +8,19 @@ Calibrated thresholds of Tests 2 and 3 (week 34; dlent_rt.models.core.calibratio
                    rebuilt by ReInit from the cached arrivals; the ratio curves are traced at kappa = 1 and evaluated
                    at the calibrated kappas (ratio > 1 = the test fires). Test 3's per-gap ratio is the monitor's
                    screen bound (LHS at the gap's first tick / RHS at its last), so its count is an upper bound.
+                   A firing is one episode: a run of consecutive gaps of one phase with ratio > 1 (the first would end
+                   the phase in a real run). The stream's trace is kept, so --count re-counts at another target.
                    -> reports/week34/cache/calibration/replay_<name>.pkl
+  --count PKL      the firing count of a replay at --target, from its kept trace (no new replay)
+  --set-kappa      writes kappa2, kappa3 at --target to reports/week34/cache/calibration/kappa.pkl: the kappas every
+                   practical_calibrated run of scripts/run_scenarios.py uses (H is the same in every environment, so
+                   they are computed once)
+  --target X       the largest LHS / threshold ratio on H (default: tests.calibration_target, 0.5)
 
     caffeinate -i dlent_venv/bin/python scripts/calibrate_tests.py --history
     caffeinate -i dlent_venv/bin/python scripts/calibrate_tests.py --replay reports/week34/cache/scenarios/none/practical.pkl
+    dlent_venv/bin/python scripts/calibrate_tests.py --count reports/week34/cache/calibration/replay_none_practical.pkl --target 0.25
+    dlent_venv/bin/python scripts/calibrate_tests.py --set-kappa --target 0.5
 """
 from __future__ import annotations
 
@@ -52,7 +61,7 @@ def history() -> dict:
     tr, phases = replay_history(ds, st0, cfg)
     k = kappas_from_trace(tr, cfg.tests.calibration_target)
     h = cfg.time.tick_seconds / 3600.0
-    out = dict(kappa=k, phases=phases, runtime_s=time.perf_counter() - t, target=cfg.tests.calibration_target,
+    out = dict(kappa=k, phases=phases, runtime_s=time.perf_counter() - t, target=cfg.tests.calibration_target, trace=tr,
                curve2=pd.DataFrame(dict(hour=tr.r2_tick * h, ratio_theory=tr.r2, ratio=tr.ratio2(k["kappa2"]))),
                curve3=_curve3(tr, k["kappa3"], h))
     OUT.mkdir(parents=True, exist_ok=True)
@@ -63,6 +72,16 @@ def history() -> dict:
     print(f"kappa2 = {k['kappa2']:.6g} (max Test 2 ratio on H at kappa 1: {k['max_ratio2_theory']:.4g})")
     print(f"kappa3 = {k['kappa3']:.6g} (max Test 3 ratio on H at kappa 1: {k['max_ratio3_theory']:.4g})")
     return out
+
+
+def kappa_for(target: float) -> dict:
+    """kappa2, kappa3 at `target`, from H's kept trace."""
+    from dlent_rt.models.core.calibration import kappas_from_trace
+    H = pickle.load(open(OUT / "H.pkl", "rb"))
+    k = kappas_from_trace(H["trace"], target) if "trace" in H else H["kappa"] if target == H["target"] else None
+    if k is None:
+        raise SystemExit("H.pkl has no trace: rerun --history")
+    return dict(k, target=float(target))
 
 
 def _curve3(tr, kappa3, h) -> pd.DataFrame:
@@ -129,45 +148,64 @@ def replay(pkl: Path, kappa: dict) -> dict:
     tr.finish()
     cached = [(int(e), r) for e, r in zip(ph.tau_end, ph.reason)][:-1]
     h = cfg.time.tick_seconds / 3600.0
-    c2, c3 = tr.ratio2(kappa["kappa2"]), _curve3(tr, kappa["kappa3"], h)
-    out = dict(kappa=kappa, ends_replay=ends, ends_cached=cached, same_phases=ends == cached,
-               curve2=pd.DataFrame(dict(hour=tr.r2_tick * h, ratio_theory=tr.r2, ratio=c2)), curve3=c3)
-    out["fires"] = _fires(out, ph, h)
+    out = dict(ends_replay=ends, ends_cached=cached, same_phases=ends == cached, trace=tr, phases=ph, h=h,
+               hours=float(S.tick[-1] * h))
     OUT.mkdir(parents=True, exist_ok=True)
-    with open(OUT / f"replay_{pkl.parent.name}_{pkl.stem}.pkl", "wb") as fh:
+    f = OUT / f"replay_{pkl.parent.name}_{pkl.stem}.pkl"
+    with open(f, "wb") as fh:
         pickle.dump(out, fh)
     print(f"phase ends as cached: {out['same_phases']}")
-    print(out["fires"].to_string(index=False))
+    count(f, kappa)
     return out
 
 
-def _fires(out, ph, h) -> pd.DataFrame:
-    """Per cached phase: the calibrated tests' largest ratio, and the first hour (since the phase start) with
-    ratio > 1, or NaN."""
+def count(f: Path, kappa: dict) -> pd.DataFrame:
+    """The firing count of a kept replay at `kappa`: per phase, each calibrated test's largest ratio, its first
+    firing hour (since the phase start) and its episodes (runs of consecutive gaps with ratio > 1)."""
+    r = pickle.load(open(f, "rb"))
+    tr, ph, h = r["trace"], r["phases"], r["h"]
+    curves = dict(test2=pd.DataFrame(dict(hour=tr.r2_tick * h, ratio=tr.ratio2(kappa["kappa2"]))),
+                  test3=_curve3(tr, kappa["kappa3"], h))
     rows = []
     for _, p in ph.iterrows():
         lo, hi = (p.tau_start - 1) * h, p.tau_end * h
         row = dict(phase=int(p.m), start_h=lo, length_h=hi - lo, end=p.reason)
-        for name, cv in (("test2", out["curve2"]), ("test3", out["curve3"])):
-            w = cv[(cv.hour > lo) & (cv.hour <= hi + h)]
+        for name, cv in curves.items():
+            w = cv[(cv.hour > lo) & (cv.hour <= hi + h)].sort_values("hour")
+            up = (w.ratio > 1).to_numpy()
             row[f"max {name} ratio"] = float(w.ratio.max()) if len(w) else np.nan
-            f = w[w.ratio > 1]
-            row[f"{name} fires at h"] = float(f.hour.iloc[0] - lo) if len(f) else np.nan
-            row[f"{name} gaps > 1"] = int(len(f))
+            row[f"{name} first fire h"] = float(w.hour[up].iloc[0] - lo) if up.any() else np.nan
+            row[f"{name} episodes"] = int(np.sum(up & ~np.r_[False, up[:-1]]))
         rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    n = int(df["test2 episodes"].sum() + df["test3 episodes"].sum())
+    print(f"target {kappa.get('target')}: kappa2 = {kappa['kappa2']:.6g}, kappa3 = {kappa['kappa3']:.6g}")
+    print(df.to_string(index=False))
+    print(f"FIRINGS: Test 2 + Test 3 = {n} over {r['hours']:.0f} h "
+          f"(Test 2: {int(df['test2 episodes'].sum())}, Test 3: {int(df['test3 episodes'].sum())})")
+    return df
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--history", action="store_true")
     ap.add_argument("--replay", type=Path)
+    ap.add_argument("--count", type=Path)
+    ap.add_argument("--set-kappa", action="store_true")
+    ap.add_argument("--target", type=float, default=None)
     a = ap.parse_args(argv)
+    target = a.target if a.target is not None else practical_cfg().tests.calibration_target
     if a.history:
         history()
     if a.replay:
-        k = pickle.load(open(OUT / "H.pkl", "rb"))["kappa"]
-        replay(a.replay, k)
+        replay(a.replay, kappa_for(target))
+    if a.count:
+        count(a.count, kappa_for(target))
+    if a.set_kappa:
+        k = kappa_for(target)
+        with open(OUT / "kappa.pkl", "wb") as fh:
+            pickle.dump(dict(kappa2=k["kappa2"], kappa3=k["kappa3"], target=k["target"]), fh)
+        print(f"kappa.pkl: target {k['target']}, kappa2 = {k['kappa2']:.6g}, kappa3 = {k['kappa3']:.6g}")
 
 
 if __name__ == "__main__":
